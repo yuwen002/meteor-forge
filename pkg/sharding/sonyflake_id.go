@@ -119,8 +119,8 @@ func (g *SonyflakeIDGenerator) GenerateFromTimestamp(ts time.Time, sequence uint
 // 以下是一些内部使用的辅助函数
 
 func resolveMachineID() (uint16, error) {
-	// 1. 环境变量
-	if idStr := os.Getenv("MACHINE_ID"); idStr != "" {
+	// 1. 环境变量 SONYFLAKE_MACHINE_ID
+	if idStr := os.Getenv("SONYFLAKE_MACHINE_ID"); idStr != "" {
 		if id, err := strconv.ParseUint(idStr, 10, 16); err == nil {
 			return uint16(id), nil
 		}
@@ -192,30 +192,37 @@ var defaultStartTime = time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
 var (
 	globalGenerator     *SonyflakeIDGenerator
 	globalGeneratorOnce sync.Once
+	initOnce            sync.Once
+	initStartTime       time.Time
+	initCalled          bool
 	initErr             error
 )
 
 // getOrInitGenerator 获取或初始化全局生成器
 func getOrInitGenerator() (*SonyflakeIDGenerator, error) {
 	globalGeneratorOnce.Do(func() {
-		globalGenerator, initErr = NewSonyflakeIDGenerator(defaultStartTime)
+		startTime := defaultStartTime
+		if initCalled {
+			startTime = initStartTime
+		}
+		globalGenerator, initErr = NewSonyflakeIDGenerator(startTime)
 	})
 	return globalGenerator, initErr
 }
 
 // InitSonyflake 使用给定的起始时间初始化全局 Sonyflake ID 生成器。
 // 并发安全，只会初始化一次。
-// 如果已经初始化过，会返回错误。
+// 如果已经初始化过（无论是通过 InitSonyflake 还是第一次调 GenerateID），
+// 传入不同 startTime 会返回错误。
 func InitSonyflake(startTime time.Time) error {
-	var err error
-	globalGeneratorOnce.Do(func() {
-		defaultStartTime = startTime
-		globalGenerator, err = NewSonyflakeIDGenerator(startTime)
+	initOnce.Do(func() {
+		initCalled = true
+		initStartTime = startTime
 	})
-	if globalGenerator != nil && !defaultStartTime.Equal(startTime) {
+	if !initStartTime.Equal(startTime) {
 		return errors.New("generator already initialized with different start time")
 	}
-	return err
+	return nil
 }
 
 // GenerateID 使用全局 Sonyflake 生成器生成一个新的全局唯一 ID。

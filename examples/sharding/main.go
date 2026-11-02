@@ -29,10 +29,12 @@ func main() {
 	// ── 2. 分表路由：按时间 / 按 ID 哈希 ──────────────────────
 	now := time.Date(2026, 11, 2, 10, 0, 0, 0, time.Local)
 	byMonth := sharding.NewShardRule(sharding.ByMonth, "orders")
-	fmt.Printf("按月分片：当前写入表 = %s\n", byMonth.GetTableNameByTime(now))
+	monthTable, _ := byMonth.GetTableNameByTime(now)
+	fmt.Printf("按月分片：当前写入表 = %s\n", monthTable)
 
 	byHash := sharding.NewShardRule(sharding.ByIDHash, "users", sharding.WithHashShards(32))
-	fmt.Printf("按 ID 哈希分片：用户 %d 落在表 = %s\n", id, byHash.GetTableNameByID(int64(id%1e6)))
+	hashTable, _ := byHash.GetTableNameByID(int64(id % 1e6))
+	fmt.Printf("按 ID 哈希分片：用户 %d 落在表 = %s\n", id, hashTable)
 
 	// ── 3. 跨分片查询前的表枚举：命中时间范围内的全部分片表 ────
 	start := time.Date(2026, 1, 15, 0, 0, 0, 0, time.Local)

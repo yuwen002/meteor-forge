@@ -125,25 +125,23 @@ type IDRange struct {
 //	rule := NewShardRule(ByMonth, "orders", 0, 0)
 //	table := rule.GetTableNameByTime(time.Now())
 //	// 结果可能是: orders_202508
-func (r *ShardRule) GetTableNameByTime(t time.Time) string {
+func (r *ShardRule) GetTableNameByTime(t time.Time) (string, error) {
 	switch r.Type {
 	case ByYear:
-		return fmt.Sprintf("%s_%d", r.TableName, t.Year())
+		return fmt.Sprintf("%s_%d", r.TableName, t.Year()), nil
 
 	case ByQuarter:
 		quarter := (int(t.Month())-1)/3 + 1
-		return fmt.Sprintf("%s_%dQ%d", r.TableName, t.Year(), quarter)
+		return fmt.Sprintf("%s_%dQ%d", r.TableName, t.Year(), quarter), nil
 
 	case ByMonth:
-		return fmt.Sprintf("%s_%d%02d", r.TableName, t.Year(), t.Month())
+		return fmt.Sprintf("%s_%d%02d", r.TableName, t.Year(), t.Month()), nil
 
 	case ByWeek:
-		// 年份与周数统一取自 ISOWeek，避免跨年边界时历年份与 ISO 周数错配（如 1 月初对应上年的高周号）
 		weekYear, week := t.ISOWeek()
-		return fmt.Sprintf("%s_%dW%02d", r.TableName, weekYear, week)
+		return fmt.Sprintf("%s_%dW%02d", r.TableName, weekYear, week), nil
 
 	case ByTenDay:
-		// 将一个月分成 3 个分片，每个分片约 10 天
 		day := t.Day()
 		dayGroup := 3
 		if day <= 10 {
@@ -151,10 +149,10 @@ func (r *ShardRule) GetTableNameByTime(t time.Time) string {
 		} else if day <= 20 {
 			dayGroup = 2
 		}
-		return fmt.Sprintf("%s_%d%02d_%d", r.TableName, t.Year(), t.Month(), dayGroup)
+		return fmt.Sprintf("%s_%d%02d_%d", r.TableName, t.Year(), t.Month(), dayGroup), nil
 
 	default:
-		return r.TableName
+		return "", fmt.Errorf("分片类型 %s 不支持按时间查表名（仅 ByYear/ByQuarter/ByMonth/ByWeek/ByTenDay）", r.Type)
 	}
 }
 
@@ -172,26 +170,24 @@ func (r *ShardRule) GetTableNameByTime(t time.Time) string {
 //	rule := NewShardRule(ByIDHash, "users", 32, 0)
 //	table := rule.GetTableNameByID(123456789)
 //	// 结果可能是: users_5
-func (r *ShardRule) GetTableNameByID(id int64) string {
+func (r *ShardRule) GetTableNameByID(id int64) (string, error) {
 	switch r.Type {
 	case ByIDHash:
-		// 如果未设置有效的分片数量，默认使用 16 个
 		if r.HashShards <= 0 {
 			r.HashShards = 16
 		}
 		shard := crc32.ChecksumIEEE([]byte(strconv.FormatInt(id, 10))) % uint32(r.HashShards)
-		return fmt.Sprintf("%s_%d", r.TableName, shard)
+		return fmt.Sprintf("%s_%d", r.TableName, shard), nil
 
 	case ByIDRange:
-		// 如果未设置范围大小，默认每个分片存储 100 万条数据
 		if r.RangeSize <= 0 {
 			r.RangeSize = 1000000
 		}
 		shard := id / r.RangeSize
-		return fmt.Sprintf("%s_%d", r.TableName, shard)
+		return fmt.Sprintf("%s_%d", r.TableName, shard), nil
 
 	default:
-		return r.TableName
+		return "", fmt.Errorf("分片类型 %s 不支持按 ID 查表名（仅 ByIDHash/ByIDRange）", r.Type)
 	}
 }
 
@@ -405,14 +401,21 @@ func (r *ShardRule) GetTableNamesByIDRange(idRange IDRange) ([]string, error) {
 func (r *ShardRule) getHashShardTables(idRange IDRange) ([]string, error) {
 	// 如果查询的是单个ID，直接返回对应的分片表
 	if idRange.Start == idRange.End && idRange.Start > 0 {
-		return []string{r.GetTableNameByID(idRange.Start)}, nil
+		table, err := r.GetTableNameByID(idRange.Start)
+		if err != nil {
+			return nil, err
+		}
+		return []string{table}, nil
 	}
 
 	// 如果范围很小（例如小于等于10个ID），计算每个ID的哈希并去重
 	if idRange.End > 0 && (idRange.End-idRange.Start) <= 10 {
 		tables := make(map[string]struct{})
 		for id := idRange.Start; id <= idRange.End; id++ {
-			tableName := r.GetTableNameByID(id)
+			tableName, err := r.GetTableNameByID(id)
+			if err != nil {
+				return nil, err
+			}
 			tables[tableName] = struct{}{}
 		}
 
@@ -432,14 +435,12 @@ func (r *ShardRule) getHashShardTables(idRange IDRange) ([]string, error) {
 }
 
 // getRangeShardTables 获取范围分片表
+// 与 GetTableNameByID 保持完全一致的分片公式：id / RangeSize
 func (r *ShardRule) getRangeShardTables(idRange IDRange) ([]string, error) {
+	startShard := idRange.Start / r.RangeSize
+	endShard := idRange.End / r.RangeSize
+
 	var tables []string
-
-	// 计算起始和结束的分片索引
-	startShard := (idRange.Start - 1) / r.RangeSize
-	endShard := (idRange.End - 1) / r.RangeSize
-
-	// 遍历所有相关的分片
 	for i := startShard; i <= endShard; i++ {
 		tables = append(tables, fmt.Sprintf("%s_%d", r.TableName, i))
 	}
