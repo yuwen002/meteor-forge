@@ -1,0 +1,24 @@
+README.md
+  h_a3f313f3d96276 276-302,307
+docs/sharding.md
+  h_a3f313f3d96276 1-473
+pkg/sharding/table_manager.go
+  h_a3f313f3d96276 1-57
+pkg/sharding/mysql_table_manager.go
+  h_a3f313f3d96276 1-80
+pkg/sharding/doc.go
+  h_a3f313f3d96276 10-11
+pkg/sharding/shard_table_manager.go
+  h_a3f313f3d96276 10-11,13-16,19-20,35,41,48,54,60,65,69,74,79,86,89,95,98
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "26.9.9",
+  "base_commit_sha": "223128829d6152a17329211ccbced4b92069a314",
+  "prompts": {},
+  "humans": {
+    "h_a3f313f3d96276": {
+      "author": "liuxingyu <yuwen002@163.com>"
+    }
+  }
+}
