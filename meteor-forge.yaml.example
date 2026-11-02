@@ -7,3 +7,10 @@
 dsn: "root:password@tcp(127.0.0.1:3306)/my_db?charset=utf8mb4&parseTime=true&multiStatements=true"
 dir: "./migrations"
 table: "schema_migrations"
+
+# 多租户批量并发升级配置（tenants-up 命令使用；dir/table 沿用上方全局设置）
+tenants:
+  - name: "tenant_alpha"
+    dsn: "root:password@tcp(127.0.0.1:3306)/db_tenant_alpha?charset=utf8mb4&parseTime=true&multiStatements=true"
+  - name: "tenant_beta"
+    dsn: "root:password@tcp(127.0.0.1:3306)/db_tenant_beta?charset=utf8mb4&parseTime=true&multiStatements=true"

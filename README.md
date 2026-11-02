@@ -91,6 +91,38 @@ meteor-forge up --dsn="root:123456@tcp(127.0.0.1:3306)/other_db?charset=utf8mb4&
 
 常用参数：`-d/--dsn`、`-D/--dir`、`-t/--table`、`--config`。运行 `meteor-forge --help` 查看全部帮助。
 
+### 5. 生产级特性
+
+**create —— 一键生成带时间戳的脚本模板，告别手动命名：**
+
+```bash
+meteor-forge create add_orders_table
+# → 在配置的 dir 下生成 {YYYYMMDDHHMMSS}_add_orders_table.up.sql / .down.sql
+```
+
+**dry-run —— 只读预览，不碰数据库（连记录表都不创建）：**
+
+```bash
+meteor-forge up --dry-run
+# 列出并打印每个待执行脚本的 UpSQL，同时附带防篡改预检，确认后去掉 --dry-run 正式应用
+```
+
+**tenants-up —— 按配置文件中的租户列表并发迁移（信号量限流 + 部分失败非零退出码）：**
+
+```yaml
+# meteor-forge.yaml 增加 tenants 段（dir/table 沿用全局设置）
+tenants:
+  - name: "tenant_alpha"
+    dsn: "root:password@tcp(127.0.0.1:3306)/db_tenant_alpha?charset=utf8mb4&parseTime=true&multiStatements=true"
+  - name: "tenant_beta"
+    dsn: "root:password@tcp(127.0.0.1:3306)/db_tenant_beta?charset=utf8mb4&parseTime=true&multiStatements=true"
+```
+
+```bash
+meteor-forge tenants-up
+# ✓/✗/ℹ 逐租户报告结果；任一租户失败时以非零退出码结束，便于 CI 感知
+```
+
 > **防篡改说明**：版本记录表含 `checksum` 列（存档已应用脚本的 sha256），Up 时若发现已应用过的脚本内容被修改会直接中止。从旧版升级的用户对存量表补一次列即可：`ALTER TABLE schema_migrations ADD COLUMN checksum VARCHAR(64) NOT NULL DEFAULT ''`，存量空哈希记录会自动跳过比对，不会误报。
 
 ## 📦 作为 Go 库集成到项目中
@@ -184,7 +216,8 @@ cd examples/demo && go run main.go
 - [x] 基础多租户连接池管理器 (tenant.Manager)
 - [x] 校验和防篡改机制（sha256 存档 + 行尾归一化 + Up 前置比对）
 - [x] CLI 配置文件与环境变量支持（Viper：flag > env > 配置文件 > 默认值）
-- [ ] 多租户批量自动化并发迁移命令（CLI 遍历租户 + 分布式锁）
+- [x] 多租户批量并发迁移命令（tenants-up：协程并发 + 信号量限流 + 非零退出码；分布式锁未实现）
+- [x] 生产级 CLI 体验（create 模板生成 / up --dry-run 只读演练 / 配置文件与环境变量）
 - [ ] CLI 支持 --driver 参数切换数据库类型（目前 CLI 面向 MySQL）
 - [ ] CI 流水线与覆盖率徽章
 
