@@ -1,0 +1,18 @@
+pkg/sharding/scheduler.go
+  h_a3f313f3d96276 1-112
+pkg/sharding/postgres_table_manager.go
+  h_a3f313f3d96276 1-74
+pkg/sharding/clickhouse_table_manager.go
+  h_a3f313f3d96276 1-67
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "26.9.9",
+  "base_commit_sha": "c10a8883671eee1351f275e7084d886ca720d755",
+  "prompts": {},
+  "humans": {
+    "h_a3f313f3d96276": {
+      "author": "liuxingyu <yuwen002@163.com>"
+    }
+  }
+}
