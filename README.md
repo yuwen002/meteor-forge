@@ -14,7 +14,7 @@
 
 * **轻量无负担**：单二进制文件部署（配合 `go:embed` 将迁移 SQL 打进二进制），无沉重依赖，启动极快。
 * **多租户友好**：内置多租户连接池管理器（`tenant.Manager`）与动态上下文路由支持，轻松应对 SaaS 系统的分库/多 Schema 隔离场景。
-* **契约与解耦（Driver 架构）**：核心迁移引擎 `pkg/migration` 与底层数据库彻底解耦，只面向 `Driver` 接口编程；各数据库适配器位于 `pkg/driver/` 下并依赖核心包，新增 PostgreSQL 等驱动无需改动引擎。目前已支持 MySQL，并提供 ClickHouse 适配。
+* **契约与解耦（Driver 架构）**：核心迁移引擎 `pkg/migration` 与底层数据库彻底解耦，只面向 `Driver` 接口编程；各数据库适配器位于 `pkg/driver/` 下并依赖核心包，新增 PostgreSQL 等驱动无需改动引擎。目前已支持 MySQL（OLTP）与 ClickHouse（OLAP）双引擎。
 * **现代化 CLI 交互**：基于 `Cobra` 打造，提供直观的 `up`、`down`、`status` 命令与自动补全。
 * **事务安全**：MySQL 驱动下迁移脚本与版本记录写入在同一事务中执行，失败自动回滚，确保变更的原子性（ClickHouse 无行级事务，采用先脚本后记录的补偿策略，详见驱动文档注释）。
 
@@ -128,6 +128,27 @@ func main() {
 
 多租户分库场景下，配合 `tenant.MemoryManager` 为每个租户注册独立 `*sql.DB`，逐租户构造 `mysql.NewDriver(db, ...)` 执行迁移——完整流程参见 [examples/demo](examples/demo/main.go)。
 
+### ClickHouse（OLAP）接入
+
+得益于 Driver 接口设计，切换到 ClickHouse 只需替换驱动实例，核心引擎代码零改动：
+
+```go
+import (
+	"github.com/yuwen002/meteor-forge/pkg/driver/clickhouse"
+	"github.com/yuwen002/meteor-forge/pkg/migration"
+
+	_ "github.com/ClickHouse/clickhouse-go/v2" // 引入 ClickHouse 驱动
+)
+
+func initClickHouseMigrator(db *sql.DB) migration.Migrator {
+	chDriver := clickhouse.NewDriver(db, "schema_migrations")
+	loader := migration.NewFileSystemLoader(os.DirFS("./migrations_ch"), ".")
+	return migration.NewDefaultMigrator(loader, chDriver)
+}
+```
+
+与 MySQL 驱动的两点差异（ClickHouse 架构特性使然）：版本记录表使用 `MergeTree` 引擎并显式声明 `ORDER BY`；无 ACID 事务，回滚通过 `ALTER TABLE ... DELETE`（Mutation）维护记录，生产接入建议会话级设置 `mutations_sync=2` 以避免异步删除导致的短暂状态不一致。
+
 ## 🧪 运行示例
 
 ```bash
@@ -143,7 +164,7 @@ cd examples/demo && go run main.go
 
 - [x] 基础迁移引擎（Up / Down / ToVersion / Status）
 - [x] MySQL 驱动适配与事务保障
-- [x] ClickHouse 驱动基础适配（无事务补偿策略，待真实环境验证）
+- [x] ClickHouse 驱动适配（MergeTree + Mutation 记录维护，待真实环境验证）
 - [x] 基础多租户连接池管理器 (tenant.Manager)
 - [ ] 多租户批量自动化并发迁移命令（CLI 遍历租户 + 分布式锁）
 - [ ] PostgreSQL 驱动适配
