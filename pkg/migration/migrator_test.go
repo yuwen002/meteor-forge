@@ -10,7 +10,9 @@ import (
 
 // MockDriver 内存级驱动，用于单元测试状态机
 type MockDriver struct {
-	records []Record
+	records     []Record
+	lockCalls   int
+	unlockCalls int
 }
 
 func NewMockDriver() *MockDriver {
@@ -36,6 +38,16 @@ func (m *MockDriver) ApplyMigration(ctx context.Context, script *Script, isRollb
 	} else {
 		m.records = append(m.records, Record{Version: script.Version, Name: script.Description, Checksum: script.Checksum()})
 	}
+	return nil
+}
+
+func (m *MockDriver) Lock(ctx context.Context) error {
+	m.lockCalls++
+	return nil
+}
+
+func (m *MockDriver) Unlock(ctx context.Context) error {
+	m.unlockCalls++
 	return nil
 }
 
@@ -128,6 +140,69 @@ func TestMigratorDownWhenNothingApplied(t *testing.T) {
 	migrator, _ := newTestMigrator()
 	if err := migrator.Down(context.Background()); !errors.Is(err, ErrNoPendingMigrations) {
 		t.Errorf("expected ErrNoPendingMigrations, got %v", err)
+	}
+}
+
+// 分布式锁：写路径（Up/Down/ToVersion/DownSteps）应成对调用 Lock/Unlock；只读的 Status 不加锁
+func TestMigratorAcquiresLock(t *testing.T) {
+	migrator, driver := newTestMigrator()
+	ctx := context.Background()
+
+	if err := migrator.Up(ctx); err != nil {
+		t.Fatalf("up failed: %v", err)
+	}
+	if driver.lockCalls != 1 || driver.unlockCalls != 1 {
+		t.Errorf("expected Up to lock/unlock exactly once, got lock=%d unlock=%d", driver.lockCalls, driver.unlockCalls)
+	}
+
+	if _, err := migrator.Status(ctx); err != nil {
+		t.Fatalf("status failed: %v", err)
+	}
+	if driver.lockCalls != 1 {
+		t.Errorf("Status is read-only and must not acquire the lock, got lock=%d", driver.lockCalls)
+	}
+
+	if err := migrator.Down(ctx); err != nil {
+		t.Fatalf("down failed: %v", err)
+	}
+	if driver.lockCalls != 2 || driver.unlockCalls != 2 {
+		t.Errorf("expected Down to lock/unlock as a pair, got lock=%d unlock=%d", driver.lockCalls, driver.unlockCalls)
+	}
+}
+
+// DownSteps：正常步数回滚、超量宽松退到空、非法步数报错、空库第一步透传哨兵错误
+func TestMigratorDownSteps(t *testing.T) {
+	migrator, driver := newTestMigrator()
+	ctx := context.Background()
+
+	if err := migrator.Up(ctx); err != nil {
+		t.Fatalf("up failed: %v", err)
+	}
+
+	// 非法步数
+	if err := migrator.DownSteps(ctx, 0); !errors.Is(err, ErrInvalidVersion) {
+		t.Errorf("expected ErrInvalidVersion for steps=0, got %v", err)
+	}
+
+	// 回滚 1 步：002 退掉，剩 001
+	if err := migrator.DownSteps(ctx, 1); err != nil {
+		t.Fatalf("DownSteps(1) failed: %v", err)
+	}
+	if len(driver.records) != 1 || driver.records[0].Version != "001" {
+		t.Fatalf("expected only 001 remaining, got %+v", driver.records)
+	}
+
+	// 超量回滚：宽松退到空即返回 nil
+	if err := migrator.DownSteps(ctx, 5); err != nil {
+		t.Fatalf("DownSteps(5) should tolerate over-rollback to empty, got: %v", err)
+	}
+	if len(driver.records) != 0 {
+		t.Fatalf("expected empty records, got %+v", driver.records)
+	}
+
+	// 空库第一步：透传 ErrNoPendingMigrations
+	if err := migrator.DownSteps(ctx, 1); !errors.Is(err, ErrNoPendingMigrations) {
+		t.Errorf("expected ErrNoPendingMigrations on empty history, got %v", err)
 	}
 }
 

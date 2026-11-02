@@ -2,6 +2,7 @@ package migration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 )
@@ -24,9 +25,29 @@ func NewDefaultMigrator(loader Loader, driver Driver) *DefaultMigrator {
 	}
 }
 
+// acquireLock 获取 Driver 级迁移锁，多实例并发执行时互斥。
+func (m *DefaultMigrator) acquireLock(ctx context.Context) error {
+	if err := m.driver.Lock(ctx); err != nil {
+		return fmt.Errorf("acquire migration lock failed: %w", err)
+	}
+	return nil
+}
+
+// releaseLock 释放迁移锁。使用独立 context：
+// 调用方 ctx 可能已被取消，但锁必须尽力归还（会话级锁的连接回收是最终兜底）。
+func (m *DefaultMigrator) releaseLock(_ context.Context) {
+	_ = m.driver.Unlock(context.Background())
+}
+
 // Up 执行所有未完成的迁移脚本。
 // 执行前先对全部本地脚本做校验和防篡改比对，已应用过的脚本内容被修改时返回 ErrChecksumMismatch。
+// 整个过程持有 Driver 迁移锁，防止多实例并发迁移。
 func (m *DefaultMigrator) Up(ctx context.Context) error {
+	if err := m.acquireLock(ctx); err != nil {
+		return err
+	}
+	defer m.releaseLock(ctx)
+
 	// 1. 确保数据库中的迁移历史表存在
 	if err := m.driver.EnsureTable(ctx); err != nil {
 		return err
@@ -86,8 +107,13 @@ func (m *DefaultMigrator) Up(ctx context.Context) error {
 	return nil
 }
 
-// Down 回滚最近一次执行的迁移
+// Down 回滚最近一次执行的迁移（持有迁移锁）
 func (m *DefaultMigrator) Down(ctx context.Context) error {
+	if err := m.acquireLock(ctx); err != nil {
+		return err
+	}
+	defer m.releaseLock(ctx)
+
 	if err := m.driver.EnsureTable(ctx); err != nil {
 		return err
 	}
@@ -133,9 +159,38 @@ func (m *DefaultMigrator) Down(ctx context.Context) error {
 	return nil
 }
 
+// DownSteps 自最近版本起连续回滚指定步数。
+// 可回滚记录不足 steps 时，回滚至空即正常返回（宽松语义，便于运维脚本批量退档）；
+// 中途失败则返回错误，已回滚的部分不会重试。
+func (m *DefaultMigrator) DownSteps(ctx context.Context, steps int) error {
+	if steps <= 0 {
+		return fmt.Errorf("%w: down steps must be greater than 0, got %d", ErrInvalidVersion, steps)
+	}
+	for i := 0; i < steps; i++ {
+		err := m.Down(ctx)
+		if err == nil {
+			continue
+		}
+		// 无可回滚记录：第一步报错（与 Down 语义一致），否则视为提前退到尽头
+		if errors.Is(err, ErrNoPendingMigrations) {
+			if i == 0 {
+				return err
+			}
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 // ToVersion 迁移或回滚到指定版本；version 为空串表示升级到最新版本。
 // 升级方向跳过已应用的版本，回滚方向按版本降序逐个执行 DownSQL。
 func (m *DefaultMigrator) ToVersion(ctx context.Context, version string) error {
+	if err := m.acquireLock(ctx); err != nil {
+		return err
+	}
+	defer m.releaseLock(ctx)
+
 	if err := m.driver.EnsureTable(ctx); err != nil {
 		return err
 	}
@@ -208,7 +263,7 @@ func (m *DefaultMigrator) ToVersion(ctx context.Context, version string) error {
 	return nil
 }
 
-// Status 获取当前整体迁移状态（对比本地与数据库）
+// Status 获取当前整体迁移状态（对比本地与数据库）。只读操作，不加迁移锁。
 func (m *DefaultMigrator) Status(ctx context.Context) ([]StatusItem, error) {
 	if err := m.driver.EnsureTable(ctx); err != nil {
 		return nil, err

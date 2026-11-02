@@ -19,6 +19,8 @@ import (
 type PostgresDriver struct {
 	db        *sql.DB
 	tableName string
+	// lockConn 持有 advisory lock 的专用连接（会话级锁与连接绑定，同 MySQL 驱动的考量）。
+	lockConn *sql.Conn
 }
 
 // NewDriver 创建一个 PostgreSQL 迁移驱动实例。
@@ -109,4 +111,39 @@ func (d *PostgresDriver) ApplyMigration(ctx context.Context, script *migration.S
 	}
 
 	return tx.Commit()
+}
+
+// Lock 获取 PostgreSQL 会话级 advisory 排他锁（pg_advisory_lock 阻塞直至获得，
+// 由引擎层 context 控制整体超时）；锁键由表名哈希得到，连接断开时自动释放。
+func (d *PostgresDriver) Lock(ctx context.Context) error {
+	if d.lockConn != nil {
+		return fmt.Errorf("postgres: migration lock already held by this instance")
+	}
+
+	conn, err := d.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("postgres acquire dedicated connection failed: %w", err)
+	}
+
+	// hashtext 为服务端函数，保证不同进程对同一表名得到相同锁键
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock(hashtext($1))", "meteor_forge_lock_"+d.tableName); err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("postgres acquire advisory lock failed: %w", err)
+	}
+
+	d.lockConn = conn
+	return nil
+}
+
+// Unlock 释放 advisory 锁并归还专用连接；未持锁时为空操作（幂等）。
+func (d *PostgresDriver) Unlock(ctx context.Context) error {
+	if d.lockConn == nil {
+		return nil
+	}
+	_, err := d.lockConn.ExecContext(ctx, "SELECT pg_advisory_unlock(hashtext($1))", "meteor_forge_lock_"+d.tableName)
+	if cerr := d.lockConn.Close(); err == nil {
+		err = cerr
+	}
+	d.lockConn = nil
+	return err
 }

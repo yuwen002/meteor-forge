@@ -108,3 +108,12 @@ func (d *SQLiteDriver) ApplyMigration(ctx context.Context, script *migration.Scr
 
 	return tx.Commit()
 }
+
+// Lock SQLite 为单写者模型：写事务本身由数据库文件锁串行化，
+// 同进程内 database/sql + 事务已保证互斥，跨进程冲突会直接报 "database is locked"，
+// 无需额外的命名锁，这里为空操作以满足 Driver 接口。
+// 使用方建议保持默认单连接写入或开启 WAL 模式降低锁竞争。
+func (d *SQLiteDriver) Lock(ctx context.Context) error { return nil }
+
+// Unlock 空操作（见 Lock 说明）。
+func (d *SQLiteDriver) Unlock(ctx context.Context) error { return nil }

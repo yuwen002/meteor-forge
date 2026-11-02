@@ -31,6 +31,7 @@ import (
 
 	"github.com/yuwen002/meteor-forge/pkg/driver/mysql"
 	"github.com/yuwen002/meteor-forge/pkg/migration"
+	"github.com/yuwen002/meteor-forge/pkg/tenant"
 
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -40,6 +41,10 @@ var (
 	cfgFile string
 	// dryRun up 命令的演练模式开关
 	dryRun bool
+	// upTo / downTo / downSteps 精细化版本控制参数
+	upTo      string
+	downTo    string
+	downSteps int
 )
 
 // tenantEntry 对应配置文件中 tenants 列表的一项（tenants-up 命令使用）
@@ -86,7 +91,15 @@ func main() {
 
 			migrator := initMigrator()
 			fmt.Println("--> 正在执行数据库迁移 Up...")
-			if err := migrator.Up(ctx); err != nil {
+
+			// --to 指定目标版本：双向跳转到精确版本
+			var err error
+			if upTo != "" {
+				err = migrator.ToVersion(ctx, upTo)
+			} else {
+				err = migrator.Up(ctx)
+			}
+			if err != nil {
 				if errors.Is(err, migration.ErrNoPendingMigrations) {
 					fmt.Println("提示: 当前已经是最新版本，没有需要执行的新迁移")
 					return
@@ -100,26 +113,44 @@ func main() {
 		},
 	}
 	upCmd.Flags().BoolVar(&dryRun, "dry-run", false, "演练模式：只打印将要执行的 SQL，不实际操作数据库")
+	upCmd.Flags().StringVar(&upTo, "to", "", "升级到指定版本后停止（等价于 goto）")
 
 	// 2. down 命令
 	downCmd := &cobra.Command{
 		Use:   "down",
-		Short: "回滚最近一次执行的迁移",
+		Short: "回滚迁移：默认回滚最近一次；--steps 连续回滚多步；--to 回滚至指定版本",
 		Run: func(cmd *cobra.Command, args []string) {
+			if downSteps > 0 && downTo != "" {
+				log.Fatal("错误: --steps 与 --to 不能同时指定")
+			}
+
 			migrator := initMigrator()
 			ctx := context.Background()
 
-			fmt.Println("--> 正在回滚最近一次迁移...")
-			if err := migrator.Down(ctx); err != nil {
+			var err error
+			switch {
+			case downSteps > 0:
+				fmt.Printf("--> 正在连续回滚 %d 步迁移...\n", downSteps)
+				err = migrator.DownSteps(ctx, downSteps)
+			case downTo != "":
+				fmt.Printf("--> 正在回滚至指定版本 %s...\n", downTo)
+				err = migrator.ToVersion(ctx, downTo)
+			default:
+				fmt.Println("--> 正在回滚最近一次迁移...")
+				err = migrator.Down(ctx)
+			}
+			if err != nil {
 				if errors.Is(err, migration.ErrNoPendingMigrations) {
 					fmt.Println("提示: 没有可回滚的迁移记录")
 					return
 				}
 				log.Fatalf("错误: 回滚失败: %v", err)
 			}
-			fmt.Println("成功: 最近一次迁移已成功回滚！")
+			fmt.Println("成功: 回滚已完成！")
 		},
 	}
+	downCmd.Flags().IntVar(&downSteps, "steps", 0, "连续回滚的步数")
+	downCmd.Flags().StringVar(&downTo, "to", "", "回滚至指定版本（不含）以下，双向跳转")
 
 	// 3. status 命令
 	statusCmd := &cobra.Command{
@@ -192,50 +223,53 @@ func main() {
 		Use:   "tenants-up",
 		Short: "并发为配置文件中定义的所有多租户数据库执行 Up 迁移",
 		Run: func(cmd *cobra.Command, args []string) {
-			ctx := context.Background()
-
 			var tenants []tenantEntry
 			if err := viper.UnmarshalKey("tenants", &tenants); err != nil || len(tenants) == 0 {
 				log.Fatal("错误: 未能在配置文件中找到有效的 tenants 配置列表（格式见 meteor-forge.yaml.example）")
 			}
 
-			migrationsDir := viper.GetString("dir")
-			tableName := viper.GetString("table")
-
-			fmt.Printf("--> 开始并发执行多租户迁移，共计 %d 个租户...\n", len(tenants))
-
-			var wg sync.WaitGroup
-			var failed int64
-			// 信号量限制并发度：租户数量很大时避免同时打开海量连接压垮数据库
-			sem := make(chan struct{}, 8)
-
+			list := make([]tenant.TenantInfo, 0, len(tenants))
 			for _, t := range tenants {
-				wg.Add(1)
-				go func(tenant tenantEntry) {
-					defer wg.Done()
-					sem <- struct{}{}
-					defer func() { <-sem }()
-
-					if err := upgradeTenant(ctx, tenant, migrationsDir, tableName); err != nil {
-						atomic.AddInt64(&failed, 1)
-						fmt.Printf("✗ [租户 %s] %v\n", tenant.Name, err)
-						return
-					}
-					fmt.Printf("✓ [租户 %s] 迁移完成\n", tenant.Name)
-				}(t)
+				list = append(list, tenant.TenantInfo{ID: t.Name, DSN: t.DSN})
 			}
-			wg.Wait()
+			migrateTenants(context.Background(), list)
+		},
+	}
 
-			if n := atomic.LoadInt64(&failed); n > 0 {
-				fmt.Fprintf(os.Stderr, "%d/%d 个租户迁移失败\n", n, len(tenants))
-				os.Exit(1) // 非零退出码，便于 CI/脚本感知部分失败
+	// 6. tenants-sync 命令：从 Control DB 动态发现活跃租户后并发迁移（SaaS 水平扩展免改配置）
+	tenantsSyncCmd := &cobra.Command{
+		Use:   "tenants-sync",
+		Short: "从主控数据库动态发现活跃租户并并发执行 Up 迁移",
+		Run: func(cmd *cobra.Command, args []string) {
+			controlDsn := viper.GetString("control_dsn")
+			if controlDsn == "" {
+				log.Fatal("错误: 控制库 DSN 未配置，请在 meteor-forge.yaml 设置 control_dsn 或通过 METEOR_CONTROL_DSN 环境变量传入")
 			}
-			fmt.Println("成功: 所有租户迁移任务执行完毕！")
+
+			controlDB, err := sql.Open("mysql", controlDsn)
+			if err != nil {
+				log.Fatalf("连接控制库失败: %v", err)
+			}
+			defer controlDB.Close()
+			if err := controlDB.Ping(); err != nil {
+				log.Fatalf("Ping 控制库失败: %v", err)
+			}
+
+			ctx := context.Background()
+			tenants, err := tenant.LoadActiveTenants(ctx, controlDB)
+			if err != nil {
+				log.Fatalf("错误: 动态发现租户失败: %v", err)
+			}
+			if len(tenants) == 0 {
+				fmt.Println("提示: 控制库中没有发现任何活跃租户")
+				return
+			}
+			migrateTenants(ctx, tenants)
 		},
 	}
 
 	// 挂载所有子命令
-	rootCmd.AddCommand(upCmd, downCmd, statusCmd, createCmd, tenantsUpCmd)
+	rootCmd.AddCommand(upCmd, downCmd, statusCmd, createCmd, tenantsUpCmd, tenantsSyncCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -243,13 +277,58 @@ func main() {
 	}
 }
 
+// errAlreadyUpToDate 内部哨兵：租户库已是最新版本，不算失败也不算新迁移。
+var errAlreadyUpToDate = errors.New("already up to date")
+
+// migrateTenants 并发对租户列表执行 Up：信号量限流 + 逐租户报告 + 部分失败非零退出码。
+// tenants-up（静态配置）与 tenants-sync（动态发现）共用此执行器。
+func migrateTenants(ctx context.Context, tenants []tenant.TenantInfo) {
+	migrationsDir := viper.GetString("dir")
+	tableName := viper.GetString("table")
+
+	fmt.Printf("--> 开始并发执行多租户迁移，共计 %d 个租户...\n", len(tenants))
+
+	var wg sync.WaitGroup
+	var failed int64
+	// 信号量限制并发度：租户数量很大时避免同时打开海量连接压垮数据库
+	sem := make(chan struct{}, 8)
+
+	for _, t := range tenants {
+		wg.Add(1)
+		go func(ti tenant.TenantInfo) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			if err := upgradeTenant(ctx, ti, migrationsDir, tableName); err != nil {
+				if errors.Is(err, errAlreadyUpToDate) {
+					fmt.Printf("ℹ  [租户 %s] 已是最新版本\n", ti.ID)
+					return
+				}
+				atomic.AddInt64(&failed, 1)
+				fmt.Printf("✗ [租户 %s] %v\n", ti.ID, err)
+				return
+			}
+			fmt.Printf("✓ [租户 %s] 迁移完成\n", ti.ID)
+		}(t)
+	}
+	wg.Wait()
+
+	if n := atomic.LoadInt64(&failed); n > 0 {
+		fmt.Fprintf(os.Stderr, "%d/%d 个租户迁移失败\n", n, len(tenants))
+		os.Exit(1) // 非零退出码，便于 CI/脚本感知部分失败
+	}
+	fmt.Println("成功: 所有租户迁移任务执行完毕！")
+}
+
 // upgradeTenant 为单个租户连接数据库并执行 Up，返回可读的错误描述。
-func upgradeTenant(ctx context.Context, tenant tenantEntry, migrationsDir, tableName string) error {
-	if tenant.Name == "" || tenant.DSN == "" {
-		return errors.New("租户配置不完整：name 与 dsn 均为必填")
+// 多实例同时对同一租户库执行时，由驱动层迁移锁保证串行（后来者等待或报锁冲突）。
+func upgradeTenant(ctx context.Context, ti tenant.TenantInfo, migrationsDir, tableName string) error {
+	if ti.ID == "" || ti.DSN == "" {
+		return errors.New("租户配置不完整：id 与 dsn 均为必填")
 	}
 
-	db, err := sql.Open("mysql", tenant.DSN)
+	db, err := sql.Open("mysql", ti.DSN)
 	if err != nil {
 		return fmt.Errorf("连接数据库失败: %w", err)
 	}
@@ -268,8 +347,7 @@ func upgradeTenant(ctx context.Context, tenant tenantEntry, migrationsDir, table
 	case err == nil:
 		return nil
 	case errors.Is(err, migration.ErrNoPendingMigrations):
-		fmt.Printf("ℹ  [租户 %s] 已是最新版本\n", tenant.Name)
-		return nil
+		return errAlreadyUpToDate
 	case errors.Is(err, migration.ErrChecksumMismatch):
 		return fmt.Errorf("检测到脚本被篡改，已中止: %w", err)
 	default:

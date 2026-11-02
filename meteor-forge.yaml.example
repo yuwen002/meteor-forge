@@ -1,5 +1,5 @@
 # meteor-forge CLI 配置样例：复制为 meteor-forge.yaml 后按需修改。
-# 配置优先级（viper）：显式命令行参数 > 环境变量（METEOR_DSN/METEOR_DIR/METEOR_TABLE）> 本文件 > 内置默认值。
+# 配置优先级（viper）：显式命令行参数 > 环境变量（METEOR_DSN/METEOR_DIR/METEOR_TABLE/METEOR_CONTROL_DSN）> 本文件 > 内置默认值。
 # 所有字段均可省略；除 yaml 外也支持 meteor-forge.json / meteor-forge.toml，路径可用 --config 显式指定。
 #
 # 注意：DSN 中的 multiStatements=true 允许迁移脚本包含多条语句，
@@ -14,3 +14,12 @@ tenants:
     dsn: "root:password@tcp(127.0.0.1:3306)/db_tenant_alpha?charset=utf8mb4&parseTime=true&multiStatements=true"
   - name: "tenant_beta"
     dsn: "root:password@tcp(127.0.0.1:3306)/db_tenant_beta?charset=utf8mb4&parseTime=true&multiStatements=true"
+
+# 控制平面数据库 DSN（tenants-sync 命令使用）：启动时从库中 t_tenants 表动态发现活跃租户，
+# SaaS 水平扩展新增租户时无需修改本文件的 tenants 列表。控制表结构：
+#   CREATE TABLE t_tenants (
+#       tenant_id VARCHAR(64) PRIMARY KEY,
+#       dsn       VARCHAR(512) NOT NULL,
+#       status    VARCHAR(16) NOT NULL DEFAULT 'active'  -- 仅 'active' 会被迁移
+#   );
+control_dsn: "root:password@tcp(127.0.0.1:3306)/control_db?charset=utf8mb4&parseTime=true&multiStatements=true"

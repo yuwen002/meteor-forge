@@ -20,6 +20,8 @@ import (
 type ClickHouseDriver struct {
 	db        *sql.DB
 	tableName string
+	// lockConn 持有 getLock 的专用连接（锁与实例会话绑定，断连自动释放）。
+	lockConn *sql.Conn
 }
 
 // NewDriver 创建一个 ClickHouse 迁移驱动实例。
@@ -112,4 +114,45 @@ func (d *ClickHouseDriver) ApplyMigration(ctx context.Context, script *migration
 	}
 
 	return nil
+}
+
+// Lock 获取 ClickHouse 实例级命名锁（getLock 函数，超时 10 秒），
+// 防止多实例并发迁移。基于专用连接持有，断连时服务端自动释放。
+// 注：getLock/releaseLock 需服务端支持（ClickHouse >= 21.x），本路径待真实环境验证。
+func (d *ClickHouseDriver) Lock(ctx context.Context) error {
+	if d.lockConn != nil {
+		return fmt.Errorf("clickhouse: migration lock already held by this instance")
+	}
+
+	conn, err := d.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("clickhouse acquire dedicated connection failed: %w", err)
+	}
+
+	var result uint8
+	lockName := "meteor_forge_lock_" + d.tableName
+	if err := conn.QueryRowContext(ctx, "SELECT getLock({name:String}, {timeout:UInt32})", sql.Named("name", lockName), sql.Named("timeout", 10)).Scan(&result); err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("clickhouse acquire distributed lock failed: %w", err)
+	}
+	if result != 1 {
+		_ = conn.Close()
+		return fmt.Errorf("clickhouse: another migration holds the lock %q (timeout after 10s)", lockName)
+	}
+
+	d.lockConn = conn
+	return nil
+}
+
+// Unlock 释放命名锁并归还专用连接；未持锁时为空操作（幂等）。
+func (d *ClickHouseDriver) Unlock(ctx context.Context) error {
+	if d.lockConn == nil {
+		return nil
+	}
+	lockName := "meteor_forge_lock_" + d.tableName
+	var result uint8
+	_ = d.lockConn.QueryRowContext(ctx, "SELECT releaseLock({name:String})", sql.Named("name", lockName)).Scan(&result)
+	err := d.lockConn.Close()
+	d.lockConn = nil
+	return err
 }

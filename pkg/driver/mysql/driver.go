@@ -17,6 +17,10 @@ import (
 type MySQLDriver struct {
 	db        *sql.DB
 	tableName string
+	// lockConn 持有 GET_LOCK 的专用连接。MySQL 会话级锁与连接绑定：
+	// 若用连接池的 db 直接执行 GET_LOCK，锁会落在随机连接上且 RELEASE_LOCK
+	// 无法命中同一连接，故必须独占 *sql.Conn 直到 Unlock。
+	lockConn *sql.Conn
 }
 
 // 编译期静态检查：确保 MySQLDriver 完全实现了 migration.Driver 接口
@@ -119,4 +123,47 @@ func (d *MySQLDriver) ApplyMigration(ctx context.Context, script *migration.Scri
 	}
 
 	return tx.Commit()
+}
+
+// lockName 锁名与表名绑定，使同一记录表的多实例互斥、不同表的迁移互不阻塞。
+func (d *MySQLDriver) lockName() string {
+	return fmt.Sprintf("meteor_forge_lock_%s", d.tableName)
+}
+
+// Lock 获取 MySQL 会话级排他锁（GET_LOCK，超时 10 秒）。
+// 持锁期间进程崩溃/断连时，MySQL 会自动释放该连接上的锁，无死锁残留风险。
+func (d *MySQLDriver) Lock(ctx context.Context) error {
+	if d.lockConn != nil {
+		return fmt.Errorf("mysql: migration lock already held by this instance")
+	}
+
+	conn, err := d.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("mysql acquire dedicated connection failed: %w", err)
+	}
+
+	var result int
+	if err := conn.QueryRowContext(ctx, "SELECT GET_LOCK(?, 10)", d.lockName()).Scan(&result); err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("mysql acquire distributed lock failed: %w", err)
+	}
+	if result != 1 {
+		_ = conn.Close()
+		return fmt.Errorf("mysql: another migration holds the lock %q (timeout after 10s)", d.lockName())
+	}
+
+	d.lockConn = conn
+	return nil
+}
+
+// Unlock 释放迁移锁并归还专用连接；未持锁时为空操作（幂等）。
+func (d *MySQLDriver) Unlock(ctx context.Context) error {
+	if d.lockConn == nil {
+		return nil
+	}
+	var result int
+	_ = d.lockConn.QueryRowContext(ctx, "SELECT RELEASE_LOCK(?)", d.lockName()).Scan(&result)
+	err := d.lockConn.Close()
+	d.lockConn = nil
+	return err
 }

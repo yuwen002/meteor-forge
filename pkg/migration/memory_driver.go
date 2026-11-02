@@ -15,6 +15,10 @@ type MemoryDriver struct {
 	applied []Record
 	// Executed 记录按顺序执行过的脚本，便于测试断言。
 	Executed []*Script
+	// 模拟迁移锁：lockHeld 表示当前持锁，LockCalls/UnlockCalls 供测试断言引擎调用次数。
+	lockHeld    bool
+	LockCalls   int
+	UnlockCalls int
 }
 
 // 确保 MemoryDriver 实现了 Driver 接口。
@@ -65,5 +69,29 @@ func (d *MemoryDriver) ApplyMigration(ctx context.Context, script *Script, isRol
 		Checksum:  script.Checksum(),
 	})
 	d.Executed = append(d.Executed, script)
+	return nil
+}
+
+// Lock 模拟获取迁移锁；重复加锁返回错误，与真实数据库排他锁语义一致。
+func (d *MemoryDriver) Lock(ctx context.Context) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.lockHeld {
+		return fmt.Errorf("migration/memory: 锁已被持有，不能重复加锁")
+	}
+	d.lockHeld = true
+	d.LockCalls++
+	return nil
+}
+
+// Unlock 模拟释放迁移锁；未持锁时为空操作（幂等）。
+func (d *MemoryDriver) Unlock(ctx context.Context) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.lockHeld {
+		return nil
+	}
+	d.lockHeld = false
+	d.UnlockCalls++
 	return nil
 }
