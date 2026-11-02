@@ -14,9 +14,9 @@
 
 * **轻量无负担**：单二进制文件部署（配合 `go:embed` 将迁移 SQL 打进二进制），无沉重依赖，启动极快。
 * **多租户友好**：内置多租户连接池管理器（`tenant.Manager`）与动态上下文路由支持，轻松应对 SaaS 系统的分库/多 Schema 隔离场景。
-* **契约与解耦（Driver 架构）**：核心迁移引擎 `pkg/migration` 与底层数据库彻底解耦，只面向 `Driver` 接口编程；各数据库适配器位于 `pkg/driver/` 下并依赖核心包，新增 PostgreSQL 等驱动无需改动引擎。目前已支持 MySQL（OLTP）与 ClickHouse（OLAP）双引擎。
+* **契约与解耦（Driver 架构）**：核心迁移引擎 `pkg/migration` 与底层数据库彻底解耦，只面向 `Driver` 接口编程；各数据库适配器位于 `pkg/driver/` 下并依赖核心包，新增驱动无需改动引擎。目前已支持 **MySQL、PostgreSQL、SQLite、ClickHouse** 四大数据库，覆盖从嵌入式到 OLTP/OLAP 的主流场景。
 * **现代化 CLI 交互**：基于 `Cobra` 打造，提供直观的 `up`、`down`、`status` 命令与自动补全。
-* **事务安全**：MySQL 驱动下迁移脚本与版本记录写入在同一事务中执行，失败自动回滚，确保变更的原子性（ClickHouse 无行级事务，采用先脚本后记录的补偿策略，详见驱动文档注释）。
+* **事务安全**：PostgreSQL / SQLite 驱动下迁移脚本与版本记录在同一事务中执行，DDL 失败随事务完整回滚；MySQL 驱动同样使用事务（注意其 DDL 隐式提交，原子性覆盖 DML 与记录写入）；ClickHouse 无 ACID 事务，采用先脚本后记录的直行策略。
 
 ---
 
@@ -27,7 +27,7 @@
 ├── cmd/                # CLI 命令行入口 (Cobra 实现)
 ├── pkg/
 │   ├── migration/      # 核心迁移引擎 (types / 接口 / Loader / Migrator 状态机)
-│   ├── driver/         # 数据库驱动实现 (mysql / clickhouse)
+│   ├── driver/         # 数据库驱动实现 (mysql / postgres / sqlite / clickhouse)
 │   └── tenant/         # 多租户连接池与上下文管理器
 ├── examples/           # 完整的使用示例与测试 SQL
 │   ├── basic/          # 零依赖组装演示（go:embed + 内存驱动，可直接运行）
@@ -149,9 +149,12 @@ func initClickHouseMigrator(db *sql.DB) migration.Migrator {
 
 与 MySQL 驱动的两点差异（ClickHouse 架构特性使然）：版本记录表使用 `MergeTree` 引擎并显式声明 `ORDER BY`；无 ACID 事务，回滚通过 `ALTER TABLE ... DELETE`（Mutation）维护记录，生产接入建议会话级设置 `mutations_sync=2` 以避免异步删除导致的短暂状态不一致。
 
-## 🧪 运行示例
+## 🧪 运行示例与测试
 
 ```bash
+# 单元测试（纯内存，无需任何数据库）
+go test ./...
+
 # 零依赖演示：go:embed 加载脚本 + 内存驱动，无需数据库
 go run ./examples/basic
 
@@ -162,13 +165,14 @@ cd examples/demo && go run main.go
 
 ## 🗺️ Roadmap
 
-- [x] 基础迁移引擎（Up / Down / ToVersion / Status）
+- [x] 基础迁移引擎（Up / Down / ToVersion / Status）与核心层单元测试（fstest + MockDriver，覆盖加载/状态机/版本跳转）
 - [x] MySQL 驱动适配与事务保障
+- [x] PostgreSQL / SQLite 驱动适配
 - [x] ClickHouse 驱动适配（MergeTree + Mutation 记录维护，待真实环境验证）
 - [x] 基础多租户连接池管理器 (tenant.Manager)
 - [ ] 多租户批量自动化并发迁移命令（CLI 遍历租户 + 分布式锁）
-- [ ] PostgreSQL 驱动适配
-- [ ] 单元测试与 CI 覆盖率徽章
+- [ ] CLI 支持 --driver 参数切换数据库类型（目前 CLI 面向 MySQL）
+- [ ] CI 流水线与覆盖率徽章
 
 ## 🤝 贡献指南
 
