@@ -1,0 +1,19 @@
+# IDE 配置
+.idea/
+.vscode/
+
+# 构建产物
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go 工作区文件
+go.work
+go.work.sum
+
+# 测试与覆盖率产物
+*.out
+coverage.html
