@@ -206,6 +206,74 @@ func TestMigratorDownSteps(t *testing.T) {
 	}
 }
 
+// DownSteps 原子性：无论回滚多少步，迁移锁只加一次（防止步间被其他实例插队）
+func TestMigratorDownStepsHoldsSingleLock(t *testing.T) {
+	migrator, driver := newTestMigrator()
+	ctx := context.Background()
+
+	if err := migrator.Up(ctx); err != nil {
+		t.Fatalf("up failed: %v", err)
+	}
+	driver.lockCalls, driver.unlockCalls = 0, 0
+
+	// 一次回滚全部 2 步：锁/解锁各且仅各 1 次
+	if err := migrator.DownSteps(ctx, 2); err != nil {
+		t.Fatalf("DownSteps(2) failed: %v", err)
+	}
+	if len(driver.records) != 0 {
+		t.Fatalf("expected both migrations rolled back, got %+v", driver.records)
+	}
+	if driver.lockCalls != 1 || driver.unlockCalls != 1 {
+		t.Errorf("DownSteps must hold a single lock across all steps, got lock=%d unlock=%d", driver.lockCalls, driver.unlockCalls)
+	}
+}
+
+// goto 语义：保留值 "0" 回滚全部已应用迁移（多退少补中的“全部退”）
+func TestMigratorToVersionZeroRollsBackAll(t *testing.T) {
+	migrator, driver := newTestMigrator()
+	ctx := context.Background()
+
+	if err := migrator.Up(ctx); err != nil {
+		t.Fatalf("up failed: %v", err)
+	}
+	if err := migrator.ToVersion(ctx, "0"); err != nil {
+		t.Fatalf(`ToVersion("0") failed: %v`, err)
+	}
+	if len(driver.records) != 0 {
+		t.Fatalf("expected all migrations rolled back, got %+v", driver.records)
+	}
+
+	// 空库再退全部：已对齐，返回 ErrNoPendingMigrations
+	if err := migrator.ToVersion(ctx, "0"); !errors.Is(err, ErrNoPendingMigrations) {
+		t.Errorf("expected ErrNoPendingMigrations on empty history, got %v", err)
+	}
+}
+
+// goto 语义：目标版本低于当前时回退，高于当前时升级，同一条路径双向对齐
+func TestMigratorToVersionBidirectionalAlign(t *testing.T) {
+	migrator, driver := newTestMigrator()
+	ctx := context.Background()
+
+	// 先退到 001（仅回滚 002）
+	if err := migrator.Up(ctx); err != nil {
+		t.Fatalf("up failed: %v", err)
+	}
+	if err := migrator.ToVersion(ctx, "001"); err != nil {
+		t.Fatalf(`ToVersion("001") failed: %v`, err)
+	}
+	if len(driver.records) != 1 || driver.records[0].Version != "001" {
+		t.Fatalf("expected only 001 remaining, got %+v", driver.records)
+	}
+
+	// 目标 “002” 高于当前：自动升级补齐
+	if err := migrator.ToVersion(ctx, "002"); err != nil {
+		t.Fatalf(`ToVersion("002") upgrade failed: %v`, err)
+	}
+	if len(driver.records) != 2 {
+		t.Fatalf("expected 2 applied after align up, got %+v", driver.records)
+	}
+}
+
 // 边界：库中存在已应用记录但本地无对应脚本（版本漂移），Down 应报错且不破坏记录
 func TestMigratorDownMissingLocalScript(t *testing.T) {
 	migrator, driver := newTestMigrator()

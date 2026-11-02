@@ -2,7 +2,6 @@ package migration
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 )
@@ -107,8 +106,21 @@ func (m *DefaultMigrator) Up(ctx context.Context) error {
 	return nil
 }
 
-// Down 回滚最近一次执行的迁移（持有迁移锁）
+// Down 回滚最近一次执行的迁移（直接复用单锁批量回滚路径，保持锁行为一致）
 func (m *DefaultMigrator) Down(ctx context.Context) error {
+	return m.DownSteps(ctx, 1)
+}
+
+// DownSteps 自最近版本起连续回滚指定步数。
+// 整个过程只持有迁移锁一次（批量原子性）：若逐步加锁，多实例环境下
+// 中间步骤可能被其他实例插队抢锁并写入新迁移，破坏连续回滚的原子语义。
+// 可回滚记录不足 steps 时，退到空即正常返回（宽松语义，便于运维脚本批量退档）；
+// 中途失败则返回错误，已回滚的部分不会重试。
+func (m *DefaultMigrator) DownSteps(ctx context.Context, steps int) error {
+	if steps <= 0 {
+		return fmt.Errorf("%w: down steps must be greater than 0, got %d", ErrInvalidVersion, steps)
+	}
+
 	if err := m.acquireLock(ctx); err != nil {
 		return err
 	}
@@ -122,68 +134,44 @@ func (m *DefaultMigrator) Down(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-
 	if len(appliedRecords) == 0 {
 		return ErrNoPendingMigrations // 没有可回滚的记录
 	}
 
-	// 防御性排序，取版本号最大的记录（不依赖 Driver 内部排序实现）
+	// 防御性排序：按版本号降序，从最晚执行的开始退（不依赖 Driver 内部排序实现）
 	sort.Slice(appliedRecords, func(i, j int) bool {
-		return appliedRecords[i].Version < appliedRecords[j].Version
+		return appliedRecords[i].Version > appliedRecords[j].Version
 	})
-	lastRecord := appliedRecords[len(appliedRecords)-1]
 
 	// 加载本地脚本以获取对应的 DownSQL
 	scripts, err := m.loader.LoadScripts(ctx)
 	if err != nil {
 		return err
 	}
-
-	var targetScript *Script
+	scriptMap := make(map[string]*Script, len(scripts))
 	for _, s := range scripts {
-		if s.Version == lastRecord.Version {
-			targetScript = s
-			break
+		scriptMap[s.Version] = s
+	}
+
+	// 记录不足时宽松退档：只回滚实际存在的条数（退到空即返回 nil）
+	count := min(steps, len(appliedRecords))
+
+	for i := 0; i < count; i++ {
+		version := appliedRecords[i].Version
+		script, ok := scriptMap[version]
+		if !ok {
+			return fmt.Errorf("rollback failed: local script for version %s not found", version)
 		}
-	}
-
-	if targetScript == nil {
-		return fmt.Errorf("rollback failed: local script for version %s not found", lastRecord.Version)
-	}
-
-	// 执行回滚
-	if err := m.driver.ApplyMigration(ctx, targetScript, true); err != nil {
-		return fmt.Errorf("migration down failed at version %s: %w", targetScript.Version, err)
+		if err := m.driver.ApplyMigration(ctx, script, true); err != nil {
+			return fmt.Errorf("migration down failed at version %s: %w", version, err)
+		}
 	}
 
 	return nil
 }
 
-// DownSteps 自最近版本起连续回滚指定步数。
-// 可回滚记录不足 steps 时，回滚至空即正常返回（宽松语义，便于运维脚本批量退档）；
-// 中途失败则返回错误，已回滚的部分不会重试。
-func (m *DefaultMigrator) DownSteps(ctx context.Context, steps int) error {
-	if steps <= 0 {
-		return fmt.Errorf("%w: down steps must be greater than 0, got %d", ErrInvalidVersion, steps)
-	}
-	for i := 0; i < steps; i++ {
-		err := m.Down(ctx)
-		if err == nil {
-			continue
-		}
-		// 无可回滚记录：第一步报错（与 Down 语义一致），否则视为提前退到尽头
-		if errors.Is(err, ErrNoPendingMigrations) {
-			if i == 0 {
-				return err
-			}
-			return nil
-		}
-		return err
-	}
-	return nil
-}
-
-// ToVersion 迁移或回滚到指定版本；version 为空串表示升级到最新版本。
+// ToVersion 迁移或回滚到指定版本；version 为空串表示升级到最新版本，
+// 保留值 "0" 表示回滚全部已应用的迁移（goto 语义：多退少补，精准对齐）。
 // 升级方向跳过已应用的版本，回滚方向按版本降序逐个执行 DownSQL。
 func (m *DefaultMigrator) ToVersion(ctx context.Context, version string) error {
 	if err := m.acquireLock(ctx); err != nil {
@@ -205,7 +193,10 @@ func (m *DefaultMigrator) ToVersion(ctx context.Context, version string) error {
 
 	// 定位目标版本在脚本序列中的位置
 	targetIdx := len(scripts) - 1 // 空串 => 最新版本
-	if version != "" {
+	if version == "0" {
+		// 保留哨兵 "0"：目标位置排在首个脚本之前，即回滚全部已应用迁移
+		targetIdx = -1
+	} else if version != "" {
 		targetIdx = -1
 		for i, s := range scripts {
 			if s.Version == version {

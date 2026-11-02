@@ -11,6 +11,7 @@
 //	meteor-forge up --dry-run            # 演练模式：打印将要执行的 SQL，不修改数据库
 //	meteor-forge create add_orders_table # 自动生成带时间戳的 up/down 脚本模板
 //	meteor-forge tenants-up              # 按配置文件 tenants 列表并发迁移所有租户库
+//	meteor-forge goto --version=0        # 精准对齐到任意版本；保留值 0 = 回滚全部迁移
 //	meteor-forge up --dsn="..."          # 临时覆盖配置文件中的连接串
 package main
 
@@ -41,10 +42,11 @@ var (
 	cfgFile string
 	// dryRun up 命令的演练模式开关
 	dryRun bool
-	// upTo / downTo / downSteps 精细化版本控制参数
-	upTo      string
-	downTo    string
-	downSteps int
+	// upTo / downTo / downSteps / gotoVersion 精细化版本控制参数
+	upTo        string
+	downTo      string
+	downSteps   int
+	gotoVersion string
 )
 
 // tenantEntry 对应配置文件中 tenants 列表的一项（tenants-up 命令使用）
@@ -268,8 +270,36 @@ func main() {
 		},
 	}
 
+	// 7. goto 命令：精准对齐到目标版本（双向跳转，多退少补；版本 0 回滚全部）
+	gotoCmd := &cobra.Command{
+		Use:   "goto",
+		Short: "将数据库迁移状态精准对齐到目标版本（自动判断升级或回滚；--version=0 回滚全部）",
+		Run: func(cmd *cobra.Command, args []string) {
+			if gotoVersion == "" {
+				log.Fatal("错误: 必须通过 --version 指定目标版本号（或输入 0 回滚全部迁移）")
+			}
+
+			migrator := initMigrator()
+			ctx := context.Background()
+
+			fmt.Printf("--> 正在将数据库迁移状态精准对齐到版本: %s ...\n", gotoVersion)
+			if err := migrator.ToVersion(ctx, gotoVersion); err != nil {
+				if errors.Is(err, migration.ErrNoPendingMigrations) {
+					fmt.Println("提示: 当前已对齐到目标版本，无需任何操作")
+					return
+				}
+				if errors.Is(err, migration.ErrInvalidVersion) {
+					log.Fatalf("错误: 目标版本不存在或非法: %v", err)
+				}
+				log.Fatalf("错误: 目标版本对齐失败: %v", err)
+			}
+			fmt.Printf("成功: 数据库状态已对齐到版本 %s！\n", gotoVersion)
+		},
+	}
+	gotoCmd.Flags().StringVarP(&gotoVersion, "version", "v", "", "目标版本号（如 20261102143000；输入 0 回滚全部迁移）")
+
 	// 挂载所有子命令
-	rootCmd.AddCommand(upCmd, downCmd, statusCmd, createCmd, tenantsUpCmd, tenantsSyncCmd)
+	rootCmd.AddCommand(upCmd, downCmd, statusCmd, createCmd, tenantsUpCmd, tenantsSyncCmd, gotoCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

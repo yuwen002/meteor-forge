@@ -30,9 +30,11 @@ type Migrator interface {
 	Up(ctx context.Context) error
 	// Down 回滚最近一次迁移
 	Down(ctx context.Context) error
-	// DownSteps 自最近版本起连续回滚指定步数；可回滚数量不足 steps 时回滚至空即停止
+	// DownSteps 自最近版本起连续回滚指定步数（单次持锁批量执行，保证多步回滚的原子性）；
+	// 可回滚数量不足 steps 时回滚至空即停止
 	DownSteps(ctx context.Context, steps int) error
-	// ToVersion 迁移或回滚到指定版本（双向，等价于其他工具的 GotoVersion）
+	// ToVersion 迁移或回滚到指定版本（双向，等价于其他工具的 GotoVersion）；
+	// 保留值 "0" 表示回滚全部已应用的迁移
 	ToVersion(ctx context.Context, version string) error
 	// Status 获取当前迁移状态
 	Status(ctx context.Context) ([]StatusItem, error)

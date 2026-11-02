@@ -1,5 +1,6 @@
 // Package migration 是 Schema 版本控制引擎：
-// Loader 负责解析迁移脚本来源，Driver 抽象底层数据库操作，Migrator 对外提供 Up/Down/ToVersion 能力。
+// Loader 负责解析迁移脚本来源，Driver 抽象底层数据库操作，Migrator 对外提供
+// Up/Down/DownSteps/ToVersion/Status 能力（ToVersion 即双向精准跳转，保留值 "0" 回滚全部）。
 // 本包不引入任何具体数据库的第三方驱动包；MySQL/ClickHouse 等实现位于 pkg/driver/ 下并依赖本包。
 package migration
 
