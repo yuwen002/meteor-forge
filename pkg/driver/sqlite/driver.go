@@ -40,7 +40,8 @@ func (d *SQLiteDriver) EnsureTable(ctx context.Context) error {
 		CREATE TABLE IF NOT EXISTS %s (
 			version TEXT PRIMARY KEY NOT NULL,
 			name TEXT NOT NULL,
-			applied_at DATETIME NOT NULL
+			applied_at DATETIME NOT NULL,
+			checksum TEXT NOT NULL DEFAULT ''
 		);
 	`, d.tableName)
 	_, err := d.db.ExecContext(ctx, query)
@@ -52,7 +53,7 @@ func (d *SQLiteDriver) EnsureTable(ctx context.Context) error {
 
 // GetAppliedVersions 获取所有已经执行过的迁移记录（按版本升序）
 func (d *SQLiteDriver) GetAppliedVersions(ctx context.Context) ([]migration.Record, error) {
-	query := fmt.Sprintf("SELECT version, name, applied_at FROM %s ORDER BY version ASC", d.tableName)
+	query := fmt.Sprintf("SELECT version, name, applied_at, checksum FROM %s ORDER BY version ASC", d.tableName)
 	rows, err := d.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite query applied versions failed: %w", err)
@@ -62,7 +63,7 @@ func (d *SQLiteDriver) GetAppliedVersions(ctx context.Context) ([]migration.Reco
 	var records []migration.Record
 	for rows.Next() {
 		var r migration.Record
-		if err := rows.Scan(&r.Version, &r.Name, &r.AppliedAt); err != nil {
+		if err := rows.Scan(&r.Version, &r.Name, &r.AppliedAt, &r.Checksum); err != nil {
 			return nil, fmt.Errorf("sqlite scan migration record failed: %w", err)
 		}
 		records = append(records, r)
@@ -99,8 +100,8 @@ func (d *SQLiteDriver) ApplyMigration(ctx context.Context, script *migration.Scr
 			return fmt.Errorf("sqlite delete migration record failed: %w", err)
 		}
 	} else {
-		insQuery := fmt.Sprintf("INSERT INTO %s (version, name, applied_at) VALUES (?, ?, ?)", d.tableName)
-		if _, err := tx.ExecContext(ctx, insQuery, script.Version, script.Description, time.Now()); err != nil {
+		insQuery := fmt.Sprintf("INSERT INTO %s (version, name, applied_at, checksum) VALUES (?, ?, ?, ?)", d.tableName)
+		if _, err := tx.ExecContext(ctx, insQuery, script.Version, script.Description, time.Now(), script.Checksum()); err != nil {
 			return fmt.Errorf("sqlite insert migration record failed: %w", err)
 		}
 	}

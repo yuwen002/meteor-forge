@@ -15,7 +15,8 @@
 * **轻量无负担**：单二进制文件部署（配合 `go:embed` 将迁移 SQL 打进二进制），无沉重依赖，启动极快。
 * **多租户友好**：内置多租户连接池管理器（`tenant.Manager`）与动态上下文路由支持，轻松应对 SaaS 系统的分库/多 Schema 隔离场景。
 * **契约与解耦（Driver 架构）**：核心迁移引擎 `pkg/migration` 与底层数据库彻底解耦，只面向 `Driver` 接口编程；各数据库适配器位于 `pkg/driver/` 下并依赖核心包，新增驱动无需改动引擎。目前已支持 **MySQL、PostgreSQL、SQLite、ClickHouse** 四大数据库，覆盖从嵌入式到 OLTP/OLAP 的主流场景。
-* **现代化 CLI 交互**：基于 `Cobra` 打造，提供直观的 `up`、`down`、`status` 命令与自动补全。
+* **现代化 CLI 交互**：基于 `Cobra` + `Viper` 打造，提供直观的 `up`、`down`、`status` 命令与自动补全；支持配置文件（`meteor-forge.yaml`）与环境变量，日常开发只需一个简短命令。
+* **防篡改校验（Checksum）**：每次应用迁移时存档脚本内容的 sha256 摘要，Up 前比对已应用脚本的本地内容与库中存档，不一致则中止迁移，避免“代码与数据库对不上”的线上事故（行尾差异已归一化，不会被 git autocrlf 等工具链噪声误报）。
 * **事务安全**：PostgreSQL / SQLite 驱动下迁移脚本与版本记录在同一事务中执行，DDL 失败随事务完整回滚；MySQL 驱动同样使用事务（注意其 DDL 隐式提交，原子性覆盖 DML 与记录写入）；ClickHouse 无 ACID 事务，采用先脚本后记录的直行策略。
 
 ---
@@ -57,29 +58,40 @@ migrations/
 └── 20261102002_add_email_to_users.down.sql
 ```
 
-### 3. 使用 CLI 执行管理命令
+### 3. 配置连接（推荐：配置文件）
+
+复制项目根目录的 `meteor-forge.yaml.example` 为 `meteor-forge.yaml`（已被 `.gitignore` 排除，不会泄漏凭据）：
+
+```yaml
+# meteor-forge.yaml
+dsn: "root:123456@tcp(127.0.0.1:3306)/test_db?charset=utf8mb4&parseTime=true&multiStatements=true"
+dir: "./migrations"
+table: "schema_migrations"
+```
+
+配置优先级（Viper）：**显式命令行参数 > 环境变量（`METEOR_DSN` / `METEOR_DIR` / `METEOR_TABLE`）> 配置文件 > 内置默认值**。也支持 `meteor-forge.json` / `.toml`，或用 `--config` 指定任意路径（如多环境切换：`--config=prod.yaml`）。配置文件不存在时静默回退到 flag，完全基于参数的旧用法不受影响；但 `--config` 显式指定的路径若不存在会直接报错，避免拼写错误被静默吞掉。
+
+### 4. 使用 CLI 执行管理命令
 
 > **注意**：脚本包含多条语句时，DSN 必须携带 `multiStatements=true`；查询迁移记录需要 `parseTime=true`。
 
-查看当前迁移状态：
+有了配置文件后，日常只需：
 
 ```bash
-meteor-forge status --dsn="root:123456@tcp(127.0.0.1:3306)/test_db?charset=utf8mb4&parseTime=true&multiStatements=true" --dir="./migrations"
+meteor-forge status   # 查看迁移状态
+meteor-forge up       # 执行所有未完成的迁移
+meteor-forge down     # 回滚最近一次迁移
 ```
 
-执行升级 (Up - 运行所有未完成的迁移)：
+临时切库用 flag 覆盖即可：
 
 ```bash
-meteor-forge up --dsn="root:123456@tcp(127.0.0.1:3306)/test_db?multiStatements=true&parseTime=true"
+meteor-forge up --dsn="root:123456@tcp(127.0.0.1:3306)/other_db?charset=utf8mb4&parseTime=true&multiStatements=true"
 ```
 
-执行回滚 (Down - 回滚最近一次迁移)：
+常用参数：`-d/--dsn`、`-D/--dir`、`-t/--table`、`--config`。运行 `meteor-forge --help` 查看全部帮助。
 
-```bash
-meteor-forge down --dsn="root:123456@tcp(127.0.0.1:3306)/test_db?multiStatements=true&parseTime=true"
-```
-
-常用参数：`-d/--dsn`、`-D/--dir`、`-t/--table`（版本记录表名，默认 `schema_migrations`）。运行 `meteor-forge --help` 查看全部帮助。
+> **防篡改说明**：版本记录表含 `checksum` 列（存档已应用脚本的 sha256），Up 时若发现已应用过的脚本内容被修改会直接中止。从旧版升级的用户对存量表补一次列即可：`ALTER TABLE schema_migrations ADD COLUMN checksum VARCHAR(64) NOT NULL DEFAULT ''`，存量空哈希记录会自动跳过比对，不会误报。
 
 ## 📦 作为 Go 库集成到项目中
 
@@ -170,6 +182,8 @@ cd examples/demo && go run main.go
 - [x] PostgreSQL / SQLite 驱动适配
 - [x] ClickHouse 驱动适配（MergeTree + Mutation 记录维护，待真实环境验证）
 - [x] 基础多租户连接池管理器 (tenant.Manager)
+- [x] 校验和防篡改机制（sha256 存档 + 行尾归一化 + Up 前置比对）
+- [x] CLI 配置文件与环境变量支持（Viper：flag > env > 配置文件 > 默认值）
 - [ ] 多租户批量自动化并发迁移命令（CLI 遍历租户 + 分布式锁）
 - [ ] CLI 支持 --driver 参数切换数据库类型（目前 CLI 面向 MySQL）
 - [ ] CI 流水线与覆盖率徽章

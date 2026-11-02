@@ -62,6 +62,7 @@ func (d *MemoryDriver) ApplyMigration(ctx context.Context, script *Script, isRol
 		Version:   script.Version,
 		Name:      script.Description,
 		AppliedAt: time.Now(),
+		Checksum:  script.Checksum(),
 	})
 	d.Executed = append(d.Executed, script)
 	return nil

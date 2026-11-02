@@ -43,7 +43,8 @@ func (d *ClickHouseDriver) EnsureTable(ctx context.Context) error {
 		CREATE TABLE IF NOT EXISTS %s (
 			version String,
 			name String,
-			applied_at DateTime
+			applied_at DateTime,
+			checksum String DEFAULT ''
 		) ENGINE = MergeTree()
 		ORDER BY (version);
 	`, d.tableName)
@@ -57,7 +58,7 @@ func (d *ClickHouseDriver) EnsureTable(ctx context.Context) error {
 
 // GetAppliedVersions 获取所有已经执行过的迁移记录
 func (d *ClickHouseDriver) GetAppliedVersions(ctx context.Context) ([]migration.Record, error) {
-	query := fmt.Sprintf("SELECT version, name, applied_at FROM %s ORDER BY version ASC", d.tableName)
+	query := fmt.Sprintf("SELECT version, name, applied_at, checksum FROM %s ORDER BY version ASC", d.tableName)
 	rows, err := d.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("clickhouse query applied versions failed: %w", err)
@@ -67,7 +68,7 @@ func (d *ClickHouseDriver) GetAppliedVersions(ctx context.Context) ([]migration.
 	var records []migration.Record
 	for rows.Next() {
 		var r migration.Record
-		if err := rows.Scan(&r.Version, &r.Name, &r.AppliedAt); err != nil {
+		if err := rows.Scan(&r.Version, &r.Name, &r.AppliedAt, &r.Checksum); err != nil {
 			return nil, fmt.Errorf("clickhouse scan migration record failed: %w", err)
 		}
 		records = append(records, r)
@@ -104,8 +105,8 @@ func (d *ClickHouseDriver) ApplyMigration(ctx context.Context, script *migration
 			return fmt.Errorf("clickhouse delete migration record failed: %w", err)
 		}
 	} else {
-		insQuery := fmt.Sprintf("INSERT INTO %s (version, name, applied_at) VALUES (?, ?, ?)", d.tableName)
-		if _, err := d.db.ExecContext(ctx, insQuery, script.Version, script.Description, time.Now()); err != nil {
+		insQuery := fmt.Sprintf("INSERT INTO %s (version, name, applied_at, checksum) VALUES (?, ?, ?, ?)", d.tableName)
+		if _, err := d.db.ExecContext(ctx, insQuery, script.Version, script.Description, time.Now(), script.Checksum()); err != nil {
 			return fmt.Errorf("clickhouse insert migration record failed: %w", err)
 		}
 	}

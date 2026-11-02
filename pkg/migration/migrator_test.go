@@ -34,7 +34,7 @@ func (m *MockDriver) ApplyMigration(ctx context.Context, script *Script, isRollb
 		}
 		m.records = newRecords
 	} else {
-		m.records = append(m.records, Record{Version: script.Version, Name: script.Description})
+		m.records = append(m.records, Record{Version: script.Version, Name: script.Description, Checksum: script.Checksum()})
 	}
 	return nil
 }
@@ -143,5 +143,40 @@ func TestMigratorDownMissingLocalScript(t *testing.T) {
 	// 报错后记录不应被错误删除，需要人工介入
 	if len(driver.records) != 1 {
 		t.Errorf("records should remain untouched on drift error, got %+v", driver.records)
+	}
+}
+
+// 防篡改：已应用过的脚本内容被修改后，Up 应中止并返回 ErrChecksumMismatch
+func TestMigratorUpDetectsTamperedScript(t *testing.T) {
+	migrator, driver := newTestMigrator()
+	ctx := context.Background()
+
+	if err := migrator.Up(ctx); err != nil {
+		t.Fatalf("initial up failed: %v", err)
+	}
+
+	// 模拟旧脚本被篡改：把存档哈希改成错误值（等价于本地文件内容变了而库里存的不是）
+	driver.records[0].Checksum = "deadbeef"
+
+	err := migrator.Up(ctx)
+	if !errors.Is(err, ErrChecksumMismatch) {
+		t.Fatalf("expected ErrChecksumMismatch, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "001") {
+		t.Errorf("mismatch error should mention the tampered version, got %v", err)
+	}
+}
+
+// 兼容性：存量记录无校验和（旧版工具写入的空串），Up 不应误报篡改
+func TestMigratorUpToleratesLegacyRecordsWithoutChecksum(t *testing.T) {
+	migrator, driver := newTestMigrator()
+	driver.records = []Record{{Version: "001", Name: "first", Checksum: ""}}
+
+	// 001 视为已应用跳过，仅应用 002；全程无 ErrChecksumMismatch
+	if err := migrator.Up(context.Background()); err != nil {
+		t.Fatalf("legacy empty-checksum record should be skipped, got: %v", err)
+	}
+	if len(driver.records) != 2 {
+		t.Errorf("expected 2 applied records, got %d", len(driver.records))
 	}
 }

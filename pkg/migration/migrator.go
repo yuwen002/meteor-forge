@@ -24,7 +24,8 @@ func NewDefaultMigrator(loader Loader, driver Driver) *DefaultMigrator {
 	}
 }
 
-// Up 执行所有未完成的迁移脚本
+// Up 执行所有未完成的迁移脚本。
+// 执行前先对全部本地脚本做校验和防篡改比对，已应用过的脚本内容被修改时返回 ErrChecksumMismatch。
 func (m *DefaultMigrator) Up(ctx context.Context) error {
 	// 1. 确保数据库中的迁移历史表存在
 	if err := m.driver.EnsureTable(ctx); err != nil {
@@ -46,16 +47,27 @@ func (m *DefaultMigrator) Up(ctx context.Context) error {
 		return err
 	}
 
-	// 转成 map 方便快速查找
-	appliedMap := make(map[string]bool)
+	// 转成 map 方便快速查找（version -> 存档哈希）
+	appliedMap := make(map[string]string)
 	for _, r := range appliedRecords {
-		appliedMap[r.Version] = true
+		appliedMap[r.Version] = r.Checksum
+	}
+
+	// 3.5 防篡改校验：已应用过的脚本若本地内容与库中存档哈希不一致，
+	// 立即中止，避免“代码与数据库对不上”的线上事故。
+	// 存档哈希为空串的存量记录（旧版工具写入）跳过比对，保持升级兼容。
+	for _, s := range scripts {
+		if archived, applied := appliedMap[s.Version]; applied && archived != "" {
+			if archived != s.Checksum() {
+				return fmt.Errorf("%w: version %s (db=%s, local=%s)", ErrChecksumMismatch, s.Version, archived, s.Checksum())
+			}
+		}
 	}
 
 	// 4. 筛选出待执行的脚本
 	var pendingScripts []*Script
 	for _, s := range scripts {
-		if !appliedMap[s.Version] {
+		if _, applied := appliedMap[s.Version]; !applied {
 			pendingScripts = append(pendingScripts, s)
 		}
 	}
