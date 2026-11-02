@@ -273,11 +273,38 @@ err := sharding.NewQueryBuilder(gormDB, rule).
     Find(&dest)
 ```
 
-其他能力：`ShardTableManager`（按模板自动建分片表，支持 `CREATE TABLE LIKE` 克隆结构）、`Scheduler`（定时提前建表，按月滚动）。
+**ShardTableManager + TableManager 三实现** —— 按模板自动建分片表（`CREATE TABLE LIKE` 克隆结构），统一接口下提供三种数据库实现：
+
+| 实现 | 建表克隆语法 | 检查表存在 | 表列表查询 |
+|------|------------|----------|-----------|
+| `MySQLTableManager` | `CREATE TABLE ... LIKE` | `information_schema.tables` + `DATABASE()` | `information_schema.tables` |
+| `PostgresTableManager` | `CREATE TABLE ... (LIKE ... INCLUDING ALL)` 主方案，降级 `CREATE TABLE ... AS ... WITH NO DATA` | `information_schema.tables` + `current_schema()` | `information_schema.tables` |
+| `ClickHouseTableManager` | `CREATE TABLE new AS source`（ClickHouse AS 只复制结构不带数据） | `system.tables` + `currentDatabase()` | `system.tables` |
+
+调用方注入带正确方言的 `*gorm.DB` 即可，例如 `NewPostgresTableManager(gorm.Open(postgres.Open(dsn)))`。
+
+**Scheduler 定时提前建表** —— 对全部分片类型自动定期检查并创建缺失的未来分片表：
+
+| 分片类型 | 步进周期 | 提前策略 | shardName 格式 |
+|---------|---------|---------|---------------|
+| `ByYear` | 1 年 | `ceil(monthsAhead/12) + 2` 年 | `"2026"` |
+| `ByQuarter` | 3 个月 | `ceil(monthsAhead/3) + 2` 季度 | `"2026Q4"` |
+| `ByMonth` | 1 个月 | `monthsAhead + 2` 月 | `"202611"` |
+| `ByWeek` | 7 天 | `monthsAhead×5 + 2` 周 | `"2026W44"` |
+| `ByTenDay` | 10 天 | `monthsAhead×3 + 2` 段 | `"202611_2"` |
+| `ByIDHash` | — | 枚举全部 `HashShards` 个分片 | `"0"` ~ `"15"` |
+| `ByIDRange` | — | 不支持（分片取决于运行时业务 ID） | — |
+
+```go
+sched := sharding.NewScheduler(shardTableMgr, rule, 1*time.Hour, 6) // 每小时检查一次，提前 6 个月
+sched.Start()
+defer sched.Stop()
+```
 
 > 安全说明：QueryBuilder 的表名经白名单校验（仅字母/数字/下划线，支持别名）后才进入 SQL 拼接；`TableManager` 同样内置表名合法性检查。
 > 依赖说明：本包是唯一引入 `gorm.io/gorm`（表管理/查询执行）与 `github.com/sony/sonyflake` 的模块；`pkg/migration` 与 `pkg/driver` 保持零 ORM 依赖不变。
 > 连接池建议：本包不引入任何 gorm 方言器（dialector），`*gorm.DB` 由调用方注入；若与迁移引擎共用同一库，建议 `gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), ...)` 复用已有 `*sql.DB`，避免对同一个 MySQL 开两套连接池。
+> 详细设计与 API 参考见 [docs/sharding.md](docs/sharding.md)。
 
 ## 🧪 运行示例与测试
 

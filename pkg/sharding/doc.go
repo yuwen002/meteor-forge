@@ -7,7 +7,8 @@
 //   - ShardRule：7 种分片策略（ByYear/ByQuarter/ByMonth/ByWeek/ByTenDay/ByIDHash/ByIDRange）
 //     的表名路由与时间范围跨片表枚举（枚举与单点路由命名严格一致）；
 //   - TableManager / ShardTableManager：按模板自动建分片表（CREATE TABLE LIKE 克隆结构），
-//     MySQLTableManager 为当前实现；Scheduler 支持定时提前建表；
+//     已提供 MySQLTableManager / PostgresTableManager / ClickHouseTableManager 三种实现；
+//     Scheduler 支持全部时间分片类型与 ID 哈希分片的定时提前建表；
 //   - QueryBuilder：跨分片 UNION ALL 合并查询与并行分片查询 + 应用层归并分页。
 //
 // 依赖边界：本包是全仓唯一引入 gorm.io/gorm 与 github.com/sony/sonyflake 的模块，
