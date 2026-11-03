@@ -1,0 +1,18 @@
+cmd/main.go
+  h_a3f313f3d96276 33,35-36,40,42-43,53-60,80,83,88,373-375,386,411-413,422,490,505-550,560-562,570
+README.md
+  h_a3f313f3d96276 70,76,96-109
+meteor-forge.yaml.example
+  h_a3f313f3d96276 2,5-6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "26.9.9",
+  "base_commit_sha": "ff9e6afcd11ad08eb7d6ff9ebe95ee1ba7318413",
+  "prompts": {},
+  "humans": {
+    "h_a3f313f3d96276": {
+      "author": "liuxingyu <yuwen002@163.com>"
+    }
+  }
+}
