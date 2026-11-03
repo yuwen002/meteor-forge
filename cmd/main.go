@@ -30,23 +30,34 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/yuwen002/meteor-forge/pkg/driver/clickhouse"
 	"github.com/yuwen002/meteor-forge/pkg/driver/mysql"
+	"github.com/yuwen002/meteor-forge/pkg/driver/postgres"
+	"github.com/yuwen002/meteor-forge/pkg/driver/sqlite"
 	"github.com/yuwen002/meteor-forge/pkg/migration"
 	"github.com/yuwen002/meteor-forge/pkg/tenant"
 
+	_ "github.com/ClickHouse/clickhouse-go/v2"
 	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/jackc/pgx/v5/stdlib"
+	_ "modernc.org/sqlite"
 )
 
 var (
-	// cfgFile --config 显式指定的配置文件路径（空串表示走默认搜索）
-	cfgFile string
-	// dryRun up 命令的演练模式开关
-	dryRun bool
-	// upTo / downTo / downSteps / gotoVersion 精细化版本控制参数
+	cfgFile     string
+	dryRun      bool
 	upTo        string
 	downTo      string
 	downSteps   int
 	gotoVersion string
+	dbDriver    string
+)
+
+const (
+	driverMySQL      = "mysql"
+	driverPostgres   = "postgres"
+	driverSQLite     = "sqlite"
+	driverClickHouse = "clickhouse"
 )
 
 // tenantEntry 对应配置文件中 tenants 列表的一项（tenants-up 命令使用）
@@ -66,14 +77,15 @@ func main() {
 	// flag 的非空默认值会遮蔽配置文件里的值（经典优先级坑），
 	// 默认值统一由 viper.SetDefault 提供，各配置层才能按预期生效。
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "配置文件路径 (默认在当前目录寻找 meteor-forge.yaml/.json/.toml)")
-	rootCmd.PersistentFlags().StringP("dsn", "d", "", "MySQL 数据库 DSN 连接串")
+	rootCmd.PersistentFlags().StringP("dsn", "d", "", "数据库 DSN 连接串")
 	rootCmd.PersistentFlags().StringP("dir", "D", "", "迁移 SQL 文件存放目录")
 	rootCmd.PersistentFlags().StringP("table", "t", "", "迁移历史记录表名")
+	rootCmd.PersistentFlags().StringVar(&dbDriver, "driver", "", "数据库类型: mysql | postgres | sqlite | clickhouse")
 
-	// 将 flag 绑定到 viper：显式传入的 flag 覆盖配置文件与环境变量
 	_ = viper.BindPFlag("dsn", rootCmd.PersistentFlags().Lookup("dsn"))
 	_ = viper.BindPFlag("dir", rootCmd.PersistentFlags().Lookup("dir"))
 	_ = viper.BindPFlag("table", rootCmd.PersistentFlags().Lookup("table"))
+	_ = viper.BindPFlag("driver", rootCmd.PersistentFlags().Lookup("driver"))
 
 	// 在 cobra 命令执行前初始化配置
 	cobra.OnInitialize(initConfig)
@@ -358,7 +370,9 @@ func upgradeTenant(ctx context.Context, ti tenant.TenantInfo, migrationsDir, tab
 		return errors.New("租户配置不完整：id 与 dsn 均为必填")
 	}
 
-	db, err := sql.Open("mysql", ti.DSN)
+	drvType := resolveDriverType()
+
+	db, err := sql.Open(sqlDriverName(drvType), ti.DSN)
 	if err != nil {
 		return fmt.Errorf("连接数据库失败: %w", err)
 	}
@@ -369,7 +383,7 @@ func upgradeTenant(ctx context.Context, ti tenant.TenantInfo, migrationsDir, tab
 
 	migrator := migration.NewDefaultMigrator(
 		migration.NewFileSystemLoader(os.DirFS(migrationsDir), "."),
-		mysql.NewDriver(db, tableName),
+		newMigrationDriver(drvType, db, tableName),
 	)
 
 	err = migrator.Up(ctx)
@@ -394,7 +408,9 @@ func runDryRun(ctx context.Context) {
 		log.Fatal("错误: 数据库 DSN 不能为空，请在 meteor-forge.yaml 中配置 dsn、设置 METEOR_DSN 或通过 --dsn 传入")
 	}
 
-	db, err := sql.Open("mysql", dbDsn)
+	drvType := resolveDriverType()
+
+	db, err := sql.Open(sqlDriverName(drvType), dbDsn)
 	if err != nil {
 		log.Fatalf("连接数据库失败: %v", err)
 	}
@@ -403,7 +419,7 @@ func runDryRun(ctx context.Context) {
 		log.Fatalf("Ping 数据库失败: %v", err)
 	}
 
-	driver := mysql.NewDriver(db, viper.GetString("table"))
+	driver := newMigrationDriver(drvType, db, viper.GetString("table"))
 	loader := migration.NewFileSystemLoader(os.DirFS(viper.GetString("dir")), ".")
 
 	scripts, err := loader.LoadScripts(ctx)
@@ -471,6 +487,7 @@ func initConfig() {
 	// 兜底默认值（注意 dsn 故意不设默认：连库地址必须显式给出，防止误连测试库）
 	viper.SetDefault("dir", "./migrations")
 	viper.SetDefault("table", "schema_migrations")
+	viper.SetDefault("driver", driverMySQL)
 
 	if err := viper.ReadInConfig(); err != nil {
 		var notFound viper.ConfigFileNotFoundError
@@ -485,6 +502,52 @@ func initConfig() {
 	}
 }
 
+// resolveDriverType 从 viper 读取并校验 driver 类型，非法值直接退出。
+func resolveDriverType() string {
+	d := viper.GetString("driver")
+	switch d {
+	case driverMySQL, driverPostgres, driverSQLite, driverClickHouse:
+		return d
+	case "":
+		return driverMySQL
+	default:
+		log.Fatalf("错误: 不支持的 driver 类型 %q，可选值: mysql | postgres | sqlite | clickhouse", d)
+		return ""
+	}
+}
+
+// sqlDriverName 将内部驱动类型映射到 database/sql 的注册名。
+func sqlDriverName(driverType string) string {
+	switch driverType {
+	case driverMySQL:
+		return "mysql"
+	case driverPostgres:
+		return "pgx"
+	case driverSQLite:
+		return "sqlite"
+	case driverClickHouse:
+		return "clickhouse"
+	default:
+		return "mysql"
+	}
+}
+
+// newMigrationDriver 根据驱动类型构造对应的 migration.Driver 实例。
+func newMigrationDriver(driverType string, db *sql.DB, tableName string) migration.Driver {
+	switch driverType {
+	case driverMySQL:
+		return mysql.NewDriver(db, tableName)
+	case driverPostgres:
+		return postgres.NewDriver(db, tableName)
+	case driverSQLite:
+		return sqlite.NewDriver(db, tableName)
+	case driverClickHouse:
+		return clickhouse.NewDriver(db, tableName)
+	default:
+		return mysql.NewDriver(db, tableName)
+	}
+}
+
 // initMigrator 从 viper 获取最终合并值（flag > env > 配置文件 > 默认值）并组装迁移引擎。
 // 注意 DSN 参数：multiStatements=true 允许脚本包含多条语句，
 // parseTime=true 用于正确读取 applied_at 时间列。
@@ -494,8 +557,9 @@ func initMigrator() migration.Migrator {
 		log.Fatal("错误: 数据库 DSN 不能为空，请在 meteor-forge.yaml 中配置 dsn、设置 METEOR_DSN 或通过 --dsn 传入")
 	}
 
-	// 1. 连接数据库
-	db, err := sql.Open("mysql", dbDsn)
+	drvType := resolveDriverType()
+
+	db, err := sql.Open(sqlDriverName(drvType), dbDsn)
 	if err != nil {
 		log.Fatalf("连接数据库失败: %v", err)
 	}
@@ -503,13 +567,10 @@ func initMigrator() migration.Migrator {
 		log.Fatalf("Ping 数据库失败: %v", err)
 	}
 
-	// 2. 初始化 Driver
-	dbDriver := mysql.NewDriver(db, viper.GetString("table"))
+	dbDriver := newMigrationDriver(drvType, db, viper.GetString("table"))
 
-	// 3. 初始化 Loader
 	scriptFS := os.DirFS(viper.GetString("dir"))
 	loader := migration.NewFileSystemLoader(scriptFS, ".")
 
-	// 4. 返回状态机引擎
 	return migration.NewDefaultMigrator(loader, dbDriver)
 }

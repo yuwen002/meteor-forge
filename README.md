@@ -67,12 +67,13 @@ migrations/
 
 ```yaml
 # meteor-forge.yaml
+driver: "mysql"   # 可选: mysql | postgres | sqlite | clickhouse，默认 mysql
 dsn: "root:123456@tcp(127.0.0.1:3306)/test_db?charset=utf8mb4&parseTime=true&multiStatements=true"
 dir: "./migrations"
 table: "schema_migrations"
 ```
 
-配置优先级（Viper）：**显式命令行参数 > 环境变量（`METEOR_DSN` / `METEOR_DIR` / `METEOR_TABLE`）> 配置文件 > 内置默认值**。也支持 `meteor-forge.json` / `.toml`，或用 `--config` 指定任意路径（如多环境切换：`--config=prod.yaml`）。配置文件不存在时静默回退到 flag，完全基于参数的旧用法不受影响；但 `--config` 显式指定的路径若不存在会直接报错，避免拼写错误被静默吞掉。
+配置优先级（Viper）：**显式命令行参数 > 环境变量（`METEOR_DSN` / `METEOR_DIR` / `METEOR_TABLE` / `METEOR_DRIVER`）> 配置文件 > 内置默认值**。也支持 `meteor-forge.json` / `.toml`，或用 `--config` 指定任意路径（如多环境切换：`--config=prod.yaml`）。配置文件不存在时静默回退到 flag，完全基于参数的旧用法不受影响；但 `--config` 显式指定的路径若不存在会直接报错，避免拼写错误被静默吞掉。
 
 ### 4. 使用 CLI 执行管理命令
 
@@ -92,7 +93,20 @@ meteor-forge down     # 回滚最近一次迁移
 meteor-forge up --dsn="root:123456@tcp(127.0.0.1:3306)/other_db?charset=utf8mb4&parseTime=true&multiStatements=true"
 ```
 
-常用参数：`-d/--dsn`、`-D/--dir`、`-t/--table`、`--config`。运行 `meteor-forge --help` 查看全部帮助。
+**多数据库驱动支持（`--driver`）：**
+
+```bash
+# PostgreSQL（驱动 pgx）
+meteor-forge up --driver postgres --dsn="postgres://user:pass@localhost:5432/testdb?sslmode=disable"
+
+# SQLite（纯 Go，零依赖）
+meteor-forge up --driver sqlite --dsn="./mydb.db"
+
+# ClickHouse
+meteor-forge up --driver clickhouse --dsn="clickhouse://user:pass@localhost:9000/default"
+```
+
+常用参数：`-d/--dsn`、`-D/--dir`、`-t/--table`、`--config`、`--driver`。运行 `meteor-forge --help` 查看全部帮助。
 
 ### 5. 生产级特性
 
