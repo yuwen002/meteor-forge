@@ -1,0 +1,18 @@
+pkg/tenant/discovery.go
+  h_a3f313f3d96276 10,13-14,25-26,30,32-64
+cmd/main.go
+  h_a3f313f3d96276 67,248,374-377
+meteor-forge.yaml.example
+  h_a3f313f3d96276 14,19-23,30-31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "26.9.9",
+  "base_commit_sha": "2984cb22f1e0b5a1d9cfc7feab37c989e2aa0806",
+  "prompts": {},
+  "humans": {
+    "h_a3f313f3d96276": {
+      "author": "liuxingyu <yuwen002@163.com>"
+    }
+  }
+}
