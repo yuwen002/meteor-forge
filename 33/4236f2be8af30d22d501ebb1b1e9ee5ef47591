@@ -1,0 +1,28 @@
+pkg/driver/sqlite/driver.go
+  h_a3f313f3d96276 82
+pkg/sharding/query_builder_test.go
+  h_a3f313f3d96276 135,812
+pkg/driver/postgres/driver.go
+  h_a3f313f3d96276 84
+.golangci.yml
+  h_a3f313f3d96276 1-2,7,12-16
+pkg/migration/loader.go
+  h_a3f313f3d96276 76-77,79
+cmd/main.go
+  h_a3f313f3d96276 385
+pkg/sharding/table_manager.go
+  h_a3f313f3d96276 48
+pkg/sharding/query_builder.go
+  h_a3f313f3d96276 1252
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "26.9.9",
+  "base_commit_sha": "334236f2be8af30d22d501ebb1b1e9ee5ef47591",
+  "prompts": {},
+  "humans": {
+    "h_a3f313f3d96276": {
+      "author": "liuxingyu <yuwen002@163.com>"
+    }
+  }
+}
