@@ -1,0 +1,18 @@
+.golangci.yml
+  h_a3f313f3d96276 1-33
+pkg/driver/sqlite/driver_test.go
+  h_a3f313f3d96276 1-267
+.github/workflows/ci.yml
+  h_a3f313f3d96276 1-68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "26.9.9",
+  "base_commit_sha": "792ec21b88a9d5421dd24c1c33bf020883c1a0b7",
+  "prompts": {},
+  "humans": {
+    "h_a3f313f3d96276": {
+      "author": "liuxingyu <yuwen002@163.com>"
+    }
+  }
+}
