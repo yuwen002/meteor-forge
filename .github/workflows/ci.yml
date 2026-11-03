@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go: ["1.25", "1.26"]
+        go: ["1.26"]
 
     steps:
       - name: Checkout
@@ -38,12 +38,10 @@ jobs:
           go test ./... -count=1 -cover -coverprofile=coverage.out -covermode=atomic
 
       - name: Coverage summary
-        if: matrix.go == '1.26'
         run: |
           go tool cover -func=coverage.out | tail -1
 
       - name: Upload coverage artifact
-        if: matrix.go == '1.26'
         uses: actions/upload-artifact@v4
         with:
           name: coverage
