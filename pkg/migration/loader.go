@@ -73,9 +73,10 @@ func (l *FileSystemLoader) LoadScripts(ctx context.Context) ([]*Script, error) {
 		}
 		content := string(contentBytes)
 
-		if ext == "up" {
+		switch ext {
+		case "up":
 			script.UpSQL = content
-		} else if ext == "down" {
+		case "down":
 			script.DownSQL = content
 		}
 

@@ -1196,10 +1196,6 @@ func applyGroupByMerge(merged reflect.Value, shardResults []reflect.Value, group
 		groupKeys[i] = strings.TrimSpace(groupKeys[i])
 	}
 
-	type keyRow struct {
-		key  string
-		elem reflect.Value
-	}
 	keyMap := make(map[string]reflect.Value)
 
 	for _, r := range shardResults {
@@ -1253,7 +1249,7 @@ func buildGroupKey(row reflect.Value, groupKeys []string) string {
 				b.WriteByte('0')
 			}
 		default:
-			b.WriteString(fmt.Sprintf("%v", f.Interface()))
+			fmt.Fprintf(&b, "%v", f.Interface())
 		}
 	}
 	return b.String()

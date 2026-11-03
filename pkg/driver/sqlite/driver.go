@@ -79,7 +79,7 @@ func (d *SQLiteDriver) ApplyMigration(ctx context.Context, script *migration.Scr
 	if err != nil {
 		return fmt.Errorf("sqlite begin transaction failed: %w", err)
 	}
-	defer tx.Rollback()
+	defer tx.Rollback() //nolint:errcheck
 
 	targetSQL := script.UpSQL
 	if isRollback {

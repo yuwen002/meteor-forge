@@ -382,7 +382,7 @@ func upgradeTenant(ctx context.Context, ti tenant.TenantInfo, migrationsDir, tab
 	}
 	defer db.Close()
 	if err := db.Ping(); err != nil {
-		return fmt.Errorf("Ping 数据库失败: %w", err)
+		return fmt.Errorf("ping 数据库失败: %w", err)
 	}
 
 	migrator := migration.NewDefaultMigrator(

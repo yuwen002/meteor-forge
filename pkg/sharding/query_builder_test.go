@@ -132,7 +132,7 @@ func TestParallelQueryConcurrencyLimit(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 		atomic.AddInt32(&current, -1)
 		mu.Lock()
-		mu.Unlock()
+		mu.Unlock() //nolint:staticcheck // SA2001: intentional empty lock cycle to test contention
 		return 1, nil
 	})
 	if err != nil {
@@ -809,7 +809,7 @@ func TestCreateInBatchesParameterValidation(t *testing.T) {
 		}
 	})
 	t.Run("no time field error", func(t *testing.T) {
-		var records []struct {
+		var records []struct { //nolint:prealloc // test code
 			Name string
 		}
 		records = append(records, struct{ Name string }{"test"})

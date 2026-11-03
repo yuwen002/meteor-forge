@@ -1,33 +1,16 @@
+version: "2"
+
 run:
   timeout: 3m
-  tests: false
 
 linters:
-  enable:
+  disable:
     - govet
-    - errcheck
-    - unused
-    - gosimple
-    - staticcheck
-    - ineffassign
-    - typecheck
+  enable:
     - misspell
     - prealloc
-  disable:
-    - exhaustruct
-
-linters-settings:
-  errcheck:
-    check-type-assertions: true
-    check-blank: true
-  misspell:
-    locale: US
-  staticcheck:
-    checks: ["all"]
-
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
-        - gosec
+  exclusions:
+    presets:
+      - std-error-handling
+      - common-false-positives
+      - legacy

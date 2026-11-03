@@ -81,7 +81,7 @@ func (d *PostgresDriver) ApplyMigration(ctx context.Context, script *migration.S
 	if err != nil {
 		return fmt.Errorf("postgres begin transaction failed: %w", err)
 	}
-	defer tx.Rollback()
+	defer tx.Rollback() //nolint:errcheck
 
 	targetSQL := script.UpSQL
 	if isRollback {
