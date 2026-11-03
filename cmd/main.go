@@ -62,8 +62,9 @@ const (
 
 // tenantEntry 对应配置文件中 tenants 列表的一项（tenants-up 命令使用）
 type tenantEntry struct {
-	Name string `mapstructure:"name"`
-	DSN  string `mapstructure:"dsn"`
+	Name   string `mapstructure:"name"`
+	DSN    string `mapstructure:"dsn"`
+	Driver string `mapstructure:"driver"`
 }
 
 func main() {
@@ -244,7 +245,7 @@ func main() {
 
 			list := make([]tenant.TenantInfo, 0, len(tenants))
 			for _, t := range tenants {
-				list = append(list, tenant.TenantInfo{ID: t.Name, DSN: t.DSN})
+				list = append(list, tenant.TenantInfo{ID: t.Name, DSN: t.DSN, Driver: t.Driver})
 			}
 			migrateTenants(context.Background(), list)
 		},
@@ -370,7 +371,10 @@ func upgradeTenant(ctx context.Context, ti tenant.TenantInfo, migrationsDir, tab
 		return errors.New("租户配置不完整：id 与 dsn 均为必填")
 	}
 
-	drvType := resolveDriverType()
+	drvType := ti.Driver
+	if drvType == "" {
+		drvType = resolveDriverType()
+	}
 
 	db, err := sql.Open(sqlDriverName(drvType), ti.DSN)
 	if err != nil {

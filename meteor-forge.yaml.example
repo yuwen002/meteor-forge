@@ -11,17 +11,23 @@ dir: "./migrations"
 table: "schema_migrations"
 
 # 多租户批量并发升级配置（tenants-up 命令使用；dir/table 沿用上方全局设置）
+# 每个 tenant 可单独指定 driver（为空则用全局 driver 字段），支持混合驱动场景。
 tenants:
   - name: "tenant_alpha"
     dsn: "root:password@tcp(127.0.0.1:3306)/db_tenant_alpha?charset=utf8mb4&parseTime=true&multiStatements=true"
   - name: "tenant_beta"
-    dsn: "root:password@tcp(127.0.0.1:3306)/db_tenant_beta?charset=utf8mb4&parseTime=true&multiStatements=true"
+    dsn: "postgres://user:pass@localhost:5432/db_tenant_beta?sslmode=disable"
+    driver: "postgres"
+  - name: "tenant_gamma"
+    dsn: "./data/tenant_gamma.db"
+    driver: "sqlite"
 
 # 控制平面数据库 DSN（tenants-sync 命令使用）：启动时从库中 t_tenants 表动态发现活跃租户，
 # SaaS 水平扩展新增租户时无需修改本文件的 tenants 列表。控制表结构：
 #   CREATE TABLE t_tenants (
 #       tenant_id VARCHAR(64) PRIMARY KEY,
 #       dsn       VARCHAR(512) NOT NULL,
-#       status    VARCHAR(16) NOT NULL DEFAULT 'active'  -- 仅 'active' 会被迁移
+#       status    VARCHAR(16) NOT NULL DEFAULT 'active', -- 仅 'active' 会被迁移
+#       driver    VARCHAR(32)                           -- 可选：同 tenants 条目，NULL 表示全局默认
 #   );
 control_dsn: "root:password@tcp(127.0.0.1:3306)/control_db?charset=utf8mb4&parseTime=true&multiStatements=true"

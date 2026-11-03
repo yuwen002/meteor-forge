@@ -7,9 +7,11 @@ import (
 )
 
 // TenantInfo 表示控制平面（Control Plane）数据库中发现的一个租户及其接入信息。
+// Driver 为空时调用方应使用全局默认驱动类型（通常由 CLI --driver 指定）。
 type TenantInfo struct {
-	ID  string // 租户唯一标识
-	DSN string // 该租户数据库的连接串（MySQL DSN 格式）
+	ID     string // 租户唯一标识
+	DSN    string // 该租户数据库的连接串（Driver 对应的 DSN 格式）
+	Driver string // 可选，该租户的数据库类型 (mysql/postgres/sqlite/clickhouse)；空串表示使用全局默认
 }
 
 // LoadActiveTenants 从主控数据库（Control DB）中动态发现活跃租户，
@@ -20,11 +22,46 @@ type TenantInfo struct {
 //	CREATE TABLE t_tenants (
 //	    tenant_id VARCHAR(64) PRIMARY KEY,
 //	    dsn       VARCHAR(512) NOT NULL,
-//	    status    VARCHAR(16) NOT NULL DEFAULT 'active'
+//	    status    VARCHAR(16) NOT NULL DEFAULT 'active',
+//	    driver    VARCHAR(32)           -- 可选：mysql/postgres/sqlite/clickhouse；NULL 或空串表示用全局默认
 //	);
 //
 // 仅返回 status = 'active' 的租户；挂起/注销的租户自动跳过。
+// driver 列为可选：若控制表无 driver 列，返回的 TenantInfo.Driver 为空串，由调用方使用全局默认。
 func LoadActiveTenants(ctx context.Context, controlDB *sql.DB) ([]TenantInfo, error) {
+	tenants, err := queryTenantsWithDriver(ctx, controlDB)
+	if err == nil {
+		return tenants, nil
+	}
+
+	return queryTenantsLegacy(ctx, controlDB)
+}
+
+func queryTenantsWithDriver(ctx context.Context, controlDB *sql.DB) ([]TenantInfo, error) {
+	rows, err := controlDB.QueryContext(ctx, "SELECT tenant_id, dsn, COALESCE(driver, '') FROM t_tenants WHERE status = 'active' ORDER BY tenant_id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tenants []TenantInfo
+	for rows.Next() {
+		var t TenantInfo
+		if err := rows.Scan(&t.ID, &t.DSN, &t.Driver); err != nil {
+			return nil, fmt.Errorf("tenant: scan tenant record failed: %w", err)
+		}
+		if t.ID == "" || t.DSN == "" {
+			return nil, fmt.Errorf("tenant: found record with empty id or dsn (id=%q)", t.ID)
+		}
+		tenants = append(tenants, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("tenant: iterate tenant rows failed: %w", err)
+	}
+	return tenants, nil
+}
+
+func queryTenantsLegacy(ctx context.Context, controlDB *sql.DB) ([]TenantInfo, error) {
 	rows, err := controlDB.QueryContext(ctx, "SELECT tenant_id, dsn FROM t_tenants WHERE status = 'active' ORDER BY tenant_id")
 	if err != nil {
 		return nil, fmt.Errorf("tenant: query active tenants failed: %w", err)
@@ -37,7 +74,6 @@ func LoadActiveTenants(ctx context.Context, controlDB *sql.DB) ([]TenantInfo, er
 		if err := rows.Scan(&t.ID, &t.DSN); err != nil {
 			return nil, fmt.Errorf("tenant: scan tenant record failed: %w", err)
 		}
-		// 防御：跳过关键字段为空的脏数据，避免后续以无效 DSN 建连
 		if t.ID == "" || t.DSN == "" {
 			return nil, fmt.Errorf("tenant: found record with empty id or dsn (id=%q)", t.ID)
 		}
