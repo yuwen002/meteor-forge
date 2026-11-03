@@ -8,7 +8,24 @@ import (
 	"time"
 )
 
-// Scheduler 管理分片表的定时创建任务
+// Scheduler 定时提前创建未来需要的分片表。
+//
+// 支持所有时间分片类型（ByYear / ByQuarter / ByMonth / ByWeek / ByTenDay）和
+// ID 哈希分片（ByIDHash，枚举全部 HashShards 张表）。
+// ID 范围分片（ByIDRange）不支持提前建表——分片取决于运行时业务 ID。
+//
+// 调度逻辑：
+//   - 启动时立即执行一次 createShardTables（不等到下一次 tick）
+//   - 之后按 interval 周期执行
+//   - 每个分片类型会根据 monthsAhead 换算出需要提前创建的范围
+//
+// 使用示例：
+//
+//	stm := sharding.NewShardTableManager(...)
+//	rule := sharding.NewShardRule(sharding.ByMonth, "orders")
+//	scheduler := sharding.NewScheduler(stm, rule, 24*time.Hour, 6)
+//	scheduler.Start()        // 立即执行一次 + 每天检查一次
+//	defer scheduler.Stop()   // 应用退出时优雅停止
 type Scheduler struct {
 	manager     *ShardTableManager
 	shardRule   *ShardRule
@@ -18,8 +35,19 @@ type Scheduler struct {
 	wg          sync.WaitGroup
 }
 
-// NewScheduler 创建一个新的分片表调度器
-// monthsAhead 表示提前多少个月（适用于所有时间分片类型的换算）
+// NewScheduler 创建一个分片表调度器。
+//
+// 参数：
+//   - manager: ShardTableManager 实例，用于检查/创建分片表
+//   - shardRule: ShardRule 实例，决定了分片表的命名规则
+//   - interval: 定时检查间隔（如 24*time.Hour 表示每天检查一次）
+//   - monthsAhead: 提前多少个月创建分片表（适用于所有时间分片类型的换算）；
+//     对于 ByYear 会换算为 ceil(monthsAhead/12)+2 年，ByMonth 会换算为 monthsAhead+2 月
+//
+// 示例：
+//
+//	scheduler := sharding.NewScheduler(stm, rule, time.Hour, 3)
+//	// 每小时检查一次，提前 3 个月的分片表（对于 ByMonth 就是提前 5 个月，因为 monthsAhead+2）
 func NewScheduler(manager *ShardTableManager, shardRule *ShardRule, interval time.Duration, monthsAhead int) *Scheduler {
 	return &Scheduler{
 		manager:     manager,
@@ -30,7 +58,13 @@ func NewScheduler(manager *ShardTableManager, shardRule *ShardRule, interval tim
 	}
 }
 
-// Start 启动调度器（立即执行一次 + 按 interval 周期执行）
+// Start 启动调度器。
+// 内部会先立即执行一次 createShardTables，然后按 interval 周期运行。
+// 非阻塞调用，内部起 goroutine。
+//
+// 示例：
+//
+//	scheduler.Start()
 func (s *Scheduler) Start() {
 	s.wg.Add(1)
 	go func() {
@@ -52,7 +86,12 @@ func (s *Scheduler) Start() {
 	}()
 }
 
-// Stop 停止调度器
+// Stop 停止调度器。
+// 会等待内部 goroutine 结束再返回，应在应用退出时调用。
+//
+// 示例：
+//
+//	scheduler.Stop()
 func (s *Scheduler) Stop() {
 	close(s.stopChan)
 	s.wg.Wait()
@@ -188,7 +227,14 @@ func (s *Scheduler) createIDHashTables(ctx context.Context) {
 	}
 }
 
-// GetNextShardTable 获取下一个分片表名（非 ID 分片时有效）
+// GetNextShardTable 获取"下一个"分片表的表名。
+// 对于 ByMonth 就是下个月的表，ByQuarter 就是下季度的表，依此类推。
+// ID 分片类型（ByIDHash/ByIDRange）无意义，返回空字符串和 nil。
+//
+// 示例：
+//
+//	next, _ := scheduler.GetNextShardTable()
+//	log.Println("下一个分片表:", next) // orders_202612
 func (s *Scheduler) GetNextShardTable() (string, error) {
 	if s.shardRule.Type == ByIDHash || s.shardRule.Type == ByIDRange {
 		return "", nil
@@ -209,7 +255,13 @@ func (s *Scheduler) GetNextShardTable() (string, error) {
 	}
 }
 
-// GetCurrentShardTable 获取当前分片表名（非 ID 分片时有效）
+// GetCurrentShardTable 获取"当前"分片表的表名。
+// ID 分片类型返回空字符串和 nil。
+//
+// 示例：
+//
+//	current, _ := scheduler.GetCurrentShardTable()
+//	log.Println("当前分片表:", current) // orders_202611
 func (s *Scheduler) GetCurrentShardTable() (string, error) {
 	if s.shardRule.Type == ByIDHash || s.shardRule.Type == ByIDRange {
 		return "", nil
@@ -217,7 +269,14 @@ func (s *Scheduler) GetCurrentShardTable() (string, error) {
 	return s.shardRule.GetTableNameByTime(time.Now())
 }
 
-// ListAllShardTables 列出数据库中实际已存在的所有分片表
+// ListAllShardTables 列出数据库中实际存在的所有分片表（以 baseName 开头）。
+// 与 GetCurrentShardTable/GetNextShardTable（计算出来的预期表名）不同，
+// 这里返回的是数据库里真实存在的。
+//
+// 示例：
+//
+//	tables, _ := scheduler.ListAllShardTables()
+//	log.Println("现有分片表:", tables)
 func (s *Scheduler) ListAllShardTables() ([]string, error) {
 	return s.manager.ListShardTables(context.Background())
 }

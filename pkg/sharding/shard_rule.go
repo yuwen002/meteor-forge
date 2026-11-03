@@ -7,40 +7,52 @@ import (
 	"time"
 )
 
-// ShardType 定义分片策略类型
+// ShardType 是分片策略的枚举类型。
+// 支持 7 种策略：5 种时间分片 + 2 种 ID 分片。
 type ShardType string
 
-// 定义不同的分片策略常量
 const (
-	ByYear    ShardType = "year"     // 按年分片
-	ByQuarter ShardType = "quarter"  // 按季度分片
-	ByMonth   ShardType = "month"    // 按月分片
-	ByWeek    ShardType = "week"     // 按周分片
-	ByTenDay  ShardType = "ten_day"  // 按10天分片
-	ByIDHash  ShardType = "id_hash"  // 按ID哈希分片
-	ByIDRange ShardType = "id_range" // 按ID范围分片
+	ByYear    ShardType = "year"     // 按年分片，表名格式: {base}_{YYYY}
+	ByQuarter ShardType = "quarter"  // 按季度分片，表名格式: {base}_{YYYY}Q{n}
+	ByMonth   ShardType = "month"    // 按月分片，表名格式: {base}_{YYYY}{MM}
+	ByWeek    ShardType = "week"     // 按周分片，表名格式: {base}_{YYYY}W{WW}（使用 ISOWeek）
+	ByTenDay  ShardType = "ten_day"  // 按旬分片，表名格式: {base}_{YYYY}{MM}_{1|2|3}（1-10/11-20/21-月底）
+	ByIDHash  ShardType = "id_hash"  // 按 ID 哈希分片，表名格式: {base}_{0..HashShards-1}（crc32 取模）
+	ByIDRange ShardType = "id_range" // 按 ID 范围分片，表名格式: {base}_{n}（id / RangeSize）
 )
 
-// ShardRule 定义分片规则
+// ShardRule 定义分片规则，是整个分片路由系统的核心。
+// 写入路由时用 GetTableNameByTime / GetTableNameByID 得到单目标分片表；
+// 跨片查询时用 GetTableNamesByTimeRange / GetTableNamesByIDRange 枚举出可能命中的所有分片表。
+//
+// 两种枚举方法（范围）与单点路由方法的分片公式严格一致，
+// 保证写入到某张表的数据，查询范围枚举一定包含这张表。
+//
+// 使用示例：
+//
+//	rule := sharding.NewShardRule(sharding.ByMonth, "orders")
+//	table, _ := rule.GetTableNameByTime(time.Now()) // → orders_202611
+//
+//	hashRule := sharding.NewShardRule(sharding.ByIDHash, "users", sharding.WithHashShards(32))
+//	table, _ := hashRule.GetTableNameByID(123456789) // → users_5
 type ShardRule struct {
-	Type       ShardType // 使用的分片策略
-	TableName  string    // 基础表名，将作为分表的前缀
-	HashShards int       // 哈希分表数量（用于 ByIDHash 策略）
-	RangeSize  int64     // 每个分表存储的 ID 数量（用于 ByIDRange 策略）
+	Type       ShardType // 分片策略类型
+	TableName  string    // 基础表名，作为分片表名的前缀
+	HashShards int       // 哈希分片数量（仅 ByIDHash 使用），默认 16
+	RangeSize  int64     // 每个范围分片的 ID 容量（仅 ByIDRange 使用），默认 1_000_000
 }
 
-// Option 定义可选参数类型，用于函数式选项模式
-// 这种模式允许灵活地配置 ShardRule 实例
+// Option 是函数式选项类型，用于 NewShardRule 的可选参数。
+//
+// 示例：
+//
+//	NewShardRule(ByIDHash, "users", WithHashShards(64))
 type Option func(*ShardRule)
 
-// WithHashShards 设置哈希分片数量
-// 参数:
-//   - n: 要设置的哈希分片数量，必须大于0才会生效
+// WithHashShards 设置哈希分片数量（ByIDHash 策略专用）。
+// 传入 n <= 0 时不生效（使用默认值 16）。
 //
-// 返回值:
-//   - Option: 返回一个配置函数，该函数会设置 ShardRule 的 HashShards 字段
-//
-// 使用示例:
+// 示例：
 //
 //	rule := NewShardRule(ByIDHash, "users", WithHashShards(32))
 func WithHashShards(n int) Option {
@@ -51,14 +63,10 @@ func WithHashShards(n int) Option {
 	}
 }
 
-// WithRangeSize 设置范围分片的大小
-// 参数:
-//   - size: 每个分片存储的ID数量，必须大于0才会生效
+// WithRangeSize 设置范围分片大小（ByIDRange 策略专用）。
+// 传入 size <= 0 时不生效（使用默认值 1_000_000）。
 //
-// 返回值:
-//   - Option: 返回一个配置函数，该函数会设置 ShardRule 的 RangeSize 字段
-//
-// 使用示例:
+// 示例：
 //
 //	rule := NewShardRule(ByIDRange, "orders", WithRangeSize(5000))
 func WithRangeSize(size int64) Option {
@@ -69,62 +77,76 @@ func WithRangeSize(size int64) Option {
 	}
 }
 
-// NewShardRule 创建并返回一个新的 ShardRule 实例
-// 参数:
-//   - shardType: 分片类型，如 ByYear, ByIDHash 等
-//   - tableName: 基础表名
-//   - opts: 可选的配置函数，用于设置分片参数
+// NewShardRule 创建一个 ShardRule 实例。
+// 自动填充默认值：HashShards = 16，RangeSize = 1_000_000。
+// 对于非对应策略，这些字段不会被读取，不会造成问题。
 //
-// 返回值:
-//   - *ShardRule: 初始化后的分片规则实例
+// 参数：
+//   - shardType: 分片策略（ByYear / ByMonth / ByIDHash 等）
+//   - tableName: 基础表名（"orders"、"users" 等，不含后缀）
+//   - opts: 可变参数，ByIDHash 用 WithHashShards(n)，ByIDRange 用 WithRangeSize(n)
 //
-// 使用示例:
+// 返回值：
+//   - *ShardRule: 初始化好的分片规则
 //
-//	// 创建一个按月分片的规则
-//	rule1 := NewShardRule(ByMonth, "logs")
+// 示例：
 //
-//	// 创建一个带自定义参数的哈希分片规则
-//	rule2 := NewShardRule(ByIDHash, "users", WithHashShards(64))
+//	// 按月分片：写入 orders_202611, 查询 2026-10~2026-11 会枚举出 orders_202610, orders_202611
+//	rule1 := sharding.NewShardRule(sharding.ByMonth, "orders")
+//
+//	// 32 个哈希分片：写入 users_0 ~ users_31
+//	rule2 := sharding.NewShardRule(sharding.ByIDHash, "users", sharding.WithHashShards(32))
+//
+//	// 每 5000 个 ID 一张表：写入 orders_0, orders_1, orders_2, ...
+//	rule3 := sharding.NewShardRule(sharding.ByIDRange, "orders", sharding.WithRangeSize(5000))
 func NewShardRule(shardType ShardType, tableName string, opts ...Option) *ShardRule {
 	r := &ShardRule{
 		Type:       shardType,
 		TableName:  tableName,
-		HashShards: 16,      // 默认哈希分片数，适用于 ByIDHash 策略
-		RangeSize:  1000000, // 默认范围分片大小，适用于 ByIDRange 策略
+		HashShards: 16,
+		RangeSize:  1000000,
 	}
-	// 应用所有选项配置
 	for _, opt := range opts {
 		opt(r)
 	}
 	return r
 }
 
-// TimeRange 表示一个时间范围，用于批量获取表名
+// TimeRange 表示一个时间闭区间 [Start, End]，用于 GetTableNamesByTimeRange 的输入。
+// Start 和 End 都包含在内；Start 晚于 End 时调用会返回 error。
 type TimeRange struct {
-	Start time.Time // 开始时间（包含）
-	End   time.Time // 结束时间（包含）
+	Start time.Time
+	End   time.Time
 }
 
-// IDRange 表示一个ID范围，用于批量获取表名
+// IDRange 表示一个 ID 闭区间 [Start, End]，用于 GetTableNamesByIDRange 的输入。
+// Start 和 End 都包含在内；Start > End 时调用会返回 error。
 type IDRange struct {
-	Start int64 // 起始ID（包含）
-	End   int64 // 结束ID（包含）
+	Start int64
+	End   int64
 }
 
-// GetTableNameByTime 根据“时间分片”规则返回实际的表名
-// 适用于: ByYear / ByQuarter / ByMonth / ByWeek / ByTenDay
+// GetTableNameByTime 根据时间分片策略（ByYear/ByQuarter/ByMonth/ByWeek/ByTenDay）计算
+// 某个时间点应该落到哪张分片表。
 //
-// 参数:
-//   - t: 时间对象
+// 不支持的分片类型会返回 error。
 //
-// 返回值:
+// 参数：
+//   - t: 用于路由的时间点
+//
+// 返回值：
 //   - string: 分片表名
+//   - error: 分片类型不匹配时返回
 //
-// 示例:
+// 示例：
 //
-//	rule := NewShardRule(ByMonth, "orders", 0, 0)
-//	table := rule.GetTableNameByTime(time.Now())
-//	// 结果可能是: orders_202508
+//	rule := sharding.NewShardRule(sharding.ByMonth, "orders")
+//	table, _ := rule.GetTableNameByTime(time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC))
+//	fmt.Println(table) // orders_202611
+//
+//	rule2 := sharding.NewShardRule(sharding.ByWeek, "logs")
+//	table2, _ := rule2.GetTableNameByTime(time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC))
+//	fmt.Println(table2) // logs_2026W45（ISO 周编号）
 func (r *ShardRule) GetTableNameByTime(t time.Time) (string, error) {
 	switch r.Type {
 	case ByYear:
@@ -156,20 +178,27 @@ func (r *ShardRule) GetTableNameByTime(t time.Time) (string, error) {
 	}
 }
 
-// GetTableNameByID 根据“ID 分片”规则返回实际的表名
-// 适用于: ByIDHash / ByIDRange
+// GetTableNameByID 根据 ID 分片策略（ByIDHash / ByIDRange）计算某个 ID 应该落到哪张分片表。
 //
-// 参数:
-//   - auto_id: 业务数据的唯一 ID
+// ByIDHash 使用 crc32(id 十进制字符串) % HashShards；
+// ByIDRange 使用 id / RangeSize，保证相同范围写入同一张表。
 //
-// 返回值:
+// 参数：
+//   - id: 业务数据的唯一 ID
+//
+// 返回值：
 //   - string: 分片表名
+//   - error: 分片类型不匹配时返回
 //
-// 示例:
+// 示例：
 //
-//	rule := NewShardRule(ByIDHash, "users", 32, 0)
-//	table := rule.GetTableNameByID(123456789)
-//	// 结果可能是: users_5
+//	rule := sharding.NewShardRule(sharding.ByIDHash, "users", sharding.WithHashShards(32))
+//	table, _ := rule.GetTableNameByID(123456789)
+//	fmt.Println(table) // users_5（crc32(...) % 32）
+//
+//	rule2 := sharding.NewShardRule(sharding.ByIDRange, "orders", sharding.WithRangeSize(1000))
+//	table2, _ := rule2.GetTableNameByID(2500)
+//	fmt.Println(table2) // orders_2
 func (r *ShardRule) GetTableNameByID(id int64) (string, error) {
 	switch r.Type {
 	case ByIDHash:
@@ -191,13 +220,27 @@ func (r *ShardRule) GetTableNameByID(id int64) (string, error) {
 	}
 }
 
-// GetTableNamesByTimeRange 根据时间范围获取所有相关的表名
-// 参数:
-//   - tr: 时间范围
+// GetTableNamesByTimeRange 根据时间范围枚举出所有可能命中的分片表名。
+// 用于跨分片查询场景，QueryBuilder.TimeRange 内部就是调这个方法。
 //
-// 返回值:
-//   - []string: 包含时间范围内所有可能的分片表名
-//   - error: 如果分片类型不是时间类型或时间范围无效
+// 枚举算法保证：在 [tr.Start, tr.End] 区间内任意一天调用 GetTableNameByTime 的结果，
+// 一定在本方法返回的列表中。
+//
+// 参数：
+//   - tr: 时间闭区间 [Start, End]
+//
+// 返回值：
+//   - []string: 时间范围内涉及到的所有分片表名（按时间/分片顺序排列，不会重复）
+//   - error: Start 晚于 End 或分片类型不匹配时返回
+//
+// 示例：
+//
+//	rule := sharding.NewShardRule(sharding.ByMonth, "orders")
+//	tables, _ := rule.GetTableNamesByTimeRange(sharding.TimeRange{
+//	    Start: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+//	    End:   time.Date(2026, 11, 30, 23, 59, 59, 0, time.UTC),
+//	})
+//	fmt.Println(tables) // [orders_202610 orders_202611]
 func (r *ShardRule) GetTableNamesByTimeRange(tr TimeRange) ([]string, error) {
 	// 验证时间范围
 	if tr.Start.After(tr.End) {
@@ -374,13 +417,31 @@ func (r *ShardRule) getTenDayTables(tr TimeRange) ([]string, error) {
 	return tables, nil
 }
 
-// GetTableNamesByIDRange 根据ID范围获取所有相关的表名
-// 参数:
-//   - idRange: ID范围
+// GetTableNamesByIDRange 根据 ID 范围枚举出所有可能命中的分片表名。
 //
-// 返回值:
-//   - []string: 包含ID范围内所有可能的分片表名
-//   - error: 如果分片类型不是ID类型或ID范围无效
+// 智能枚举策略：
+//   - ByIDRange：计算 id/RangeSize 的最小值和最大值，枚举出中间所有分片（精准、高效）
+//   - ByIDHash：单个 ID 时直接返回对应的哈希分片；小范围（<=10 个 ID）逐个计算哈希去重；
+//     大范围（>10 个 ID）直接返回全部 HashShards 张表（因为 crc32 无法根据范围做有效过滤）
+//
+// 参数：
+//   - idRange: ID 闭区间 [Start, End]
+//
+// 返回值：
+//   - []string: 范围内涉及到的分片表名
+//   - error: Start > End 或分片类型不匹配时返回
+//
+// 示例：
+//
+//	// ByIDRange：RangeSize=1000，查 50~250 实际命中 shard 0 和 shard 1
+//	rule := sharding.NewShardRule(sharding.ByIDRange, "orders", sharding.WithRangeSize(1000))
+//	tables, _ := rule.GetTableNamesByIDRange(sharding.IDRange{Start: 50, End: 250})
+//	fmt.Println(tables) // [orders_0 orders_1]
+//
+//	// ByIDHash：大范围永远返回全部分片
+//	hashRule := sharding.NewShardRule(sharding.ByIDHash, "users", sharding.WithHashShards(8))
+//	tables2, _ := hashRule.GetTableNamesByIDRange(sharding.IDRange{Start: 1, End: 1000000})
+//	fmt.Println(tables2) // [users_0 ... users_7]，全部 8 张
 func (r *ShardRule) GetTableNamesByIDRange(idRange IDRange) ([]string, error) {
 	// 验证ID范围
 	if idRange.Start > idRange.End {

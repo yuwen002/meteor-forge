@@ -13,7 +13,53 @@ import (
 	"gorm.io/gorm"
 )
 
-// QueryBuilder is a fluent builder for cross-shard queries.
+// QueryBuilder 是跨分片查询的 Fluent Builder。
+//
+// 两条查询路径：
+//
+//  1. UNION ALL 路径（Find）：把所有分片表拼成一条 SQL，由数据库引擎合并。
+//     优点是 ORDER BY / LIMIT / GROUP BY / HAVING 语义自然；
+//     缺点是分片数量多时单条 SQL 非常长、数据库解析压力大。
+//
+//  2. 并行分片路径（FindParallel / CountParallel / Pluck / Delete / Updates）：
+//     每个分片独立查询，应用层合并结果。优点是并发度高、单分片 SQL 简单；
+//     缺点是需要应用层做排序/分页/聚合合并（已自动处理）。
+//
+// 何时用哪条：
+//   - 分片数少（<10）且需要 ORDER BY + LIMIT → Find（UNION ALL）
+//   - 分片数多（>10）或希望并发 → FindParallel
+//   - 聚合 → Aggregate / Sum / Min / Max / Avg（自动应用层合并）
+//   - 单条 → First（逐分片扫描，命中即返回，通常比全片聚合快）
+//
+// 占位符安全：Where / OrWhere / Having 在调用时会 panic 如果 "?" 数量与 args 数量不匹配，
+// 这是刻意设计——链式 Builder 的编程错误在开发时就暴露，避免静默产生错误 SQL。
+//
+// 使用示例（最常见的几种场景）：
+//
+//	// 场景 1：时间分片，跨月查询，UNION ALL 路径
+//	qb := sharding.NewQueryBuilder(db, rule)
+//	var orders []Order
+//	qb.TimeRange(sharding.TimeRange{
+//	    Start: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+//	    End:   time.Date(2026, 11, 30, 23, 59, 59, 0, time.UTC),
+//	}).Where("status = ?", 1).
+//	   Order("created_at DESC").
+//	   Limit(20).Offset(40).
+//	   Find(&orders)
+//
+//	// 场景 2：ID 哈希分片，并行查询全部分片
+//	var users []User
+//	qb2 := sharding.NewQueryBuilder(db, hashRule)
+//	qb2.Where("status = ? AND age > ?", 1, 18).
+//	   FindParallel(&users, 8) // 最多 8 个并发 goroutine
+//
+//	// 场景 3：按 ID 路由写入（CreateInBatches 自动根据 ShardRule 分发）
+//	qb3 := sharding.NewQueryBuilder(db, hashRule)
+//	affected, _ := qb3.CreateInBatches(&users, 500)
+//
+//	// 场景 4：聚合（自动合并分片结果）
+//	var total int64
+//	qb4.Sum("amount", &total) // SUM(amount) 跨分片自动求和
 type QueryBuilder struct {
 	db            *gorm.DB
 	shardRule     *ShardRule
@@ -31,7 +77,13 @@ type QueryBuilder struct {
 	excludeTables map[string]struct{}
 }
 
-// NewQueryBuilder creates a new QueryBuilder.
+// NewQueryBuilder 创建一个新的 QueryBuilder。
+// rule 决定了分片路由策略，CreateInBatches 写入场景也需要它来路由；
+// 纯查询场景如果手动 Tables(...) 指定了表，rule 可以为 nil。
+//
+// 示例：
+//
+//	qb := sharding.NewQueryBuilder(db, rule)
 func NewQueryBuilder(db *gorm.DB, rule *ShardRule) *QueryBuilder {
 	return &QueryBuilder{
 		db:            db,
@@ -42,14 +94,25 @@ func NewQueryBuilder(db *gorm.DB, rule *ShardRule) *QueryBuilder {
 	}
 }
 
-// WithContext sets the context for the query. Propagates to all shard-level queries
-// in FindParallel / CountParallel so the caller can enforce timeouts or cancellation.
+// WithContext 设置查询的 context。
+// 会传播到所有分片级别的查询（FindParallel / CountParallel / First 等），
+// 用于超时控制或取消。
+//
+// 示例：
+//
+//	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+//	defer cancel()
+//	qb.WithContext(ctx).FindParallel(&results, 8)
 func (qb *QueryBuilder) WithContext(ctx context.Context) *QueryBuilder {
 	qb.ctx = ctx
 	return qb
 }
 
-// Tables sets the target shard tables.
+// Tables 手动指定目标分片表。与 TimeRange/IDRange 互斥——后者会自动枚举并追加到这里。
+//
+// 示例：
+//
+//	qb.Tables("orders_202610", "orders_202611").Find(&results)
 func (qb *QueryBuilder) Tables(tables ...string) *QueryBuilder {
 	for _, t := range tables {
 		if _, ok := qb.excludeTables[t]; ok {
@@ -60,10 +123,17 @@ func (qb *QueryBuilder) Tables(tables ...string) *QueryBuilder {
 	return qb
 }
 
-// TimeRange auto-enumerates shard tables for a time-based shard rule (ByYear / ByMonth ...).
-// It calls ShardRule.GetTableNamesByTimeRange internally — caller does NOT need to
-// manually enumerate shards. Returns an error if the rule is ID-based or the range is invalid.
-// Example: qb.TimeRange(TimeRange{Start: time.Now().AddDate(0, -1, 0), End: time.Now()}).
+// TimeRange 根据时间分片规则自动枚举出 [Start, End] 区间覆盖的所有分片表。
+// 内部调 ShardRule.GetTableNamesByTimeRange。
+// 适用于 ByYear / ByQuarter / ByMonth / ByWeek / ByTenDay 等时间分片策略。
+// 传 ID 分片规则时会静默跳过（tables 不变）。
+//
+// 示例：
+//
+//	qb.TimeRange(sharding.TimeRange{
+//	    Start: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+//	    End:   time.Date(2026, 11, 30, 23, 59, 59, 0, time.UTC),
+//	})
 func (qb *QueryBuilder) TimeRange(tr TimeRange) *QueryBuilder {
 	if qb.shardRule == nil {
 		return qb
@@ -75,10 +145,13 @@ func (qb *QueryBuilder) TimeRange(tr TimeRange) *QueryBuilder {
 	return qb.Tables(names...)
 }
 
-// IDRange auto-enumerates shard tables for an ID-based shard rule (ByIDHash / ByIDRange).
-// It calls ShardRule.GetTableNamesByIDRange internally. For hash-based rules this always
-// returns all shards (hash is modulo, range doesn't help narrowing); for range-based rules
-// it computes the minimal set.
+// IDRange 根据 ID 分片规则自动枚举出覆盖 [Start, End] 区间的分片表。
+// 内部调 ShardRule.GetTableNamesByIDRange。
+// ByIDRange 策略会精准计算命中分片；ByIDHash 策略在大范围时返回全部分片（crc32 无法按范围过滤）。
+//
+// 示例：
+//
+//	qb.IDRange(sharding.IDRange{Start: 1000, End: 5000})
 func (qb *QueryBuilder) IDRange(idr IDRange) *QueryBuilder {
 	if qb.shardRule == nil {
 		return qb
@@ -90,8 +163,12 @@ func (qb *QueryBuilder) IDRange(idr IDRange) *QueryBuilder {
 	return qb.Tables(names...)
 }
 
-// ExcludeTables removes specific shard tables from the query set. Useful when combined
-// with TimeRange/IDRange to skip problem tables (e.g. a table is being rebuilt).
+// ExcludeTables 从查询集中排除指定的分片表。
+// 通常与 TimeRange/IDRange 组合使用，跳过重建中或有问题的表。
+//
+// 示例：
+//
+//	qb.TimeRange(tr).ExcludeTables("orders_202609").Find(&results)
 func (qb *QueryBuilder) ExcludeTables(tables ...string) *QueryBuilder {
 	for _, t := range tables {
 		qb.excludeTables[t] = struct{}{}
@@ -106,15 +183,26 @@ func (qb *QueryBuilder) ExcludeTables(tables ...string) *QueryBuilder {
 	return qb
 }
 
-// Select specifies columns to query.
+// Select 指定要查询的列。不调用则默认 SELECT *。
+//
+// 示例：
+//
+//	qb.Select("id", "user_id", "amount")
 func (qb *QueryBuilder) Select(columns ...string) *QueryBuilder {
 	qb.selectColumns = columns
 	return qb
 }
 
-// Where adds a WHERE condition (AND-chained).
-// Panics if the number of "?" placeholders in query does not match len(args) —
-// this guards against a common class of silent bugs (wrong SQL, wrong args).
+// Where 添加 AND 连接的 WHERE 条件。
+// 链式多次调用会自动用 AND 组合；如果需要 OR 语义用 OrWhere。
+//
+// 安全机制：如果 query 中 "?" 的数量与 args 数量不匹配会 panic。
+//
+// 示例：
+//
+//	qb.Where("status = ?", 1).
+//	   Where("amount > ?", 100).
+//	   Find(&results)
 func (qb *QueryBuilder) Where(query string, args ...interface{}) *QueryBuilder {
 	assertPlaceholderCount(query, args)
 	if qb.whereClause == "" {
@@ -126,8 +214,13 @@ func (qb *QueryBuilder) Where(query string, args ...interface{}) *QueryBuilder {
 	return qb
 }
 
-// OrWhere adds an OR condition.
-// Panics on placeholder/args mismatch (same as Where).
+// OrWhere 添加 OR 连接的条件。
+// 安全机制同 Where——占位符数量不匹配会 panic。
+//
+// 示例：
+//
+//	qb.Where("status = ?", 1).
+//	   OrWhere("status = ?", 2)
 func (qb *QueryBuilder) OrWhere(query string, args ...interface{}) *QueryBuilder {
 	assertPlaceholderCount(query, args)
 	if qb.whereClause == "" {
@@ -138,20 +231,34 @@ func (qb *QueryBuilder) OrWhere(query string, args ...interface{}) *QueryBuilder
 	return qb
 }
 
-// Order sets the ORDER BY clause.
+// Order 设置 ORDER BY 子句。
+// 字符串会原样拼到 SQL 中，请确保内容安全（通常为硬编码）。
+//
+// 示例：
+//
+//	qb.Order("created_at DESC")
+//	qb.Order("amount DESC, id ASC")
 func (qb *QueryBuilder) Order(order string) *QueryBuilder {
 	qb.orderBy = order
 	return qb
 }
 
-// Group adds GROUP BY columns.
+// Group 设置 GROUP BY 列。
+//
+// 示例：
+//
+//	qb.Group("user_id", "status")
 func (qb *QueryBuilder) Group(columns ...string) *QueryBuilder {
 	qb.groupBy = strings.Join(columns, ", ")
 	return qb
 }
 
-// Having adds a HAVING clause.
-// Panics on placeholder/args mismatch (same as Where).
+// Having 添加 HAVING 子句，通常与 Group 配合使用。
+// 安全机制同 Where——占位符数量不匹配会 panic。
+//
+// 示例：
+//
+//	qb.Group("user_id").Having("COUNT(*) > ?", 5)
 func (qb *QueryBuilder) Having(having string, args ...interface{}) *QueryBuilder {
 	assertPlaceholderCount(having, args)
 	qb.having = having
@@ -173,13 +280,20 @@ func assertPlaceholderCount(query string, args []interface{}) {
 	}
 }
 
-// Limit sets the maximum number of rows to return.
+// Limit 设置返回的最大行数。适用于 Find（UNION ALL 自动 LIMIT 下推到子查询）。
+// 示例：
+//
+//	qb.Limit(20)
 func (qb *QueryBuilder) Limit(limit int) *QueryBuilder {
 	qb.limit = limit
 	return qb
 }
 
-// Offset sets the result offset (for pagination).
+// Offset 设置分页偏移量。适用于 Find（UNION ALL）路径。
+// FindParallel 的并行路径需要调用方自己对结果切片做分页。
+// 示例：
+//
+//	qb.Limit(20).Offset(40) // 第 3 页，每页 20 条
 func (qb *QueryBuilder) Offset(offset int) *QueryBuilder {
 	qb.offset = offset
 	return qb
@@ -326,12 +440,16 @@ func (qb *QueryBuilder) validateTables() error {
 	return nil
 }
 
-// First queries a single record from one or more shard tables.
+// First 从一个或多个分片表中查询一条记录。
 //
-// Optimization: when no ORDER BY is set, queries shards one at a time and returns
-// on the first hit — this avoids a full UNION ALL scan of every shard. When
-// ORDER BY IS set we must use UNION ALL because "first after global sort" cannot
-// be determined per-shard.
+// 优化策略：
+//   - 无 ORDER BY → 逐分片扫描，命中即返回（避免 UNION ALL 全表扫描）
+//   - 有 ORDER BY → 必须用 UNION ALL（因为"全局排序后的第一条"无法分片确定）
+//
+// 示例：
+//
+//	var order Order
+//	qb.TimeRange(tr).Where("id = ?", 12345).First(&order)
 func (qb *QueryBuilder) First(dest interface{}) error {
 	if len(qb.tables) == 0 {
 		return errors.New("未指定查询表")
@@ -400,7 +518,17 @@ func (qb *QueryBuilder) cloneWithLimit(limit int) *QueryBuilder {
 	}
 }
 
-// Find queries multiple records. Single-table uses direct query; multi-table uses UNION ALL.
+// Find 查询多条记录。
+//   - 单表：直接 GORM 查询
+//   - 多表：UNION ALL 合成一条 SQL，由数据库合并并在最外层做 ORDER BY / LIMIT / GROUP BY / HAVING
+//
+// 适用场景：分片数 < 10，需要 ORDER BY + LIMIT 自然分页。
+// 分片数多时改用 FindParallel。
+//
+// 示例：
+//
+//	var orders []Order
+//	qb.TimeRange(tr).Where("status = ?", 1).Order("created_at DESC").Limit(20).Find(&orders)
 func (qb *QueryBuilder) Find(dest interface{}) error {
 	if len(qb.tables) == 0 {
 		return errors.New("未指定查询表")
@@ -424,18 +552,26 @@ func (qb *QueryBuilder) Find(dest interface{}) error {
 	return query.Find(dest).Error
 }
 
-// FindParallel queries each shard independently in parallel, then merges results in-app.
-// Unlike Find (which uses a single UNION ALL SQL), FindParallel issues one query per shard
-// and does the global sort + pagination in Go memory. This works well when shard count is
-// large and UNION ALL becomes prohibitively expensive for the database.
+// FindParallel 并行查询每个分片，然后在应用层合并结果。
 //
-// Each shard query strips its own limit/offset (set via Limit/Offset on the QueryBuilder)
-// — pagination is applied globally after merging all shard results. ORDER BY (set via Order)
-// is applied both per-shard (so each shard is already sorted, making the merge cheap) and
-// re-applied globally via reflect-based sort on the merged slice.
+// 与 Find（UNION ALL 路径）对比：
 //
-// dest is a pointer-to-slice, e.g. &[]Order{}. concurrency caps the number of goroutines
-// running queries in parallel; <= 0 or >= len(tables) means "fire all at once".
+//	| 特性              | Find           | FindParallel   |
+//	|-------------------|----------------|----------------|
+//	| 实现              | 单条 UNION SQL | 每分片独立查   |
+//	| 分片数多的性能    | 差（SQL过长）   | 好（并发）      |
+//	| ORDER BY + LIMIT  | 自然支持       | 应用层合并     |
+//	| GROUP BY / HAVING | 支持           | 不支持         |
+//
+// 约束：dest 必须是 *[]T。concurrency 控制并发 goroutine 数，<=0 或 >=len(tables) 表示全并发。
+//
+// 适用场景：分片数 > 10，或希望充分利用并发。
+//
+// 示例：
+//
+//	var users []User
+//	qb.Where("status = ? AND age > ?", 1, 18).FindParallel(&users, 8)
+//	// concurrency=8：最多 8 个分片同时查询
 func (qb *QueryBuilder) FindParallel(dest interface{}, concurrency int) error {
 	if qb.groupBy != "" || qb.having != "" {
 		return errors.New("FindParallel 不支持 GROUP BY / HAVING — 分片独立聚合无法等价于全局聚合，请改用 Find (UNION ALL 路径) 或在应用层自行聚合")
@@ -701,10 +837,15 @@ func toCamelCase(name string) string {
 	return b.String()
 }
 
-// CountParallel returns the total count across all shard tables by querying each
-// shard independently in parallel and summing. This avoids UNION ALL COUNT which
-// only gives per-row counts, not global sum. concurrency controls parallelism
-// (same semantics as FindParallel).
+// CountParallel 并行统计所有分片的总行数，分片独立 COUNT 后求和。
+// concurrency 控制并发度（与 FindParallel 同语义）。
+//
+// 为什么不用 UNION ALL + COUNT？因为 UNION ALL 会让 COUNT 结果按行数出现（每个分片返回各自的 count 作为一行），
+// 然后外层还要再 SUM 一次——本质上 CountParallel 做的就是这件事，但用 Go 层实现更简单直接。
+//
+// 示例：
+//
+//	total, _ := qb.TimeRange(tr).Where("status = ?", 1).CountParallel(8)
 func (qb *QueryBuilder) CountParallel(concurrency int) (int64, error) {
 	if len(qb.tables) == 0 {
 		return 0, errors.New("未指定查询表")
@@ -732,9 +873,13 @@ func (qb *QueryBuilder) CountParallel(concurrency int) (int64, error) {
 	return total, nil
 }
 
-// Pluck extracts a single column from all shard tables into dest.
-// dest must be a pointer to a slice of the column's element type (e.g. *[]string, *[]int64).
-// Uniqueness is NOT applied — call deduplication yourself if needed.
+// Pluck 从所有分片表中提取指定列，合并到 dest 切片。
+// dest 必须是 *[]ElementType，例如 *[]string / *[]int64。不做去重，需要去重请自行处理。
+//
+// 示例：
+//
+//	var ids []int64
+//	qb.Where("status = ?", 1).Pluck("id", &ids)
 func (qb *QueryBuilder) Pluck(column string, dest interface{}) error {
 	if len(qb.tables) == 0 {
 		return errors.New("未指定查询表")
@@ -772,10 +917,13 @@ func (qb *QueryBuilder) Pluck(column string, dest interface{}) error {
 	return nil
 }
 
-// Delete removes matching rows from all shard tables in parallel.
-// Returns the total number of affected rows summed across shards.
-// Note: hard-deletes. For soft-deletes, set qb's db to a gorm DB that has
-// a DeletedAt field and the model, or use Updates to set a deleted_at column.
+// Delete 并行删除所有匹配分片表的行，返回所有分片受影响行数之和。
+// 执行硬删除（DELETE）。软删除请用 Updates 设置 deleted_at 字段或在 GORM model 里声明 DeletedAt。
+// model 可以是 nil（纯条件删除）或传入 GORM model 类型以触发软删除。
+//
+// 示例：
+//
+//	affected, _ := qb.Where("expired_at < ?", time.Now()).Delete(nil)
 func (qb *QueryBuilder) Delete(model interface{}) (int64, error) {
 	if len(qb.tables) == 0 {
 		return 0, errors.New("未指定查询表")
@@ -803,9 +951,13 @@ func (qb *QueryBuilder) Delete(model interface{}) (int64, error) {
 	return total, nil
 }
 
-// Updates applies a bulk update to all shard tables in parallel.
-// values can be a map[string]interface{} or a struct.
-// Returns the total number of affected rows summed across shards.
+// Updates 并行更新所有匹配分片表的行。
+// values 可以是 map[string]interface{} 或 GORM model 结构体。
+// 返回所有分片受影响行数之和。
+//
+// 示例：
+//
+//	qb.Where("status = ?", 0).Updates(map[string]interface{}{"status": 1})
 func (qb *QueryBuilder) Updates(values interface{}) (int64, error) {
 	if len(qb.tables) == 0 {
 		return 0, errors.New("未指定查询表")
@@ -833,17 +985,29 @@ func (qb *QueryBuilder) Updates(values interface{}) (int64, error) {
 	return total, nil
 }
 
-// GetTables 返回当前 QueryBuilder 实际命中的分片表列表。
-// 调用方可以在 TimeRange/IDRange 过滤之后拿到最终表名，用于日志、排查或后续原始 SQL 操作。
+// GetTables 返回当前 QueryBuilder 实际命中的分片表列表（拷贝，调用方无法修改内部状态）。
+// 典型用途：TimeRange/IDRange 过滤后查看最终命中了哪些分片，用于日志或后续原始 SQL 操作。
+//
+// 示例：
+//
+//	tables := qb.TimeRange(tr).Where("status = ?", 1).GetTables()
+//	log.Println("命中分片:", tables)
 func (qb *QueryBuilder) GetTables() []string {
 	out := make([]string, len(qb.tables))
 	copy(out, qb.tables)
 	return out
 }
 
-// WithTx 将 QueryBuilder 绑定到一个事务 DB（*gorm.DB 必须是 Begin() 后返回的 tx）。
-// 之后所有查询/写入都会在该事务上执行。调用方负责最终 Commit/Rollback。
-// 这是链式方法，返回新的 QueryBuilder 副本，不修改原对象。
+// WithTx 将 QueryBuilder 绑定到一个事务 DB（tx 必须是 db.Begin() 返回的事务句柄）。
+// 链式返回新副本，不修改原对象。调用方负责最终 Commit / Rollback。
+//
+// 示例：
+//
+//	tx := db.Begin()
+//	defer func() { if r := recover(); r != nil { tx.Rollback() } }()
+//	qb := sharding.NewQueryBuilder(tx, rule)
+//	affected, _ := qb.Where("id = ?", 12345).Updates(map[string]interface{}{"status": 2})
+//	tx.Commit()
 func (qb *QueryBuilder) WithTx(tx *gorm.DB) *QueryBuilder {
 	cp := *qb
 	cp.db = tx
@@ -1097,6 +1261,11 @@ func buildGroupKey(row reflect.Value, groupKeys []string) string {
 
 // Sum 便捷聚合: SELECT SUM(column) AS <column>_sum FROM ...
 // dest 是 *int64 或 *float64 等。分片自动求和。
+//
+// 示例：
+//
+//	var total float64
+//	qb.TimeRange(tr).Where("status = ?", 1).Sum("amount", &total)
 func (qb *QueryBuilder) Sum(column string, dest interface{}) error {
 	if qb.groupBy != "" {
 		return errors.New("Sum 不支持 GROUP BY，请改用 Aggregate 方法")
@@ -1133,12 +1302,22 @@ func (qb *QueryBuilder) Sum(column string, dest interface{}) error {
 
 // Min 便捷聚合: SELECT MIN(column) AS <column>_min FROM ...
 // 分片自动取最小。
+//
+// 示例：
+//
+//	var minPrice float64
+//	qb.TimeRange(tr).Where("status = ?", 1).Min("price", &minPrice)
 func (qb *QueryBuilder) Min(column string, dest interface{}) error {
 	return qb.scalarAggregate(column, dest, "MIN")
 }
 
 // Max 便捷聚合: SELECT MAX(column) AS <column>_max FROM ...
 // 分片自动取最大。
+//
+// 示例：
+//
+//	var maxID int64
+//	qb.TimeRange(tr).Max("id", &maxID)
 func (qb *QueryBuilder) Max(column string, dest interface{}) error {
 	return qb.scalarAggregate(column, dest, "MAX")
 }
@@ -1146,6 +1325,11 @@ func (qb *QueryBuilder) Max(column string, dest interface{}) error {
 // Avg 便捷聚合: 分片场景下使用全局加权平均 = SUM(column) / SUM(*)
 // 这比直接 avg(avg1, avg2, avg3) 更精确（后者是错误的，分片行数不同时结果不对）。
 // 内部同时跑 SUM(column) 和 COUNT(*)，mergeRow 自动累加两者，最后相除。
+//
+// 示例：
+//
+//	var avgAge float64
+//	qb.Where("status = ?", 1).Avg("age", &avgAge)
 func (qb *QueryBuilder) Avg(column string, dest interface{}) error {
 	destVal := reflect.ValueOf(dest)
 	if destVal.Kind() != reflect.Ptr {
@@ -1308,8 +1492,12 @@ func toValidAlias(column string) string {
 }
 
 // Exists 检查是否有任何分片命中条件。
-// 优化: 逐分片 SELECT 1 LIMIT 1，找到即返回 true —— 不扫全部分片。
-// 如果设置了 ctx.Done() 会提前返回。
+// 优化：逐分片 SELECT 1 LIMIT 1，找到即返回 true——不扫全部分片。
+// 带 ctx.Done() 时会提前返回。
+//
+// 示例：
+//
+//	exists, _ := qb.TimeRange(tr).Where("user_id = ?", 123).Exists()
 func (qb *QueryBuilder) Exists() (bool, error) {
 	if len(qb.tables) == 0 {
 		return false, errors.New("未指定查询表")
@@ -1342,11 +1530,20 @@ func (qb *QueryBuilder) Exists() (bool, error) {
 	return false, nil
 }
 
-// Scan 扫描查询结果到 dest（可以是 struct slice、map slice、map[string]interface{} 等）。
-// 语义与 GORM Scan 一致，但自动处理多分片 UNION ALL 或并行聚合。
-// 当只有一个分片时直接走单表查询，多分片时：
-//   - 无 GROUP BY / 无 ORDER BY / 无 LIMIT → 并行各分片 Scan 再合并
-//   - 有上述条件 → 走 UNION ALL（保证排序/分页语义正确）
+// Scan 扫描查询结果到 dest（可以是 struct slice、map slice 等）。
+// 语义与 GORM Scan 一致，但自动处理多分片：
+//   - 单表 → 直接 GORM 查询
+//   - 多表 + 无 GROUP BY/ORDER BY/LIMIT → 并行各分片 Scan 再合并
+//   - 多表 + 有 GROUP BY/ORDER BY/LIMIT → UNION ALL 保证排序/分页语义
+//
+// 示例：
+//
+//	type Stat struct {
+//	    Status int32  `gorm:"column:status"`
+//	    Cnt    int64  `gorm:"column:cnt"`
+//	}
+//	var stats []Stat
+//	qb.Select("status, COUNT(*) AS cnt").Group("status").Scan(&stats)
 func (qb *QueryBuilder) Scan(dest interface{}) error {
 	if len(qb.tables) == 0 {
 		return errors.New("未指定查询表")
@@ -1406,6 +1603,17 @@ func (qb *QueryBuilder) Scan(dest interface{}) error {
 // 这避免一次性把所有分片的结果加载到内存（FindParallel 会这样）。
 //
 // 注意: batchSize 必须 > 0。不支持 ORDER BY（分片内分批无全局排序语义）。
+//
+// 示例：
+//
+//	var batch []Order
+//	qb.TimeRange(tr).Where("status = ?", 1).FindInBatches(&batch, 500, func(batchNum int64) bool {
+//	    fmt.Printf("处理第 %d 批，共 %d 条\n", batchNum, len(batch))
+//	    for _, o := range batch {
+//	        // 处理每条订单
+//	    }
+//	    return true // 继续下一批，返回 false 提前终止
+//	})
 func (qb *QueryBuilder) FindInBatches(dest interface{}, batchSize int, callback func(batch int64) bool) error {
 	if len(qb.tables) == 0 {
 		return errors.New("未指定查询表")
@@ -1477,6 +1685,14 @@ func (qb *QueryBuilder) FindInBatches(dest interface{}, batchSize int, callback 
 
 // RawBuilder 封装原始 SQL + {table} 占位符的分片路由执行器。
 // 用 QueryBuilder.Raw() 创建。
+//
+// 执行模式：
+//
+//	| 方法      | 行为                                       |
+//	|-----------|--------------------------------------------|
+//	| ScanRaw   | 并行所有分片执行，合并 Scan 结果到切片     |
+//	| FirstRaw  | 逐分片执行，命中即返回（最快单条查询）     |
+//	| ExecRaw   | 并行所有分片执行写操作（UPDATE/DELETE）    |
 type RawBuilder struct {
 	qb   *QueryBuilder
 	sql  string
@@ -1485,29 +1701,35 @@ type RawBuilder struct {
 
 // Raw 创建原始 SQL 分片路由执行器。
 //
-// sql 中可以使用 `{table}` 占位符，执行时会被替换为每个分片表的真实表名。
-// 也可以写死表名（不走自动替换），这时只会在第一个分片上执行 —— 不推荐。
+// sql 中使用 `{table}` 占位符，执行时会被替换为每个分片表的真实表名。
+// 也可以写死表名（不走自动替换），此时只会在第一个分片上执行——不推荐。
 //
-// 执行模式:
-//   - ScanRaw / ExecRaw: 并行执行所有分片，合并结果
-//   - FirstRaw: 逐分片执行，命中即返回
-//   - ExecRaw: 并行执行写操作（UPDATE/DELETE/INSERT），汇总影响行数
+// 示例：
 //
-// Example:
+//	qb := NewQueryBuilder(db, rule).TimeRange(tr)
 //
-//	qb := NewQueryBuilder(db, rule).TimeRange(...).Where("status = ?", 4)
+//	// 读操作：每分片独立跑
 //	var rows []Order
-//	qb.Raw("SELECT * FROM {table} WHERE status = ? AND amount > (SELECT AVG(amount) FROM {table})", 4).ScanRaw(&rows)
+//	qb.Raw("SELECT * FROM {table} WHERE status = ? AND amount > ?", 4, 100).ScanRaw(&rows)
 //
-//	// 写操作也支持
+//	// 写操作：每分片独立执行，返回总影响行数
 //	res, _ := qb.Raw("UPDATE {table} SET status = ? WHERE expired_at < NOW()", 0).ExecRaw()
+//
+//	// 复杂子查询也支持
+//	var orders []Order
+//	qb.Raw(`SELECT * FROM {table} WHERE id IN (SELECT order_id FROM {table}_items WHERE user_id = ?)`, userID).ScanRaw(&orders)
 func (qb *QueryBuilder) Raw(sql string, args ...interface{}) *RawBuilder {
 	assertPlaceholderCount(sql, args)
 	return &RawBuilder{qb: qb, sql: sql, args: args}
 }
 
 // ScanRaw 并行执行所有分片的 Raw SQL，合并 Scan 结果到 dest。
-// 合并策略与 Scan 方法相同：有 GROUP BY/ORDER BY/LIMIT → UNION ALL 路径；无 → 并行各分片再 append。
+// 合并策略：并行各分片 Scan 后 append 到同一切片（不做排序/分页）。
+//
+// 示例：
+//
+//	var rows []Order
+//	qb.Raw("SELECT * FROM {table} WHERE status = ?", 1).ScanRaw(&rows)
 func (rb *RawBuilder) ScanRaw(dest interface{}) error {
 	if len(rb.qb.tables) == 0 {
 		return errors.New("未指定查询表")
@@ -1550,7 +1772,12 @@ func (rb *RawBuilder) ScanRaw(dest interface{}) error {
 }
 
 // FirstRaw 逐分片执行 Raw SQL，返回第一条命中记录。
-// 命中即返回，不必扫完全部分片。
+// 命中即返回，不必扫完全部分片——适合根据条件查单条记录的场景。
+//
+// 示例：
+//
+//	var order Order
+//	qb.Raw("SELECT * FROM {table} WHERE id = ? LIMIT 1", 12345).FirstRaw(&order)
 func (rb *RawBuilder) FirstRaw(dest interface{}) error {
 	if len(rb.qb.tables) == 0 {
 		return errors.New("未指定查询表")
@@ -1592,7 +1819,11 @@ func (rb *RawBuilder) FirstRaw(dest interface{}) error {
 }
 
 // ExecRaw 并行执行写操作（UPDATE/DELETE/INSERT），汇总所有分片的影响行数。
-// 适用于需要跨分片统一更新/清理的场景。
+// 适用于跨分片统一更新/清理的场景。
+//
+// 示例：
+//
+//	affected, _ := qb.Raw("UPDATE {table} SET status = ? WHERE expired_at < NOW()", 0).ExecRaw()
 func (rb *RawBuilder) ExecRaw() (int64, error) {
 	if len(rb.qb.tables) == 0 {
 		return 0, errors.New("未指定查询表")

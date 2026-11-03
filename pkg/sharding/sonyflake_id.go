@@ -13,30 +13,53 @@ import (
 	"github.com/sony/sonyflake" // Sonyflake是一个分布式唯一ID生成器
 )
 
-// SonyflakeIDGenerator 封装了Sonyflake生成器
-// 提供了更易用的接口来生成和解析分布式ID
-type SonyflakeIDGenerator struct {
-	flake     *sonyflake.Sonyflake // Sonyflake生成器实例
-	startTime time.Time            // ID生成器的起始时间
-	machineID uint16               // 机器ID
-}
-
-// IDInfo 包含了解析后的ID详细信息
-// 用于调试和监控目的，可以查看ID的各个组成部分
-type IDInfo struct {
-	ID        uint64
-	Timestamp time.Time
-	MachineID uint16
-	Sequence  uint16
-}
-
-// NewSonyflakeIDGenerator 创建并初始化一个新的Sonyflake ID生成器
-// 参数:
-//   - startTime: ID生成器的起始时间，建议设置为应用的上线时间
+// SonyflakeIDGenerator 封装了 Sonyflake 分布式 ID 生成器。
 //
-// 返回值:
-//   - *SonyflakeIDGenerator: 初始化后的ID生成器实例
-//   - error: 初始化过程中发生的错误
+// ID 结构：39 位时间戳（10ms 精度，约 17 年）| 16 位机器 ID | 8 位序列号。
+//
+// 机器 ID 解析优先级：
+//  1. 环境变量 SONYFLAKE_MACHINE_ID（显式指定，推荐容器化部署时使用）
+//  2. Pod IP 的后两个字节（Kubernetes 环境自动分配）
+//  3. Hostname 哈希取模（兜底方案）
+//
+// 使用示例：
+//
+//	gen, _ := sharding.NewSonyflakeIDGenerator(time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
+//	id, _ := gen.Generate()
+//	info, _ := gen.Parse(id)
+//	fmt.Println(info.Timestamp) // ID 生成的精确时间（10ms 精度）
+type SonyflakeIDGenerator struct {
+	flake     *sonyflake.Sonyflake
+	startTime time.Time
+	machineID uint16
+}
+
+// IDInfo 是 Parse 返回的解析结果，包含 ID 的三个位段信息。
+// 可用于调试、监控，或基于 ID 的时间/机器维度路由判断。
+type IDInfo struct {
+	ID        uint64    // 原始 ID
+	Timestamp time.Time // ID 生成时的时间戳（基于生成器 startTime 还原）
+	MachineID uint16    // 机器 ID（16 位）
+	Sequence  uint16    // 序列号（8 位）
+}
+
+// NewSonyflakeIDGenerator 创建并初始化一个 Sonyflake ID 生成器。
+// 同一集群内所有节点必须使用相同的 startTime，否则 Parse 还原出的时间会错位。
+//
+// 参数：
+//   - startTime: ID 起始时间，建议设为应用正式上线日，从此刻起算 39 位时间戳可覆盖约 17 年。
+//
+// 返回值：
+//   - *SonyflakeIDGenerator: 生成器实例
+//   - error: 机器 ID 解析失败或底层 sonyflake 初始化失败时返回
+//
+// 示例：
+//
+//	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+//	gen, err := sharding.NewSonyflakeIDGenerator(start)
+//	if err != nil {
+//	    log.Fatal("初始化 ID 生成器失败:", err)
+//	}
 func NewSonyflakeIDGenerator(startTime time.Time) (*SonyflakeIDGenerator, error) {
 	machineID, err := resolveMachineID()
 	if err != nil {
@@ -63,21 +86,34 @@ func NewSonyflakeIDGenerator(startTime time.Time) (*SonyflakeIDGenerator, error)
 	}, nil
 }
 
-// Generate 生成一个新的全局唯一ID
-// 返回值:
-//   - uint64: 生成的64位ID
-//   - error: 生成过程中发生的错误
+// Generate 生成一个新的全局唯一 ID。线程安全，内部由 sonyflake 的原子计数器保证序列递增。
+//
+// 示例：
+//
+//	id, err := gen.Generate()
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	fmt.Printf("生成 ID: %d\n", id)
 func (g *SonyflakeIDGenerator) Generate() (uint64, error) {
 	return g.flake.NextID()
 }
 
-// Parse 解析一个已存在的ID，提取其中的时间戳、机器ID和序列号信息
-// 参数:
-//   - id: 要解析的64位ID
+// Parse 解析一个已有的 Sonyflake ID，拆出时间戳、机器 ID、序列号。
+// 逆向路由场景特别有用：拿到一个 order ID，就能知道它属于哪台机器、何时生成。
 //
-// 返回值:
-//   - *IDInfo: 包含了解析后的ID信息
-//   - error: 解析过程中发生的错误
+// 参数：
+//   - id: 64 位 Sonyflake ID（由 Generate 或 GenerateFromTimestamp 产生）
+//
+// 返回值：
+//   - *IDInfo: 解析结果
+//
+// 示例：
+//
+//	info, _ := gen.Parse(189472839472)
+//	fmt.Println("生成时间:", info.Timestamp)
+//	fmt.Println("机器 ID:", info.MachineID)
+//	fmt.Println("序列号:", info.Sequence)
 func (g *SonyflakeIDGenerator) Parse(id uint64) (*IDInfo, error) {
 	// Sonyflake ID 结构: 39位时间戳 | 16位机器ID | 8位序列号
 	timestamp := (id >> 24) & 0x1FFFFFFFFFF // 39位时间戳
@@ -91,14 +127,27 @@ func (g *SonyflakeIDGenerator) Parse(id uint64) (*IDInfo, error) {
 	}, nil
 }
 
-// GenerateFromTimestamp 使用指定的时间戳生成ID，主要用于数据迁移或历史数据导入
-// 参数:
-//   - ts: 指定的时间戳
-//   - sequence: 序列号
+// GenerateFromTimestamp 使用指定时间戳和序列号合成一个 Sonyflake ID。
+// 主要用途：历史数据迁移/回填场景下，让旧数据也拥有符合当前 ID 规则的主键，
+// 从而能正确路由到时间分片表。
 //
-// 返回值:
-//   - uint64: 生成的ID
-//   - error: 如果时间戳早于生成器的起始时间则返回错误
+// 注意：同一 (ts, sequence, machineID) 组合会产生相同 ID，调用方需确保唯一性。
+//
+// 参数：
+//   - ts: 指定的时间戳，必须 >= 生成器 startTime 且在 39 位时间戳可表示范围内
+//   - sequence: 序列号，低 8 位有效（256 个值）
+//
+// 返回值：
+//   - uint64: 合成的 Sonyflake ID
+//   - error: ts 早于 startTime 或超出 39 位时间范围时返回
+//
+// 示例：
+//
+//	// 为 2024-06-15 的历史订单生成 ID，确保它们路由到 orders_202406 分片表
+//	historicalID, _ := gen.GenerateFromTimestamp(
+//	    time.Date(2024, 6, 15, 10, 30, 0, 0, time.UTC), 42,
+//	)
+//	rule.GetTableNameByTime(time.Date(2024, 6, 15, ...)) // → orders_202406
 func (g *SonyflakeIDGenerator) GenerateFromTimestamp(ts time.Time, sequence uint16) (uint64, error) {
 	if ts.Before(g.startTime) {
 		return 0, errors.New("timestamp before startTime")
@@ -210,10 +259,18 @@ func getOrInitGenerator() (*SonyflakeIDGenerator, error) {
 	return globalGenerator, initErr
 }
 
-// InitSonyflake 使用给定的起始时间初始化全局 Sonyflake ID 生成器。
-// 并发安全，只会初始化一次。
-// 如果已经初始化过（无论是通过 InitSonyflake 还是第一次调 GenerateID），
-// 传入不同 startTime 会返回错误。
+// InitSonyflake 初始化全局 Sonyflake ID 生成器（包级单例）。
+// 并发安全，只会生效一次。若已被其他代码以不同 startTime 初始化，将返回 error。
+//
+// 建议在应用启动最早阶段调用一次，避免并发首次调用时因机器 ID 解析竞争导致行为不可预测。
+//
+// 示例：
+//
+//	func init() {
+//	    if err := sharding.InitSonyflake(time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {
+//	        panic(err)
+//	    }
+//	}
 func InitSonyflake(startTime time.Time) error {
 	initOnce.Do(func() {
 		initCalled = true
@@ -225,8 +282,13 @@ func InitSonyflake(startTime time.Time) error {
 	return nil
 }
 
-// GenerateID 使用全局 Sonyflake 生成器生成一个新的全局唯一 ID。
-// 如果未初始化，会使用默认的起始时间自动初始化。
+// GenerateID 使用全局单例生成器生成一个唯一 ID。
+// 如果全局生成器尚未初始化，会使用默认 startTime (2023-01-01 UTC) 自动初始化。
+//
+// 示例：
+//
+//	id, err := sharding.GenerateID()
+//	_ = id // 直接使用
 func GenerateID() (uint64, error) {
 	gen, err := getOrInitGenerator()
 	if err != nil {
@@ -235,8 +297,13 @@ func GenerateID() (uint64, error) {
 	return gen.Generate()
 }
 
-// ParseID 将 Sonyflake ID 解析为其组成部分（时间戳、机器ID、序列号）。
-// 如果未初始化，会使用默认的起始时间自动初始化。
+// ParseID 解析一个 Sonyflake ID，返回其组成部分。
+// 内部使用全局生成器的 startTime 还原时间戳；若全局生成器尚未初始化，会自动以默认值初始化。
+//
+// 示例：
+//
+//	info, err := sharding.ParseID(189472839472)
+//	fmt.Println("创建于:", info.Timestamp)
 func ParseID(id uint64) (*IDInfo, error) {
 	gen, err := getOrInitGenerator()
 	if err != nil {
@@ -245,9 +312,14 @@ func ParseID(id uint64) (*IDInfo, error) {
 	return gen.Parse(id)
 }
 
-// GenerateIDFromTimestamp 根据指定的时间戳生成 Sonyflake ID。
-// 主要用于数据迁移或回填历史数据。
-// 如果未初始化，会使用默认的起始时间自动初始化。
+// GenerateIDFromTimestamp 使用全局生成器按指定时间戳合成 Sonyflake ID。
+// 历史数据迁移场景的便捷函数。
+//
+// 示例：
+//
+//	id, _ := sharding.GenerateIDFromTimestamp(
+//	    time.Date(2024, 6, 15, 0, 0, 0, 0, time.UTC), 0,
+//	)
 func GenerateIDFromTimestamp(ts time.Time, seq uint16) (uint64, error) {
 	gen, err := getOrInitGenerator()
 	if err != nil {

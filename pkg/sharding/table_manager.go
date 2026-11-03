@@ -5,18 +5,36 @@ import (
 	"strings"
 )
 
-// TableManager 定义了表管理器的接口
-// 用于抽象不同数据库的表操作
+// TableManager 是不同数据库的"表级别操作"抽象接口。
+// 三种实现：MySQLTableManager / PostgresTableManager / ClickHouseTableManager。
+// 所有方法对动态表名都会执行 isValidTableName 白名单校验（仅字母/数字/下划线），
+// 防止表名注入。
+//
+// 典型用途：
+//   - Scheduler 定时提前创建分片表
+//   - 应用启动时预热检查
+//   - 运维脚本（枚举所有分片表、清理废弃分片）
+//
+// 使用示例（MySQL）：
+//
+//	db, _ := gorm.Open(mysql.Open("..."), &gorm.Config{})
+//	mgr := sharding.NewMySQLTableManager(db)
+//	ctx := context.Background()
+//
+//	exists, _ := mgr.TableExists(ctx, "orders_202611")
+//	if !exists {
+//	    mgr.CreateTableLike(ctx, "orders_202611", "orders") // 克隆模板表结构
+//	}
 type TableManager interface {
 	// TableExists 检查表是否存在
 	TableExists(ctx context.Context, table string) (bool, error)
-	// CreateTable 创建新表
+	// CreateTable 使用原始 DDL SQL 创建新表（会自动处理 SQL 中硬编码的旧表名 → 新表名）
 	CreateTable(ctx context.Context, table, sql string) error
-	// CreateTableLike 创建一个与源表结构相同的新表
+	// CreateTableLike 克隆 sourceTable 的完整结构（含索引、约束），创建为 newTable
 	CreateTableLike(ctx context.Context, newTable, sourceTable string) error
-	// DropTable 删除表
+	// DropTable 删除表（IF EXISTS，幂等）
 	DropTable(ctx context.Context, table string) error
-	// ListTables 列出所有匹配前缀的表
+	// ListTables 列出所有以 prefix 开头的表（用于枚举一个逻辑实体的所有分片）
 	ListTables(ctx context.Context, prefix string) ([]string, error)
 }
 
