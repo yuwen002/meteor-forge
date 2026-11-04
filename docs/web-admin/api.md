@@ -149,7 +149,7 @@ Down、DownSteps 和 ToVersion 必须显式提交 `confirm: true`。前端还会
 
 读取单个任务状态。
 
-任务状态：`queued`、`running`、`succeeded`、`failed`、`canceled`、`interrupted`。任务响应只包含安全的状态摘要，不包含 DSN、SQL 内容或数据库驱动原始错误。
+任务状态：`queued`、`running`、`succeeded`、`failed`、`canceled`、`interrupted`。 状态转换由管理元数据库原子约束：`queued` 只能进入 `running`、`failed`、`canceled` 或 `interrupted`；`running` 只能进入 `succeeded`、`failed`、`canceled` 或 `interrupted`；终态不可重新打开或改写。无效转换会被拒绝。任务响应只包含安全的状态摘要，不包含 DSN、SQL 内容或数据库驱动原始错误。
 
 ### POST /migration-tasks/{id}/cancel
 
