@@ -109,3 +109,39 @@ func TestDataSourceMutationInvalidatesCachedPool(t *testing.T) {
 	}
 	if len(server.pools.pools) != 0 { t.Fatalf("pools after delete = %d, want 0", len(server.pools.pools)) }
 }
+
+func TestDataSourceAPIRejectsMutationDuringActiveMigration(t *testing.T) {
+	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	source, err := store.Create(context.Background(), adminstore.DataSourceInput{
+		Name: "active migration source", Driver: "sqlite", DSN: ":memory:",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateMigrationTask(context.Background(), adminstore.MigrationTask{
+		ID: "active-api-task", DataSourceID: source.ID, Action: "up",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewServerWithStore(store)
+	t.Cleanup(func() { _ = server.Close() })
+	update := httptest.NewRequest(http.MethodPut, "/api/v1/datasources/"+source.ID,
+		strings.NewReader(`{"name":"renamed source","driver":"sqlite","dsn":":memory:"}`))
+	updateRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(updateRec, update)
+	if updateRec.Code != http.StatusConflict || !strings.Contains(updateRec.Body.String(), "data_source_has_active_tasks") {
+		t.Fatalf("update status=%d body=%s, want conflict", updateRec.Code, updateRec.Body.String())
+	}
+
+	remove := httptest.NewRequest(http.MethodDelete, "/api/v1/datasources/"+source.ID, nil)
+	removeRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(removeRec, remove)
+	if removeRec.Code != http.StatusConflict || !strings.Contains(removeRec.Body.String(), "data_source_has_active_tasks") {
+		t.Fatalf("delete status=%d body=%s, want conflict", removeRec.Code, removeRec.Body.String())
+	}
+}
