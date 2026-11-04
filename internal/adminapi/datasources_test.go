@@ -122,14 +122,18 @@ func TestDataSourceAPIRejectsMutationDuringActiveMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// Construct the server before creating the task. Server startup marks
+	// pre-existing queued/running tasks as interrupted after an unclean shutdown.
+	server := NewServerWithStore(store)
+	t.Cleanup(func() { _ = server.Close() })
+
 	if _, err := store.CreateMigrationTask(context.Background(), adminstore.MigrationTask{
 		ID: "active-api-task", DataSourceID: source.ID, Action: "up",
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	server := NewServerWithStore(store)
-	t.Cleanup(func() { _ = server.Close() })
 	update := httptest.NewRequest(http.MethodPut, "/api/v1/datasources/"+source.ID,
 		strings.NewReader(`{"name":"renamed source","driver":"sqlite","dsn":":memory:"}`))
 	updateRec := httptest.NewRecorder()
