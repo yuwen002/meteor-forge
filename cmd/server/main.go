@@ -27,7 +27,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("initialize management metadata store: %v", err)
 	}
-	defer store.Close()
+	defer func() {
+		if err := store.Close(); err != nil {
+			log.Printf("close management metadata store: %v", err)
+		}
+	}()
 
 	httpServer := &http.Server{
 		Addr: addr, Handler: adminapi.NewServerWithStore(store).Handler(),
