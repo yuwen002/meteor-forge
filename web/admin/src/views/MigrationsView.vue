@@ -39,6 +39,13 @@ interface MigrationTask {
   status: string
   message?: string
   created_at: string
+  started_at?: string
+  finished_at?: string
+  current_version?: string
+  completed_steps: number
+  total_steps: number
+  current_action?: string
+  progress_updated_at?: string
 }
 const tasks = ref<MigrationTask[]>([])
 const currentTask = ref<MigrationTask | null>(null)
