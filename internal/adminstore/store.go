@@ -93,6 +93,12 @@ func Open(ctx context.Context, path, keyHex string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if path != ":memory:" {
+		if err := os.Chmod(path, 0o600); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("secure metadata database file permissions: %w", err)
+		}
+	}
 	return store, nil
 }
 
@@ -100,6 +106,12 @@ func Open(ctx context.Context, path, keyHex string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) migrate(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin metadata schema migration: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
 	const schema = `CREATE TABLE IF NOT EXISTS admin_data_sources (
 		id TEXT PRIMARY KEY,
 		name TEXT NOT NULL COLLATE NOCASE UNIQUE,
@@ -108,10 +120,20 @@ func (s *Store) migrate(ctx context.Context) error {
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL
 	)`
-	if _, err := s.db.ExecContext(ctx, schema); err != nil {
+	if _, err := tx.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate management metadata schema: %w", err)
 	}
-	return nil
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admin_schema_migrations (
+		version INTEGER PRIMARY KEY,
+		applied_at TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("create metadata schema history: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
+		VALUES (1, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("record metadata schema version: %w", err)
+	}
+	return tx.Commit()
 }
 
 func (s *Store) encrypt(plain string) ([]byte, error) {
