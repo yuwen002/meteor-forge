@@ -380,3 +380,63 @@ func TestMigratorDownBlocksEmptyDownSQL(t *testing.T) {
 		t.Fatalf("history must remain unchanged, got %+v", driver.records)
 	}
 }
+
+
+// 空迁移目录也必须检测数据库中遗留的已应用版本，不能误报“没有待迁移”。
+func TestMigratorUpDetectsAllLocalScriptsDeleted(t *testing.T) {
+	driver := NewMockDriver()
+	driver.records = []Record{{Version: "001", Name: "first"}}
+	migrator := NewDefaultMigrator(NewFileSystemLoader(fstest.MapFS{}, "."), driver)
+	err := migrator.Up(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "001") {
+		t.Fatalf("expected missing applied script error, got %v", err)
+	}
+}
+
+// DownSteps 必须在执行第一条回滚 SQL 前校验整个批次。
+func TestMigratorDownStepsPreflightsAllDownSQL(t *testing.T) {
+	fsys := fstest.MapFS{
+		"001_first.up.sql":  {Data: []byte("SELECT 1;")},
+		"002_second.up.sql": {Data: []byte("SELECT 2;")},
+		"002_second.down.sql": {Data: []byte("SELECT 2;")},
+	}
+	first := &Script{Version: "001", UpSQL: "SELECT 1;"}
+	second := &Script{Version: "002", UpSQL: "SELECT 2;", DownSQL: "SELECT 2;"}
+	driver := NewMockDriver()
+	driver.records = []Record{
+		{Version: "001", Checksum: first.Checksum()},
+		{Version: "002", Checksum: second.Checksum()},
+	}
+	migrator := NewDefaultMigrator(NewFileSystemLoader(fsys, "."), driver)
+	err := migrator.DownSteps(context.Background(), 2)
+	if err == nil || !strings.Contains(err.Error(), "001") {
+		t.Fatalf("expected missing Down SQL error for 001, got %v", err)
+	}
+	if len(driver.records) != 2 {
+		t.Fatalf("preflight failure must not partially roll back records: %+v", driver.records)
+	}
+}
+
+// ToVersion 回滚多步时也必须先验证所有 Down SQL，不能部分执行后才失败。
+func TestMigratorToVersionPreflightsAllDownSQL(t *testing.T) {
+	fsys := fstest.MapFS{
+		"001_first.up.sql":  {Data: []byte("SELECT 1;")},
+		"002_second.up.sql": {Data: []byte("SELECT 2;")},
+		"002_second.down.sql": {Data: []byte("SELECT 2;")},
+	}
+	first := &Script{Version: "001", UpSQL: "SELECT 1;"}
+	second := &Script{Version: "002", UpSQL: "SELECT 2;", DownSQL: "SELECT 2;"}
+	driver := NewMockDriver()
+	driver.records = []Record{
+		{Version: "001", Checksum: first.Checksum()},
+		{Version: "002", Checksum: second.Checksum()},
+	}
+	migrator := NewDefaultMigrator(NewFileSystemLoader(fsys, "."), driver)
+	err := migrator.ToVersion(context.Background(), "0")
+	if err == nil || !strings.Contains(err.Error(), "001") {
+		t.Fatalf("expected missing Down SQL error for 001, got %v", err)
+	}
+	if len(driver.records) != 2 {
+		t.Fatalf("preflight failure must not partially roll back records: %+v", driver.records)
+	}
+}
