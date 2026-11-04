@@ -129,6 +129,24 @@ func (s *Store) migrate(ctx context.Context) error {
 	)`); err != nil {
 		return fmt.Errorf("create metadata schema history: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admin_migration_tasks (
+		id TEXT PRIMARY KEY,
+		data_source_id TEXT NOT NULL,
+		action TEXT NOT NULL,
+		target_version TEXT NOT NULL DEFAULT '',
+		steps INTEGER NOT NULL DEFAULT 0,
+		status TEXT NOT NULL,
+		message TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		started_at TEXT,
+		finished_at TEXT
+	)`); err != nil {
+		return fmt.Errorf("create migration task table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_admin_migration_tasks_created
+		ON admin_migration_tasks(created_at DESC)`); err != nil {
+		return fmt.Errorf("index migration tasks: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
 		VALUES (1, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("record metadata schema version: %w", err)
