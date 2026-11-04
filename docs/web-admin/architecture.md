@@ -40,7 +40,7 @@
 - [x] 数据源管理前端页面与 Dashboard 实际数据源数量。
 - [ ] 管理元数据库 schema 升级机制完善、备份/恢复说明。
 - [x] 数据源连接池注册表、连接池生命周期管理和并发访问控制。
-- [ ] 对各数据库驱动补充集成测试（使用可控测试实例）。
+- [x] 对各数据库驱动补充集成测试（SQLite 临时文件 + CI MySQL/PostgreSQL/ClickHouse 服务容器）。
 
 #### 数据源连接池约定
 
@@ -49,6 +49,16 @@
 - 连接测试通过缓存池执行 `PingContext`，单次请求超时为 5 秒；Ping 失败只淘汰本次使用的池实例，避免误关闭并发请求新建的替代池。
 - 连接池限制：最多 10 个打开连接、最多 5 个空闲连接，连接最长生命周期 5 分钟。
 - HTTP 服务完成优雅关闭后统一关闭目标数据库连接池。当前尚未实现认证/授权，服务仍必须保持 loopback 监听。
+
+
+#### 数据库驱动集成测试
+
+- 集成测试位于 `pkg/driver/integration`，使用 `integration` build tag，与快速单元测试分开执行。
+- SQLite 使用测试临时目录中的独立数据库文件；MySQL、PostgreSQL、ClickHouse 使用独立测试服务。
+- 本地可按需设置 `METEOR_TEST_MYSQL_DSN`、`METEOR_TEST_POSTGRES_DSN`、`METEOR_TEST_CLICKHOUSE_DSN` 后运行：
+  `go test -tags=integration ./pkg/driver/integration -count=1 -v`。
+- CI 为三个服务启动临时容器，自动运行四种驱动的 Ping、迁移记录表创建、Up、Checksum 校验、Down 和记录清理验证。
+- 集成测试使用独立前缀和唯一表名；测试结束会清理迁移目标表及历史表。不要将生产 DSN 用于该测试。
 
 ### 阶段 3：Migration 管理
 - 迁移目录/脚本管理、版本状态、Dry Run、Up、Down、ToVersion。
