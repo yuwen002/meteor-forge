@@ -110,6 +110,11 @@ func TestTenantMutationBlockedDuringActiveMigration(t *testing.T) {
 		ID: "tenant-active-migration", DataSourceID: source.ID, Action: "up",
 	})
 	if err != nil { t.Fatal(err) }
+	if _, err := store.CreateTenant(ctx, TenantInput{
+		Name: "Second tenant", Code: "second-tenant", DataSourceID: source.ID,
+	}); !errors.Is(err, ErrTenantActiveMigration) {
+		t.Fatalf("tenant create during active migration error = %v, want ErrTenantActiveMigration", err)
+	}
 	if _, err := store.UpdateTenant(ctx, tenant.ID, TenantInput{
 		Name: "Changed", Code: "active-tenant", DataSourceID: source.ID, Status: "suspended",
 	}); !errors.Is(err, ErrTenantActiveMigration) {
