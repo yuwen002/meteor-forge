@@ -153,7 +153,7 @@ func TestMemoryManagerRegisterSameHandleDoesNotCloseIt(t *testing.T) {
 	db := newTestDB(t)
 	if err := manager.Register("tenant", db); err != nil { t.Fatal(err) }
 	if err := manager.Register("tenant", db); err != nil { t.Fatal(err) }
-	if err := db.Ping(); errors.Is(err, sql.ErrDBClosed) {
+	if err := db.Ping(); err != nil && err.Error() == "sql: database is closed" {
 		t.Fatal("registering the same handle must not close it")
 	}
 	if err := manager.Close(); err != nil { t.Fatal(err) }
