@@ -4,11 +4,14 @@
 package adminapi
 
 import (
+	"context"
 	"encoding/json"
+	"os"
 	"net/http"
 	"time"
 
 	"github.com/yuwen002/meteor-forge/internal/adminstore"
+	"github.com/yuwen002/meteor-forge/pkg/migration"
 )
 
 const apiPrefix = "/api/v1"
@@ -60,6 +63,7 @@ func (s *Server) Handler() http.Handler { return s.handler }
 
 // Close releases all cached target database pools owned by the API server.
 func (s *Server) Close() error {
+	if s.tasks != nil { s.tasks.Close() }
 	if s.pools == nil { return nil }
 	return s.pools.Close()
 }
