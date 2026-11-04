@@ -18,6 +18,7 @@ type Server struct {
 	handler http.Handler
 	store   dataSourceStore
 	pools        *PoolManager
+	tasks        *MigrationTaskManager
 	migrationDir string
 }
 
@@ -36,6 +37,17 @@ func NewServerWithMigrationDir(store *adminstore.Store, migrationDir string) *Se
 	if migrationDir == "" { migrationDir = "migrations" }
 	mux := http.NewServeMux()
 	server := &Server{store: store, pools: NewPoolManager(), migrationDir: migrationDir}
+	if store != nil {
+		server.tasks = NewMigrationTaskManager(store, func(ctx context.Context, task adminstore.MigrationTask) error {
+			driver, err := server.migrationDriver(ctx, task.DataSourceID)
+			if err != nil { return err }
+			loader := migration.NewFileSystemLoader(os.DirFS(server.migrationDir), ".")
+			return runMigrationTask(ctx, driver, loader, task)
+		})
+		recoveryCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = store.RecoverInterruptedTasks(recoveryCtx)
+		cancel()
+	}
 	mux.HandleFunc("GET "+apiPrefix+"/health", healthHandler)
 	server.registerDataSourceRoutes(mux)
 	server.registerMigrationRoutes(mux)
