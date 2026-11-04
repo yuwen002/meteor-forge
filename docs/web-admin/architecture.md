@@ -8,6 +8,7 @@
 
 - `pkg/migration`、`pkg/tenant`、`pkg/sharding`：保持为独立核心能力，不依赖 HTTP、前端或管理元数据库。
 - `internal/adminapi`：HTTP API、请求/响应模型和管理用例的适配层。
+- `internal/adminstore`：独立 SQLite 管理元数据库；数据源 DSN 使用 AES-256-GCM 加密，API 只返回脱敏元信息。
 - `cmd/server`：管理服务启动入口；与现有 `cmd` CLI 并存。
 - `web/admin`：Vue 3 + TypeScript + Vite 管理界面。
 - 管理元数据库：保存数据源注册、租户元信息、任务、用户/角色和审计；与被管理的目标数据库严格区分。
@@ -32,9 +33,14 @@
 - 增加 Go API 单元测试与 CI 前端检查。
 
 ### 阶段 2：数据源管理
-- 数据源 CRUD、连接测试、驱动能力声明。
-- DSN 加密存储、脱敏返回、连接池生命周期管理。
-- 管理元数据库 schema 和迁移。
+- [x] 独立 SQLite 管理元数据库与初始 schema 版本记录。
+- [x] 数据源新增、列表、详情、更新、删除 API。
+- [x] DSN 使用 AES-256-GCM 加密存储，API 不回显凭据。
+- [x] MySQL、PostgreSQL、SQLite、ClickHouse 连接测试（5 秒超时）。
+- [x] 数据源管理前端页面与 Dashboard 实际数据源数量。
+- [ ] 管理元数据库 schema 升级机制完善、备份/恢复说明。
+- [ ] 数据源连接池注册表、连接池生命周期管理和并发访问控制。
+- [ ] 对各数据库驱动补充集成测试（使用可控测试实例）。
 
 ### 阶段 3：Migration 管理
 - 迁移目录/脚本管理、版本状态、Dry Run、Up、Down、ToVersion。
