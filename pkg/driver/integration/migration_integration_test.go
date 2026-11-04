@@ -28,7 +28,7 @@ import (
 
 func TestSQLiteMigrationLifecycle(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "migration.db")
-	runMigrationLifecycle(t, "sqlite", path, "sqlite", sqlitedriver.NewDriver, func(table string) string {
+	runMigrationLifecycle(t, "sqlite", path, "sqlite", func(db *sql.DB, table string) migration.Driver { return sqlitedriver.NewDriver(db, table) }, func(table string) string {
 		return fmt.Sprintf("CREATE TABLE %s (id INTEGER PRIMARY KEY)", table)
 	})
 }
@@ -38,7 +38,7 @@ func TestMySQLMigrationLifecycle(t *testing.T) {
 	if dsn == "" {
 		t.Skip("set METEOR_TEST_MYSQL_DSN to run MySQL integration tests")
 	}
-	runMigrationLifecycle(t, "mysql", dsn, "mysql", mysqldriver.NewDriver, func(table string) string {
+	runMigrationLifecycle(t, "mysql", dsn, "mysql", func(db *sql.DB, table string) migration.Driver { return mysqldriver.NewDriver(db, table) }, func(table string) string {
 		return fmt.Sprintf("CREATE TABLE %s (id BIGINT PRIMARY KEY)", table)
 	})
 }
@@ -48,7 +48,7 @@ func TestPostgresMigrationLifecycle(t *testing.T) {
 	if dsn == "" {
 		t.Skip("set METEOR_TEST_POSTGRES_DSN to run PostgreSQL integration tests")
 	}
-	runMigrationLifecycle(t, "pgx", dsn, "postgres", postgresdriver.NewDriver, func(table string) string {
+	runMigrationLifecycle(t, "pgx", dsn, "postgres", func(db *sql.DB, table string) migration.Driver { return postgresdriver.NewDriver(db, table) }, func(table string) string {
 		return fmt.Sprintf("CREATE TABLE %s (id BIGINT PRIMARY KEY)", table)
 	})
 }
@@ -58,7 +58,7 @@ func TestClickHouseMigrationLifecycle(t *testing.T) {
 	if dsn == "" {
 		t.Skip("set METEOR_TEST_CLICKHOUSE_DSN to run ClickHouse integration tests")
 	}
-	runMigrationLifecycle(t, "clickhouse", dsn, "clickhouse", clickhousedriver.NewDriver, func(table string) string {
+	runMigrationLifecycle(t, "clickhouse", dsn, "clickhouse", func(db *sql.DB, table string) migration.Driver { return clickhousedriver.NewDriver(db, table) }, func(table string) string {
 		return fmt.Sprintf("CREATE TABLE %s (id Int64) ENGINE = MergeTree() ORDER BY id", table)
 	})
 }
