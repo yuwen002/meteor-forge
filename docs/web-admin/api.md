@@ -77,3 +77,31 @@ DSN 仅在创建和更新请求中提交。服务端使用 AES-256-GCM 加密后
 ```
 
 错误响应不会包含 DSN、密码或数据库驱动的原始错误文本。
+
+## Migration 状态与预览
+
+迁移脚本目录由服务端配置项 `METEOR_MIGRATIONS_DIR` 指定，默认是当前工作目录下的 `migrations`。脚本命名规则：
+
+- `{version}_{description}.up.sql`
+- `{version}_{description}.down.sql`
+
+### GET /datasources/{id}/migrations/status
+
+读取指定数据源的本地迁移脚本状态，返回：
+
+```json
+{
+  "data_source_id": "datasource-id",
+  "items": [
+    {"Version":"000001","Description":"create_users","IsApplied":false}
+  ],
+  "applied_count": 0,
+  "pending_count": 1
+}
+```
+
+### POST /datasources/{id}/migrations/preview
+
+生成待执行 Up 计划，不会执行迁移脚本 SQL。响应包含版本、说明、动作、是否存在 Down 脚本及脚本 SHA-256 校验和。若已应用脚本与本地脚本校验和不一致，返回 HTTP 409 并阻止生成计划。
+
+**重要：** 当前迁移驱动的历史表初始化通过 `EnsureTable` 完成，因此首次读取状态或生成预览时，可能在目标数据库创建 `schema_migrations` 历史表；这两个接口不会执行用户迁移脚本中的 DDL/DML。执行 Up/Down/ToVersion 的异步任务 API 尚未开放。
