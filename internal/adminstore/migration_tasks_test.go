@@ -30,6 +30,11 @@ func TestMigrationTaskPersistenceAndRecovery(t *testing.T) {
 	got, err = store.GetMigrationTask(context.Background(), task.ID)
 	if err != nil { t.Fatal(err) }
 	if got.Status != "interrupted" || got.FinishedAt == nil { t.Fatalf("expected interrupted task, got %+v", got) }
+	events, err := store.ListMigrationAuditEvents(context.Background(), task.ID)
+	if err != nil { t.Fatalf("ListMigrationAuditEvents: %v", err) }
+	if len(events) != 3 || events[2].FromStatus != "running" || events[2].ToStatus != "interrupted" {
+		t.Fatalf("expected recovery audit event, got %+v", events)
+	}
 }
 
 func TestActiveMigrationTasksProtectDataSourceMutation(t *testing.T) {
