@@ -45,7 +45,16 @@ func NewServerWithMigrationDir(store *adminstore.Store, migrationDir string) *Se
 			driver, err := server.migrationDriver(ctx, task.DataSourceID)
 			if err != nil { return err }
 			loader := migration.NewFileSystemLoader(os.DirFS(server.migrationDir), ".")
-			return runMigrationTask(ctx, driver, loader, task)
+			return runMigrationTask(ctx, driver, loader, task, func(progress migration.Progress) {
+				progressCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				_ = store.UpdateMigrationTaskProgress(progressCtx, task.ID, adminstore.MigrationTaskProgress{
+					CurrentVersion: progress.CurrentVersion,
+					CompletedSteps: progress.CompletedSteps,
+					TotalSteps: progress.TotalSteps,
+					CurrentAction: progress.CurrentAction,
+				})
+			})
 		})
 		recoveryCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = store.RecoverInterruptedTasks(recoveryCtx)
