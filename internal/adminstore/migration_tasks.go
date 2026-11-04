@@ -187,10 +187,35 @@ func (s *Store) ListMigrationAuditEvents(ctx context.Context, taskID string) ([]
 
 // RecoverInterruptedTasks marks tasks left running or queued by a process crash.
 func (s *Store) RecoverInterruptedTasks(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE admin_migration_tasks
-		SET status = 'interrupted', message = 'service restarted before task completion',
-		finished_at = ? WHERE status IN ('queued', 'running')`,
-		time.Now().UTC().Format(time.RFC3339Nano))
-	if err != nil { return fmt.Errorf("recover interrupted migration tasks: %w", err) }
-	return nil
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil { return fmt.Errorf("begin migration task recovery: %w", err) }
+	defer tx.Rollback() //nolint:errcheck
+	rows, err := tx.QueryContext(ctx, `SELECT id, data_source_id, action, status FROM admin_migration_tasks
+		WHERE status IN ('queued', 'running')`)
+	if err != nil { return fmt.Errorf("find interrupted migration tasks: %w", err) }
+	var tasks []MigrationTask
+	for rows.Next() {
+		var task MigrationTask
+		if err := rows.Scan(&task.ID, &task.DataSourceID, &task.Action, &task.Status); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan interrupted migration task: %w", err)
+		}
+		tasks = append(tasks, task)
+	}
+	if err := rows.Err(); err != nil { _ = rows.Close(); return err }
+	if err := rows.Close(); err != nil { return err }
+	now := time.Now().UTC()
+	stamp := now.Format(time.RFC3339Nano)
+	for _, task := range tasks {
+		result, err := tx.ExecContext(ctx, `UPDATE admin_migration_tasks
+			SET status = 'interrupted', message = 'service restarted before task completion', finished_at = ?
+			WHERE id = ? AND status = ?`, stamp, task.ID, task.Status)
+		if err != nil { return fmt.Errorf("recover migration task %s: %w", task.ID, err) }
+		count, err := result.RowsAffected()
+		if err != nil { return err }
+		if count == 0 { continue }
+		if err := insertMigrationAuditEvent(ctx, tx, task, task.Status, "interrupted",
+			"service restarted before task completion", now); err != nil { return err }
+	}
+	return tx.Commit()
 }
