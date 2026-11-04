@@ -90,7 +90,9 @@ func (s *Store) CreateTenant(ctx context.Context, raw TenantInput) (Tenant, erro
 		id, input.Name, input.Code, input.DataSourceID, input.Status,
 		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "unique") { return Tenant{}, ErrTenantConflict }
+		message := strings.ToLower(err.Error())
+		if strings.Contains(message, "unique") { return Tenant{}, ErrTenantConflict }
+		if strings.Contains(message, ErrTenantActiveMigration.Error()) { return Tenant{}, ErrTenantActiveMigration }
 		return Tenant{}, fmt.Errorf("create tenant: %w", err)
 	}
 	if err := tx.Commit(); err != nil { return Tenant{}, fmt.Errorf("commit tenant creation: %w", err) }
