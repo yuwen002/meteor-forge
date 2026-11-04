@@ -1,0 +1,125 @@
+package adminapi
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"time"
+
+	"github.com/yuwen002/meteor-forge/internal/adminstore"
+)
+
+type tenantStore interface {
+	CreateTenant(context.Context, adminstore.TenantInput) (adminstore.Tenant, error)
+	ListTenants(context.Context) ([]adminstore.Tenant, error)
+	GetTenant(context.Context, string) (adminstore.Tenant, error)
+	UpdateTenant(context.Context, string, adminstore.TenantInput) (adminstore.Tenant, error)
+	DeleteTenant(context.Context, string) error
+}
+
+func (s *Server) registerTenantRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET "+apiPrefix+"/tenants", s.listTenants)
+	mux.HandleFunc("POST "+apiPrefix+"/tenants", s.createTenant)
+	mux.HandleFunc("GET "+apiPrefix+"/tenants/{id}", s.getTenant)
+	mux.HandleFunc("PUT "+apiPrefix+"/tenants/{id}", s.updateTenant)
+	mux.HandleFunc("DELETE "+apiPrefix+"/tenants/{id}", s.deleteTenant)
+	mux.HandleFunc("POST "+apiPrefix+"/tenants/{id}/test", s.testTenantConnection)
+}
+
+func (s *Server) requireTenantStore(w http.ResponseWriter) bool {
+	if s.tenants != nil { return true }
+	writeAPIError(w, http.StatusServiceUnavailable, "metadata_unavailable", "management metadata store is not configured")
+	return false
+}
+
+func (s *Server) listTenants(w http.ResponseWriter, r *http.Request) {
+	if !s.requireTenantStore(w) { return }
+	items, err := s.tenants.ListTenants(r.Context())
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "internal_error", "unable to list tenants")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) createTenant(w http.ResponseWriter, r *http.Request) {
+	if !s.requireTenantStore(w) { return }
+	var input adminstore.TenantInput
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	item, err := s.tenants.CreateTenant(r.Context(), input)
+	if err != nil { writeTenantStoreError(w, err); return }
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (s *Server) getTenant(w http.ResponseWriter, r *http.Request) {
+	if !s.requireTenantStore(w) { return }
+	item, err := s.tenants.GetTenant(r.Context(), r.PathValue("id"))
+	if err != nil { writeTenantStoreError(w, err); return }
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) updateTenant(w http.ResponseWriter, r *http.Request) {
+	if !s.requireTenantStore(w) { return }
+	var input adminstore.TenantInput
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	item, err := s.tenants.UpdateTenant(r.Context(), r.PathValue("id"), input)
+	if err != nil { writeTenantStoreError(w, err); return }
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) deleteTenant(w http.ResponseWriter, r *http.Request) {
+	if !s.requireTenantStore(w) { return }
+	if err := s.tenants.DeleteTenant(r.Context(), r.PathValue("id")); err != nil {
+		writeTenantStoreError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) testTenantConnection(w http.ResponseWriter, r *http.Request) {
+	if !s.requireTenantStore(w) || s.store == nil { return }
+	item, err := s.tenants.GetTenant(r.Context(), r.PathValue("id"))
+	if err != nil { writeTenantStoreError(w, err); return }
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	db, err := s.pools.Get(ctx, item.DataSourceID, func(ctx context.Context, id string) (string, string, error) {
+		driver, dsn, err := s.store.ConnectionConfig(ctx, id)
+		if err != nil { return "", "", err }
+		driverName := map[string]string{"mysql": "mysql", "postgres": "pgx", "sqlite": "sqlite", "clickhouse": "clickhouse"}[driver]
+		if driverName == "" { return "", "", errors.New("unsupported database driver") }
+		return driverName, dsn, nil
+	})
+	if err == nil { err = db.PingContext(ctx) }
+	if err != nil {
+		if db != nil { s.pools.InvalidateIfCurrent(item.DataSourceID, db) }
+		writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "connection failed; verify the tenant data source"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "tenant data source connection successful"})
+}
+
+func writeTenantStoreError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, adminstore.ErrTenantNotFound):
+		writeAPIError(w, http.StatusNotFound, "tenant_not_found", "tenant not found")
+	case errors.Is(err, adminstore.ErrNotFound):
+		writeAPIError(w, http.StatusNotFound, "data_source_not_found", "tenant data source not found")
+	case errors.Is(err, adminstore.ErrTenantConflict):
+		writeAPIError(w, http.StatusConflict, "tenant_conflict", "a tenant with this code already exists")
+	case errors.Is(err, adminstore.ErrDataSourceHasTenants):
+		writeAPIError(w, http.StatusConflict, "data_source_has_tenants", "the data source cannot be changed or deleted while tenants reference it")
+	case errors.Is(err, adminstore.ErrTenantActiveMigration):
+		writeAPIError(w, http.StatusConflict, "tenant_has_active_migration", "the tenant cannot be changed or deleted while a migration task is queued or running for its data source")
+	case errors.Is(err, adminstore.ErrTenantInvalidInput):
+		writeAPIError(w, http.StatusBadRequest, "invalid_tenant", err.Error())
+	default:
+		writeAPIError(w, http.StatusInternalServerError, "internal_error", "unable to process tenant request")
+	}
+}
