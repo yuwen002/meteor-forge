@@ -50,7 +50,6 @@ func isMissingDriverColumn(err error) bool {
 	for _, marker := range []string{
 		"no such column: driver",
 		"unknown column 'driver'",
-		"unknown column \`driver\`",
 		"column \"driver\" does not exist",
 		"column driver does not exist",
 	} {
