@@ -149,7 +149,7 @@ Down、DownSteps 和 ToVersion 必须显式提交 `confirm: true`。前端还会
 
 读取单个任务状态。
 
-任务状态：`queued`、`running`、`succeeded`、`failed`、`canceled`、`interrupted`。 状态转换由管理元数据库原子约束：`queued` 只能进入 `running`、`failed`、`canceled` 或 `interrupted`；`running` 只能进入 `succeeded`、`failed`、`canceled` 或 `interrupted`；终态不可重新打开或改写。无效转换会被拒绝。任务响应只包含安全的状态摘要，不包含 DSN、SQL 内容或数据库驱动原始错误。
+任务状态：`queued`、`running`、`succeeded`、`failed`、`canceled`、`interrupted`。任务详情和列表同时返回进度字段：`current_version`（当前迁移版本）、`completed_steps`、`total_steps`、`current_action`（`up` / `down`）和 `progress_updated_at`。进度在每条迁移开始及成功完成时写入管理元数据库；没有待执行迁移时这些计数保持为 0。开始时间与结束时间可用于计算任务耗时。进度只反映已成功完成的迁移步骤，不代表单条 SQL 内部的执行百分比；单条 SQL 执行期间当前版本会保持不变。状态转换由管理元数据库原子约束：`queued` 只能进入 `running`、`failed`、`canceled` 或 `interrupted`；`running` 只能进入 `succeeded`、`failed`、`canceled` 或 `interrupted`；终态不可重新打开或改写。无效转换会被拒绝。任务响应只包含安全的状态摘要，不包含 DSN、SQL 内容或数据库驱动原始错误。
 
 ### GET /migration-tasks/{id}/audit
 
