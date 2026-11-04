@@ -74,8 +74,15 @@ func (m *MigrationTaskManager) Submit(ctx context.Context, task adminstore.Migra
 }
 
 func (m *MigrationTaskManager) execute(ctx context.Context, cancel context.CancelFunc, lock *sync.Mutex, task adminstore.MigrationTask) {
-	defer m.wg.Done()
-	defer cancel()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			finished := time.Now().UTC()
+			_ = m.store.UpdateMigrationTask(context.Background(), task.ID, "failed", "migration worker stopped unexpectedly; inspect target schema before retrying", nil, &finished)
+		}
+		m.remove(task.ID)
+		cancel()
+		m.wg.Done()
+	}()
 	lock.Lock()
 	defer lock.Unlock()
 
@@ -83,11 +90,11 @@ func (m *MigrationTaskManager) execute(ctx context.Context, cancel context.Cance
 	if err := ctx.Err(); err != nil {
 		finished := time.Now().UTC()
 		_ = m.store.UpdateMigrationTask(context.Background(), task.ID, "canceled", "task canceled before execution", nil, &finished)
-		m.remove(task.ID)
 		return
 	}
-	if err := m.store.UpdateMigrationTask(context.Background(), task.ID, "running", "migration is running", &now, nil); err != nil {
-		m.remove(task.ID)
+	if err := m.store.UpdateMigrationTask(ctx, task.ID, "running", "migration is running", &now, nil); err != nil {
+		finished := time.Now().UTC()
+		_ = m.store.UpdateMigrationTask(context.Background(), task.ID, "failed", "unable to start migration worker; inspect task state before retrying", nil, &finished)
 		return
 	}
 
@@ -104,9 +111,7 @@ func (m *MigrationTaskManager) execute(ctx context.Context, cancel context.Cance
 		}
 	}
 	_ = m.store.UpdateMigrationTask(context.Background(), task.ID, status, message, nil, &finished)
-	m.remove(task.ID)
 }
-
 func (m *MigrationTaskManager) remove(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
