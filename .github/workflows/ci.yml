@@ -47,6 +47,65 @@ jobs:
           name: coverage
           path: coverage.out
 
+
+  driver-integration:
+    name: Database Driver Integration
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: meteor_forge_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: meteor_forge_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d meteor_forge_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+      clickhouse:
+        image: clickhouse/clickhouse-server:24.8
+        env:
+          CLICKHOUSE_PASSWORD: clickhouse
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+        ports:
+          - 9000:9000
+          - 8123:8123
+        options: >-
+          --health-cmd="clickhouse-client --user default --password clickhouse --query 'SELECT 1'"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=18
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Run database driver integration tests
+        env:
+          METEOR_TEST_MYSQL_DSN: "root:root@tcp(127.0.0.1:3306)/meteor_forge_test?parseTime=true"
+          METEOR_TEST_POSTGRES_DSN: "postgres://postgres:postgres@127.0.0.1:5432/meteor_forge_test?sslmode=disable"
+          METEOR_TEST_CLICKHOUSE_DSN: "clickhouse://default:clickhouse@127.0.0.1:9000/default?dial_timeout=5s&read_timeout=10s"
+        run: go test -tags=integration ./pkg/driver/integration -count=1 -v
+
   web-admin:
     name: Web Admin (Node)
     runs-on: ubuntu-latest
