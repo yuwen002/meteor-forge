@@ -28,6 +28,7 @@ type MigrationTaskManager struct {
 	cancels map[string]context.CancelFunc
 	locks   map[string]*sync.Mutex
 	closed  bool
+	wg      sync.WaitGroup
 }
 
 func NewMigrationTaskManager(store migrationTaskStore, run func(context.Context, adminstore.MigrationTask) error) *MigrationTaskManager {
@@ -67,11 +68,13 @@ func (m *MigrationTaskManager) Submit(ctx context.Context, task adminstore.Migra
 	}
 	m.mu.Unlock()
 
+	m.wg.Add(1)
 	go m.execute(taskCtx, cancel, lock, created)
 	return created, nil
 }
 
 func (m *MigrationTaskManager) execute(ctx context.Context, cancel context.CancelFunc, lock *sync.Mutex, task adminstore.MigrationTask) {
+	defer m.wg.Done()
 	defer cancel()
 	lock.Lock()
 	defer lock.Unlock()
@@ -126,6 +129,30 @@ func (m *MigrationTaskManager) Close() {
 	for _, cancel := range m.cancels { cancels = append(cancels, cancel) }
 	m.mu.Unlock()
 	for _, cancel := range cancels { cancel() }
+	m.wg.Wait()
+}
+
+// validatePendingUpScripts prevents an Up task from running when an already-applied
+// migration is missing locally or its checksum has changed.
+func validatePendingUpScripts(ctx context.Context, driver migration.Driver, loader migration.Loader) error {
+	if err := driver.EnsureTable(ctx); err != nil { return err }
+	scripts, err := loader.LoadScripts(ctx)
+	if err != nil { return err }
+	records, err := driver.GetAppliedVersions(ctx)
+	if err != nil { return err }
+	byVersion := make(map[string]*migration.Script, len(scripts))
+	for _, script := range scripts {
+		if script.UpSQL == "" { return errors.New("migration script has no up SQL") }
+		byVersion[script.Version] = script
+	}
+	for _, record := range records {
+		script, ok := byVersion[record.Version]
+		if !ok { return errors.New("an applied migration script is missing locally") }
+		if record.Checksum != "" && record.Checksum != script.Checksum() {
+			return migration.ErrChecksumMismatch
+		}
+	}
+	return nil
 }
 
 // runMigrationTask delegates execution to the existing core migration engine.
@@ -133,13 +160,22 @@ func runMigrationTask(ctx context.Context, driver migration.Driver, loader migra
 	engine := migration.NewDefaultMigrator(loader, driver)
 	switch task.Action {
 	case "up":
-		return engine.Up(ctx)
+		if err := validatePendingUpScripts(ctx, driver, loader); err != nil { return err }
+		err := engine.Up(ctx)
+		if errors.Is(err, migration.ErrNoPendingMigrations) { return nil }
+		return err
 	case "down":
-		return engine.Down(ctx)
+		err := engine.Down(ctx)
+		if errors.Is(err, migration.ErrNoPendingMigrations) { return nil }
+		return err
 	case "down_steps":
-		return engine.DownSteps(ctx, task.Steps)
+		err := engine.DownSteps(ctx, task.Steps)
+		if errors.Is(err, migration.ErrNoPendingMigrations) { return nil }
+		return err
 	case "to_version":
-		return engine.ToVersion(ctx, task.TargetVersion)
+		err := engine.ToVersion(ctx, task.TargetVersion)
+		if errors.Is(err, migration.ErrNoPendingMigrations) { return nil }
+		return err
 	default:
 		return errors.New("unsupported migration action")
 	}
