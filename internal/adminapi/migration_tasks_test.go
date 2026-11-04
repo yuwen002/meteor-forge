@@ -169,3 +169,94 @@ func TestMigrationTasksForSameDataSourceAreSerializedAndReleaseLock(t *testing.T
 	if got := maxActive.Load(); got != 1 { t.Fatalf("maximum concurrent tasks for one data source = %d, want 1", got) }
 	if len(manager.locks) != 0 { t.Fatalf("data source lock entries = %d, want 0 after completion", len(manager.locks)) }
 }
+
+
+func TestCancelRunningAndQueuedMigrationTasks(t *testing.T) {
+	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+
+	started := make(chan struct{}, 2)
+	manager := NewMigrationTaskManager(store, func(ctx context.Context, _ adminstore.MigrationTask) error {
+		started <- struct{}{}
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	first, err := manager.Submit(context.Background(), adminstore.MigrationTask{
+		DataSourceID: "cancel-source", Action: "up",
+	})
+	if err != nil { t.Fatal(err) }
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second): t.Fatal("first task did not start")
+	}
+	second, err := manager.Submit(context.Background(), adminstore.MigrationTask{
+		DataSourceID: "cancel-source", Action: "up",
+	})
+	if err != nil { t.Fatal(err) }
+
+	if err := manager.Cancel(second.ID); err != nil { t.Fatalf("cancel queued task: %v", err) }
+	if err := manager.Cancel(first.ID); err != nil { t.Fatalf("cancel running task: %v", err) }
+	if err := manager.Close(); err != nil { t.Fatalf("close manager: %v", err) }
+	waitForTaskStatus(t, store, first.ID, "canceled")
+	waitForTaskStatus(t, store, second.ID, "canceled")
+	if len(manager.locks) != 0 { t.Fatalf("data source locks remain after cancellation: %d", len(manager.locks)) }
+}
+
+func TestMigrationTaskManagerCloseContextCancelsAndWaits(t *testing.T) {
+	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+
+	started := make(chan struct{})
+	manager := NewMigrationTaskManager(store, func(ctx context.Context, _ adminstore.MigrationTask) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	task, err := manager.Submit(context.Background(), adminstore.MigrationTask{
+		DataSourceID: "shutdown-source", Action: "up",
+	})
+	if err != nil { t.Fatal(err) }
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second): t.Fatal("task did not start")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := manager.CloseContext(ctx); err != nil { t.Fatalf("CloseContext: %v", err) }
+	waitForTaskStatus(t, store, task.ID, "canceled")
+	if len(manager.locks) != 0 { t.Fatalf("data source locks remain after shutdown: %d", len(manager.locks)) }
+}
+
+func TestMigrationTaskManagerCloseContextHasBoundedWait(t *testing.T) {
+	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	manager := NewMigrationTaskManager(store, func(ctx context.Context, _ adminstore.MigrationTask) error {
+		close(started)
+		<-release // Simulate a database driver that does not honor context cancellation.
+		return ctx.Err()
+	})
+	task, err := manager.Submit(context.Background(), adminstore.MigrationTask{
+		DataSourceID: "unresponsive-source", Action: "up",
+	})
+	if err != nil { t.Fatal(err) }
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second): t.Fatal("task did not start")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := manager.CloseContext(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("CloseContext error = %v, want context deadline exceeded", err)
+	}
+	close(release)
+	if err := manager.Close(); err != nil { t.Fatalf("wait for released worker: %v", err) }
+	waitForTaskStatus(t, store, task.ID, "canceled")
+}
