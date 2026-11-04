@@ -230,6 +230,15 @@ func (s *Store) migrate(ctx context.Context) error {
 		END`); err != nil {
 		return fmt.Errorf("protect tenant data source deletion: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER IF NOT EXISTS prevent_tenant_insert_with_active_migrations
+		BEFORE INSERT ON admin_tenants
+		WHEN EXISTS (SELECT 1 FROM admin_migration_tasks
+			WHERE data_source_id = NEW.data_source_id AND status IN ('queued', 'running'))
+		BEGIN
+			SELECT RAISE(ABORT, 'tenant is used by an active migration task');
+		END`); err != nil {
+		return fmt.Errorf("protect tenant creation during migration: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER IF NOT EXISTS prevent_tenant_update_with_active_migrations
 		BEFORE UPDATE ON admin_tenants
 		WHEN EXISTS (SELECT 1 FROM admin_migration_tasks
