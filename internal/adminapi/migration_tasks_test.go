@@ -40,6 +40,13 @@ func TestMigrationTaskUpAndConfirmedDown(t *testing.T) {
 	var created struct { ID string `json:"id"` }
 	if err := json.Unmarshal(upRec.Body.Bytes(), &created); err != nil { t.Fatal(err) }
 	waitForTaskStatus(t, store, created.ID, "succeeded")
+	completedTask, err := store.GetMigrationTask(context.Background(), created.ID)
+	if err != nil { t.Fatal(err) }
+	if completedTask.CurrentVersion != "000001" || completedTask.CompletedSteps != 1 ||
+		completedTask.TotalSteps != 1 || completedTask.CurrentAction != "up" ||
+		completedTask.ProgressUpdatedAt == nil {
+		t.Fatalf("expected completed migration progress to be persisted, got %+v", completedTask)
+	}
 
 	db, err := sql.Open("sqlite", target)
 	if err != nil { t.Fatal(err) }
