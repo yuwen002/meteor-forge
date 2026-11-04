@@ -187,8 +187,19 @@ func (s *Store) migrate(ctx context.Context) error {
 		ON admin_migration_audit_events(task_id, occurred_at)`); err != nil {
 		return fmt.Errorf("index migration audit events: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admin_migration_task_progress (
+		task_id TEXT PRIMARY KEY,
+		current_version TEXT NOT NULL DEFAULT '',
+		completed_steps INTEGER NOT NULL DEFAULT 0,
+		total_steps INTEGER NOT NULL DEFAULT 0,
+		current_action TEXT NOT NULL DEFAULT '',
+		updated_at TEXT NOT NULL,
+		FOREIGN KEY(task_id) REFERENCES admin_migration_tasks(id) ON DELETE CASCADE
+	)`); err != nil {
+		return fmt.Errorf("create migration task progress table: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
-		VALUES (4, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		VALUES (5, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("record metadata schema version: %w", err)
 	}
 	return tx.Commit()
