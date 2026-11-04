@@ -17,6 +17,7 @@ type migrationTaskStore interface {
 	GetMigrationTask(context.Context, string) (adminstore.MigrationTask, error)
 	ListMigrationTasks(context.Context, int) ([]adminstore.MigrationTask, error)
 	UpdateMigrationTask(context.Context, string, string, string, *time.Time, *time.Time) error
+	UpdateMigrationTaskProgress(context.Context, string, adminstore.MigrationTaskProgress) error
 	RecoverInterruptedTasks(context.Context) error
 }
 
@@ -157,8 +158,8 @@ func (m *MigrationTaskManager) Close() {
 }
 
 // runMigrationTask delegates execution to the existing core migration engine.
-func runMigrationTask(ctx context.Context, driver migration.Driver, loader migration.Loader, task adminstore.MigrationTask) error {
-	engine := migration.NewDefaultMigrator(loader, driver)
+func runMigrationTask(ctx context.Context, driver migration.Driver, loader migration.Loader, task adminstore.MigrationTask, onProgress func(migration.Progress)) error {
+	engine := migration.NewDefaultMigratorWithObserver(loader, driver, onProgress)
 	switch task.Action {
 	case "up":
 		err := engine.Up(ctx)
