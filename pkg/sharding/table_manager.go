@@ -45,11 +45,11 @@ func isValidTableName(name string) bool {
 		return false
 	}
 	for _, r := range name {
-		//nolint:staticcheck // QF1001 mis-suggests De Morgan here — ASCII ordering makes the OR-form wrong
-		if !(r >= 'a' && r <= 'z') &&
-			!(r >= 'A' && r <= 'Z') &&
-			!(r >= '0' && r <= '9') &&
-			r != '_' {
+		//nolint:staticcheck // QF1001 wants De Morgan in both directions; both forms are mathematically equivalent
+		if !((r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			r == '_') {
 			return false
 		}
 	}
