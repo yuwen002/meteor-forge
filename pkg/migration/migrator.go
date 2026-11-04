@@ -38,6 +38,20 @@ func (m *DefaultMigrator) releaseLock(_ context.Context) {
 	_ = m.driver.Unlock(context.Background())
 }
 
+// validateAppliedScripts verifies every applied database version still has a matching local script.
+// Callers must hold the driver's migration lock.
+func validateAppliedScripts(records []Record, scripts []*Script) error {
+	local := make(map[string]*Script, len(scripts))
+	for _, script := range scripts { local[script.Version] = script }
+	for _, record := range records {
+		script, ok := local[record.Version]
+		if !ok { return fmt.Errorf("applied migration script for version %s is missing locally", record.Version) }
+		if record.Checksum != "" && record.Checksum != script.Checksum() {
+			return fmt.Errorf("%w: version %s (db=%s, local=%s)", ErrChecksumMismatch, record.Version, record.Checksum, script.Checksum())
+		}
+	}
+	return nil
+}
 // Up 执行所有未完成的迁移脚本。
 // 执行前先对全部本地脚本做校验和防篡改比对，已应用过的脚本内容被修改时返回 ErrChecksumMismatch。
 // 整个过程持有 Driver 迁移锁，防止多实例并发迁移。
@@ -67,27 +81,16 @@ func (m *DefaultMigrator) Up(ctx context.Context) error {
 		return err
 	}
 
-	// 转成 map 方便快速查找（version -> 存档哈希）
-	appliedMap := make(map[string]string)
-	for _, r := range appliedRecords {
-		appliedMap[r.Version] = r.Checksum
+	if err := validateAppliedScripts(appliedRecords, scripts); err != nil {
+		return err
 	}
-
-	// 3.5 防篡改校验：已应用过的脚本若本地内容与库中存档哈希不一致，
-	// 立即中止，避免“代码与数据库对不上”的线上事故。
-	// 存档哈希为空串的存量记录（旧版工具写入）跳过比对，保持升级兼容。
-	for _, s := range scripts {
-		if archived, applied := appliedMap[s.Version]; applied && archived != "" {
-			if archived != s.Checksum() {
-				return fmt.Errorf("%w: version %s (db=%s, local=%s)", ErrChecksumMismatch, s.Version, archived, s.Checksum())
-			}
-		}
-	}
+	appliedMap := make(map[string]bool, len(appliedRecords))
+	for _, record := range appliedRecords { appliedMap[record.Version] = true }
 
 	// 4. 筛选出待执行的脚本
 	var pendingScripts []*Script
 	for _, s := range scripts {
-		if _, applied := appliedMap[s.Version]; !applied {
+		if !appliedMap[s.Version] {
 			pendingScripts = append(pendingScripts, s)
 		}
 	}
@@ -152,6 +155,7 @@ func (m *DefaultMigrator) DownSteps(ctx context.Context, steps int) error {
 	for _, s := range scripts {
 		scriptMap[s.Version] = s
 	}
+	if err := validateAppliedScripts(appliedRecords, scripts); err != nil { return err }
 
 	// 记录不足时宽松退档：只回滚实际存在的条数（退到空即返回 nil）
 	count := min(steps, len(appliedRecords))
@@ -162,6 +166,7 @@ func (m *DefaultMigrator) DownSteps(ctx context.Context, steps int) error {
 		if !ok {
 			return fmt.Errorf("rollback failed: local script for version %s not found", version)
 		}
+		if script.DownSQL == "" { return fmt.Errorf("rollback failed: down SQL for version %s is empty", version) }
 		if err := m.driver.ApplyMigration(ctx, script, true); err != nil {
 			return fmt.Errorf("migration down failed at version %s: %w", version, err)
 		}
@@ -210,9 +215,8 @@ func (m *DefaultMigrator) ToVersion(ctx context.Context, version string) error {
 	}
 
 	appliedRecords, err := m.driver.GetAppliedVersions(ctx)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
+	if err := validateAppliedScripts(appliedRecords, scripts); err != nil { return err }
 	appliedMap := make(map[string]bool)
 	for _, r := range appliedRecords {
 		appliedMap[r.Version] = true
@@ -242,6 +246,7 @@ func (m *DefaultMigrator) ToVersion(ctx context.Context, version string) error {
 		if !appliedMap[scripts[i].Version] {
 			continue
 		}
+		if scripts[i].DownSQL == "" { return fmt.Errorf("migration to version %s cannot roll back %s: down SQL is empty", version, scripts[i].Version) }
 		if err := m.driver.ApplyMigration(ctx, scripts[i], true); err != nil {
 			return fmt.Errorf("migration to version %s failed rollback at %s: %w", version, scripts[i].Version, err)
 		}
