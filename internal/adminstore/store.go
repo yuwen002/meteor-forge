@@ -388,6 +388,7 @@ func (s *Store) Update(ctx context.Context, id string, input DataSourceInput) (D
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") { return DataSource{}, ErrConflict }
 		if strings.Contains(strings.ToLower(err.Error()), ErrActiveTasks.Error()) { return DataSource{}, ErrActiveTasks }
+		if strings.Contains(strings.ToLower(err.Error()), ErrDataSourceHasTenants.Error()) { return DataSource{}, ErrDataSourceHasTenants }
 		return DataSource{}, fmt.Errorf("update data source: %w", err)
 	}
 	count, err := result.RowsAffected()
@@ -401,6 +402,7 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	result, err := s.db.ExecContext(ctx, "DELETE FROM admin_data_sources WHERE id = ?", id)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), ErrActiveTasks.Error()) { return ErrActiveTasks }
+		if strings.Contains(strings.ToLower(err.Error()), ErrDataSourceHasTenants.Error()) { return ErrDataSourceHasTenants }
 		return fmt.Errorf("delete data source: %w", err)
 	}
 	count, err := result.RowsAffected()
