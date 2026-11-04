@@ -109,6 +109,10 @@ func runMigrationLifecycle(
 	if err := drv.ApplyMigration(ctx, script, false); err != nil {
 		t.Fatalf("%s apply up migration: %v", driverLabel, err)
 	}
+	var rowCount int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+targetTable).Scan(&rowCount); err != nil {
+		t.Fatalf("%s verify target table after up: %v", driverLabel, err)
+	}
 
 	records, err := drv.GetAppliedVersions(ctx)
 	if err != nil {
