@@ -54,6 +54,25 @@ func TestTenantManagementAPI(t *testing.T) {
 		t.Fatalf("test connection status=%d body=%s", tested.Code, tested.Body.String())
 	}
 
+	task, err := store.CreateMigrationTask(context.Background(), adminstore.MigrationTask{
+		ID: "tenant-api-active-task", DataSourceID: source.ID, Action: "up",
+	})
+	if err != nil { t.Fatal(err) }
+	_ = task
+	activeUpdate := request(http.MethodPut, "/api/v1/tenants/"+tenant.ID,
+		`{"name":"Paused","code":"acme","data_source_id":"`+source.ID+`","status":"suspended"}`)
+	if activeUpdate.Code != http.StatusConflict || !strings.Contains(activeUpdate.Body.String(), "tenant_has_active_migration") {
+		t.Fatalf("tenant update during migration status=%d body=%s", activeUpdate.Code, activeUpdate.Body.String())
+	}
+	activeDelete := request(http.MethodDelete, "/api/v1/tenants/"+tenant.ID, "")
+	if activeDelete.Code != http.StatusConflict || !strings.Contains(activeDelete.Body.String(), "tenant_has_active_migration") {
+		t.Fatalf("tenant delete during migration status=%d body=%s", activeDelete.Code, activeDelete.Body.String())
+	}
+	finished := time.Now().UTC()
+	if err := store.UpdateMigrationTask(context.Background(), "tenant-api-active-task", "canceled", "canceled", nil, &finished); err != nil {
+		t.Fatal(err)
+	}
+
 	duplicate := request(http.MethodPost, "/api/v1/tenants", createBody)
 	if duplicate.Code != http.StatusConflict || !strings.Contains(duplicate.Body.String(), "tenant_conflict") {
 		t.Fatalf("duplicate status=%d body=%s", duplicate.Code, duplicate.Body.String())
