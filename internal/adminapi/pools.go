@@ -85,6 +85,18 @@ func (m *PoolManager) Invalidate(id string) {
 	}
 }
 
+// InvalidateIfCurrent retires a pool only when it is still the registered instance.
+// It prevents a failed Ping on an old in-flight request from closing a newer pool
+// that was created after a concurrent data source update.
+func (m *PoolManager) InvalidateIfCurrent(id string, db *sql.DB) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if current, ok := m.pools[id]; ok && current.db == db {
+		delete(m.pools, id)
+		_ = current.db.Close()
+	}
+}
+
 // Close prevents future acquisitions and closes every registered pool.
 func (m *PoolManager) Close() error {
 	m.mu.Lock()
