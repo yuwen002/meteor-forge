@@ -105,3 +105,52 @@ DSN 仅在创建和更新请求中提交。服务端使用 AES-256-GCM 加密后
 生成待执行 Up 计划，不会执行迁移脚本 SQL。响应包含版本、说明、动作、是否存在 Down 脚本及脚本 SHA-256 校验和。若已应用脚本与本地脚本校验和不一致，返回 HTTP 409 并阻止生成计划。
 
 **重要：** 当前迁移驱动的历史表初始化通过 `EnsureTable` 完成，因此首次读取状态或生成预览时，可能在目标数据库创建 `schema_migrations` 历史表；这两个接口不会执行用户迁移脚本中的 DDL/DML。执行 Up/Down/ToVersion 的异步任务 API 尚未开放。
+
+
+## Migration 后台执行任务
+
+后台执行任务记录保存在管理元数据库中。服务重启后，仍处于 queued/running 的任务会标记为 interrupted；不会自动重放，避免不确定的 SQL 部分执行状态被重复应用。任务执行超时为 30 分钟，同一数据源的任务在当前服务实例内串行执行，核心 Migration Driver 仍会获取数据库级迁移锁。
+
+### POST /datasources/{id}/migrations/tasks
+
+提交后台迁移任务，返回 HTTP 202 和任务记录。
+
+Up 请求：
+
+```json
+{"action":"up"}
+```
+
+回滚最近一次：
+
+```json
+{"action":"down","confirm":true}
+```
+
+连续回滚指定步数（1–100）：
+
+```json
+{"action":"down_steps","steps":2,"confirm":true}
+```
+
+跳转到目标版本；`0` 表示回滚全部已应用迁移：
+
+```json
+{"action":"to_version","target_version":"000010","confirm":true}
+```
+
+Down、DownSteps 和 ToVersion 必须显式提交 `confirm: true`。前端还会显示二次确认对话框。提交前请备份目标数据库并检查迁移脚本。任务取消不等于数据库回滚：取消时已经完成的迁移步骤不会自动撤销。
+
+### GET /migration-tasks
+
+返回最近 50 条任务记录，按创建时间倒序。
+
+### GET /migration-tasks/{id}
+
+读取单个任务状态。
+
+任务状态：`queued`、`running`、`succeeded`、`failed`、`canceled`、`interrupted`。任务响应只包含安全的状态摘要，不包含 DSN、SQL 内容或数据库驱动原始错误。
+
+### POST /migration-tasks/{id}/cancel
+
+请求取消当前服务实例中正在排队或执行的任务，返回 HTTP 202。任务执行上下文会被取消；具体数据库驱动和 SQL 执行是否能立即响应取消取决于驱动实现。若任务已完成或不在当前实例活动列表中，返回 HTTP 409。
