@@ -93,7 +93,7 @@ DSN 仅在创建和更新请求中提交。服务端使用 AES-256-GCM 加密后
 {
   "data_source_id": "datasource-id",
   "items": [
-    {"Version":"000001","Description":"create_users","IsApplied":false}
+    {"version":"000001","description":"create_users","is_applied":false}
   ],
   "applied_count": 0,
   "pending_count": 1
