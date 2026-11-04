@@ -22,6 +22,7 @@ import (
 var (
 	ErrNotFound = errors.New("data source not found")
 	ErrConflict = errors.New("data source name already exists")
+	ErrInvalidInput = errors.New("invalid data source input")
 )
 
 // DataSource contains only fields safe to return to API clients.
@@ -135,16 +136,16 @@ func (s *Store) decrypt(ciphertext []byte) (string, error) {
 
 func validateInput(input DataSourceInput) error {
 	if strings.TrimSpace(input.Name) == "" || len(input.Name) > 128 {
-		return errors.New("name must contain between 1 and 128 characters")
+		return fmt.Errorf("%w: name must contain between 1 and 128 characters", ErrInvalidInput)
 	}
 	if strings.TrimSpace(input.DSN) == "" || len(input.DSN) > 4096 {
-		return errors.New("dsn must contain between 1 and 4096 characters")
+		return fmt.Errorf("%w: dsn must contain between 1 and 4096 characters", ErrInvalidInput)
 	}
 	switch input.Driver {
 	case "mysql", "postgres", "sqlite", "clickhouse":
 		return nil
 	default:
-		return errors.New("driver must be one of mysql, postgres, sqlite, clickhouse")
+		return fmt.Errorf("%w: driver must be one of mysql, postgres, sqlite, clickhouse", ErrInvalidInput)
 	}
 }
 
