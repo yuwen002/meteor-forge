@@ -2,7 +2,6 @@ package adminapi
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -64,32 +63,35 @@ func (s *Server) updateDataSource(w http.ResponseWriter, r *http.Request) {
 	if !s.requireStore(w) { return }
 	var input adminstore.DataSourceInput
 	if err := decodeJSON(w, r, &input); err != nil { writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error()); return }
-	item, err := s.store.Update(r.Context(), r.PathValue("id"), input)
+	id := r.PathValue("id")
+	item, err := s.store.Update(r.Context(), id, input)
 	if err != nil { writeStoreError(w, err); return }
+	s.pools.Invalidate(id)
 	writeJSON(w, http.StatusOK, item)
 }
 
 func (s *Server) deleteDataSource(w http.ResponseWriter, r *http.Request) {
 	if !s.requireStore(w) { return }
-	if err := s.store.Delete(r.Context(), r.PathValue("id")); err != nil { writeStoreError(w, err); return }
+	id := r.PathValue("id")
+	if err := s.store.Delete(r.Context(), id); err != nil { writeStoreError(w, err); return }
+	s.pools.Invalidate(id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) testDataSource(w http.ResponseWriter, r *http.Request) {
 	if !s.requireStore(w) { return }
-	driver, dsn, err := s.store.ConnectionConfig(r.Context(), r.PathValue("id"))
-	if err != nil { writeStoreError(w, err); return }
-
-	driverName := map[string]string{"mysql":"mysql", "postgres":"pgx", "sqlite":"sqlite", "clickhouse":"clickhouse"}[driver]
-	if driverName == "" { writeAPIError(w, http.StatusBadRequest, "unsupported_driver", "unsupported database driver"); return }
-
+	id := r.PathValue("id")
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	db, err := sql.Open(driverName, dsn)
-	if err == nil {
-		defer db.Close()
-		err = db.PingContext(ctx)
-	}
+	db, err := s.pools.Get(ctx, id, func(ctx context.Context, id string) (string, string, error) {
+		driver, dsn, err := s.store.ConnectionConfig(ctx, id)
+		if err != nil { return "", "", err }
+		driverName := map[string]string{"mysql":"mysql", "postgres":"pgx", "sqlite":"sqlite", "clickhouse":"clickhouse"}[driver]
+		if driverName == "" { return "", "", errors.New("unsupported database driver") }
+		return driverName, dsn, nil
+	})
+	if err == nil { err = db.PingContext(ctx) }
+	if err != nil { s.pools.Invalidate(id) }
 	if err != nil {
 		// Do not return the driver's raw error: it may contain host or credential details.
 		writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "connection failed; verify the endpoint and credentials"})
