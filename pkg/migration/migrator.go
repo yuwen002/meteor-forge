@@ -71,10 +71,6 @@ func (m *DefaultMigrator) Up(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load scripts failed: %w", err)
 	}
-	if len(scripts) == 0 {
-		return ErrNoPendingMigrations
-	}
-
 	// 3. 获取数据库中已执行的记录
 	appliedRecords, err := m.driver.GetAppliedVersions(ctx)
 	if err != nil {
@@ -86,6 +82,7 @@ func (m *DefaultMigrator) Up(ctx context.Context) error {
 	}
 	appliedMap := make(map[string]bool, len(appliedRecords))
 	for _, record := range appliedRecords { appliedMap[record.Version] = true }
+	if len(scripts) == 0 { return ErrNoPendingMigrations }
 
 	// 4. 筛选出待执行的脚本
 	var pendingScripts []*Script
@@ -192,10 +189,6 @@ func (m *DefaultMigrator) ToVersion(ctx context.Context, version string) error {
 	if err != nil {
 		return fmt.Errorf("load scripts failed: %w", err)
 	}
-	if len(scripts) == 0 {
-		return ErrNoPendingMigrations
-	}
-
 	// 定位目标版本在脚本序列中的位置
 	targetIdx := len(scripts) - 1 // 空串 => 最新版本
 	if version == "0" {
@@ -217,6 +210,7 @@ func (m *DefaultMigrator) ToVersion(ctx context.Context, version string) error {
 	appliedRecords, err := m.driver.GetAppliedVersions(ctx)
 	if err != nil { return err }
 	if err := validateAppliedScripts(appliedRecords, scripts); err != nil { return err }
+	if len(scripts) == 0 { return ErrNoPendingMigrations }
 	appliedMap := make(map[string]bool)
 	for _, r := range appliedRecords {
 		appliedMap[r.Version] = true
