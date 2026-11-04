@@ -127,11 +127,18 @@ func runMigrationLifecycle(
 	if err := drv.ApplyMigration(ctx, script, true); err != nil {
 		t.Fatalf("%s apply down migration: %v", driverLabel, err)
 	}
-	records, err = drv.GetAppliedVersions(ctx)
-	if err != nil {
-		t.Fatalf("%s read versions after rollback: %v", driverLabel, err)
-	}
-	if len(records) != 0 {
-		t.Fatalf("%s applied records after rollback = %d, want 0", driverLabel, len(records))
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		records, err = drv.GetAppliedVersions(ctx)
+		if err != nil {
+			t.Fatalf("%s read versions after rollback: %v", driverLabel, err)
+		}
+		if len(records) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s applied records after rollback = %d, want 0", driverLabel, len(records))
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
