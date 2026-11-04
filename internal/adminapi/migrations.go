@@ -51,6 +51,9 @@ func (s *Server) migrationStatus(w http.ResponseWriter, r *http.Request) {
 	if !s.requireStore(w) {
 		return
 	}
+	if !s.requireMigrationDirectory(w) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
@@ -85,6 +88,9 @@ func (s *Server) migrationStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) previewMigrations(w http.ResponseWriter, r *http.Request) {
 	if !s.requireStore(w) {
+		return
+	}
+	if !s.requireMigrationDirectory(w) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
@@ -146,6 +152,15 @@ func (s *Server) previewMigrations(w http.ResponseWriter, r *http.Request) {
 	}
 	response.ChangeCount = len(response.Items)
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) requireMigrationDirectory(w http.ResponseWriter) bool {
+	info, err := os.Stat(s.migrationDir)
+	if err != nil || !info.IsDir() {
+		writeAPIError(w, http.StatusServiceUnavailable, "migration_directory_unavailable", "configured migration directory does not exist or is not a directory")
+		return false
+	}
+	return true
 }
 
 func (s *Server) migrationDriver(ctx context.Context, id string) (migration.Driver, error) {
