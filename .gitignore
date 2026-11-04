@@ -17,6 +17,10 @@ go.work.sum
 # 本地 CLI 配置（可能含数据库凭据，绝不入库；模板见 meteor-forge.yaml.example）
 meteor-forge.yaml
 
+# Web 前端依赖与构建产物
+web/admin/node_modules/
+web/admin/dist/
+
 # 测试与覆盖率产物
 *.out
 coverage*
