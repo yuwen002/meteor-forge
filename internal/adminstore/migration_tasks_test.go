@@ -61,6 +61,10 @@ func TestActiveMigrationTasksProtectDataSourceMutation(t *testing.T) {
 		t.Fatalf("Delete error = %v, want ErrActiveTasks", err)
 	}
 
+	started := time.Now().UTC()
+	if err := store.UpdateMigrationTask(ctx, task.ID, "running", "started", &started, nil); err != nil {
+		t.Fatalf("start migration task: %v", err)
+	}
 	finished := time.Now().UTC()
 	if err := store.UpdateMigrationTask(ctx, task.ID, "succeeded", "completed", nil, &finished); err != nil {
 		t.Fatalf("finish migration task: %v", err)
@@ -72,5 +76,32 @@ func TestActiveMigrationTasksProtectDataSourceMutation(t *testing.T) {
 	}
 	if err := store.Delete(ctx, source.ID); err != nil {
 		t.Fatalf("Delete after task completion: %v", err)
+	}
+}
+
+
+func TestMigrationTaskStateTransitionsAreEnforced(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	task, err := store.CreateMigrationTask(ctx, MigrationTask{
+		ID: "transition-task", DataSourceID: "source-transition", Action: "up",
+	})
+	if err != nil { t.Fatal(err) }
+
+	finished := time.Now().UTC()
+	if err := store.UpdateMigrationTask(ctx, task.ID, "succeeded", "skip running", nil, &finished); !errors.Is(err, ErrInvalidTaskTransition) {
+		t.Fatalf("queued -> succeeded error = %v, want ErrInvalidTaskTransition", err)
+	}
+	if err := store.UpdateMigrationTask(ctx, task.ID, "running", "started", &finished, nil); err != nil {
+		t.Fatalf("queued -> running: %v", err)
+	}
+	if err := store.UpdateMigrationTask(ctx, task.ID, "succeeded", "completed", nil, &finished); err != nil {
+		t.Fatalf("running -> succeeded: %v", err)
+	}
+	if err := store.UpdateMigrationTask(ctx, task.ID, "running", "reopen", &finished, nil); !errors.Is(err, ErrInvalidTaskTransition) {
+		t.Fatalf("succeeded -> running error = %v, want ErrInvalidTaskTransition", err)
+	}
+	if err := store.UpdateMigrationTask(ctx, "missing-task", "running", "missing", &finished, nil); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing task error = %v, want ErrNotFound", err)
 	}
 }
