@@ -33,8 +33,12 @@ func main() {
 		}
 	}()
 
+	apiServer := adminapi.NewServerWithStore(store)
+	defer func() {
+		if err := apiServer.Close(); err != nil { log.Printf("close target database pools: %v", err) }
+	}()
 	httpServer := &http.Server{
-		Addr: addr, Handler: adminapi.NewServerWithStore(store).Handler(),
+		Addr: addr, Handler: apiServer.Handler(),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second,
 		WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
 	}
