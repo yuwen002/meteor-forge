@@ -114,6 +114,10 @@ func (s *Server) previewMigrations(w http.ResponseWriter, r *http.Request) {
 
 	scriptByVersion := make(map[string]*migration.Script, len(scripts))
 	for _, script := range scripts {
+		if script.UpSQL == "" {
+			writeAPIError(w, http.StatusUnprocessableEntity, "invalid_migration_script", "a migration script is missing its up SQL")
+			return
+		}
 		scriptByVersion[script.Version] = script
 	}
 	applied := make(map[string]string, len(records))
@@ -131,10 +135,6 @@ func (s *Server) previewMigrations(w http.ResponseWriter, r *http.Request) {
 	}
 	response := migrationPreviewResponse{DataSourceID: r.PathValue("id"), Items: make([]migrationPlanItem, 0, len(scripts))}
 	for _, script := range scripts {
-		if script.UpSQL == "" {
-			writeAPIError(w, http.StatusUnprocessableEntity, "invalid_migration_script", "a migration script is missing its up SQL")
-			return
-		}
 		checksum := script.Checksum()
 		if _, ok := applied[script.Version]; ok {
 			continue
