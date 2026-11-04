@@ -1,10 +1,11 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import DashboardView from './views/DashboardView.vue'
+import DataSourcesView from './views/DataSourcesView.vue'
 import PlaceholderView from './views/PlaceholderView.vue'
 
 const routes = [
   { path: '/', name: 'dashboard', component: DashboardView, meta: { title: '总览', section: '工作台' } },
-  { path: '/datasources', name: 'datasources', component: PlaceholderView, meta: { title: '数据源管理', section: '资源管理', description: '管理 MySQL、PostgreSQL、SQLite 和 ClickHouse 数据源。' } },
+  { path: '/datasources', name: 'datasources', component: DataSourcesView, meta: { title: '数据源管理', section: '资源管理' } },
   { path: '/migrations', name: 'migrations', component: PlaceholderView, meta: { title: '迁移管理', section: '数据库变更', description: '查看迁移版本、执行状态、Dry Run、升级和回滚。' } },
   { path: '/tenants', name: 'tenants', component: PlaceholderView, meta: { title: '多租户管理', section: '数据库变更', description: '发现和管理租户，查看连接状态并执行批量迁移。' } },
   { path: '/sharding', name: 'sharding', component: PlaceholderView, meta: { title: '分库分表', section: '数据库变更', description: '管理分片策略、路由规则和物理分片表。' } },
