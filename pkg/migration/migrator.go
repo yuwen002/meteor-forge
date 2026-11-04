@@ -157,14 +157,16 @@ func (m *DefaultMigrator) DownSteps(ctx context.Context, steps int) error {
 	// 记录不足时宽松退档：只回滚实际存在的条数（退到空即返回 nil）
 	count := min(steps, len(appliedRecords))
 
+	// 先完整校验本批次所有回滚脚本，避免执行一部分后才发现后续脚本不可回滚。
 	for i := 0; i < count; i++ {
 		version := appliedRecords[i].Version
 		script, ok := scriptMap[version]
-		if !ok {
-			return fmt.Errorf("rollback failed: local script for version %s not found", version)
-		}
+		if !ok { return fmt.Errorf("rollback failed: local script for version %s not found", version) }
 		if script.DownSQL == "" { return fmt.Errorf("rollback failed: down SQL for version %s is empty", version) }
-		if err := m.driver.ApplyMigration(ctx, script, true); err != nil {
+	}
+	for i := 0; i < count; i++ {
+		version := appliedRecords[i].Version
+		if err := m.driver.ApplyMigration(ctx, scriptMap[version], true); err != nil {
 			return fmt.Errorf("migration down failed at version %s: %w", version, err)
 		}
 	}
@@ -235,12 +237,15 @@ func (m *DefaultMigrator) ToVersion(ctx context.Context, version string) error {
 		applied++
 	}
 
+	// 回退前先校验全部待回滚脚本，避免因后续脚本缺失 Down SQL 导致部分退档。
+	for i := currentIdx; i > targetIdx; i-- {
+		if appliedMap[scripts[i].Version] && scripts[i].DownSQL == "" {
+			return fmt.Errorf("migration to version %s cannot roll back %s: down SQL is empty", version, scripts[i].Version)
+		}
+	}
 	// 回退：从 currentIdx 向下（不含 targetIdx）逐个回滚
 	for i := currentIdx; i > targetIdx; i-- {
-		if !appliedMap[scripts[i].Version] {
-			continue
-		}
-		if scripts[i].DownSQL == "" { return fmt.Errorf("migration to version %s cannot roll back %s: down SQL is empty", version, scripts[i].Version) }
+		if !appliedMap[scripts[i].Version] { continue }
 		if err := m.driver.ApplyMigration(ctx, scripts[i], true); err != nil {
 			return fmt.Errorf("migration to version %s failed rollback at %s: %w", version, scripts[i].Version, err)
 		}
