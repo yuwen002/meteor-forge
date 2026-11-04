@@ -154,3 +154,13 @@ Down、DownSteps 和 ToVersion 必须显式提交 `confirm: true`。前端还会
 ### POST /migration-tasks/{id}/cancel
 
 请求取消当前服务实例中正在排队或执行的任务，返回 HTTP 202。任务执行上下文会被取消；具体数据库驱动和 SQL 执行是否能立即响应取消取决于驱动实现。若任务已完成或不在当前实例活动列表中，返回 HTTP 409。
+
+### 数据源变更与迁移任务互斥
+
+当某个数据源存在 `queued` 或 `running` 状态的迁移任务时，更新或删除该数据源会返回 HTTP 409：
+
+```json
+{"code":"data_source_has_active_tasks","message":"the data source cannot be changed or deleted while migration tasks are queued or running"}
+```
+
+任务进入 `succeeded`、`failed`、`canceled` 或 `interrupted` 等终态后，数据源才可更新或删除。该约束由管理元数据库触发器在写入时原子检查，不依赖 HTTP Handler 的先查后改，因此并发请求也不能绕过保护。删除数据源仍只删除管理端登记，不会删除目标数据库。
