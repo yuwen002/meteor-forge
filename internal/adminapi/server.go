@@ -17,7 +17,8 @@ const apiPrefix = "/api/v1"
 type Server struct {
 	handler http.Handler
 	store   dataSourceStore
-	pools   *PoolManager
+	pools        *PoolManager
+	migrationDir string
 }
 
 // NewServer builds the API without a metadata store, useful for health-only embedding.
@@ -27,10 +28,17 @@ func NewServer() *Server {
 
 // NewServerWithStore builds an API server backed by the management metadata store.
 func NewServerWithStore(store *adminstore.Store) *Server {
+	return NewServerWithMigrationDir(store, "migrations")
+}
+
+// NewServerWithMigrationDir builds an API server using the supplied migration script directory.
+func NewServerWithMigrationDir(store *adminstore.Store, migrationDir string) *Server {
+	if migrationDir == "" { migrationDir = "migrations" }
 	mux := http.NewServeMux()
-	server := &Server{store: store, pools: NewPoolManager()}
+	server := &Server{store: store, pools: NewPoolManager(), migrationDir: migrationDir}
 	mux.HandleFunc("GET "+apiPrefix+"/health", healthHandler)
 	server.registerDataSourceRoutes(mux)
+	server.registerMigrationRoutes(mux)
 	server.handler = withCommonHeaders(mux)
 	return server
 }
