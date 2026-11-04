@@ -375,11 +375,14 @@ cd examples/demo && go run main.go
 
 ### 本地启动
 
-终端一：启动管理 API（默认仅监听本机 `127.0.0.1:8081`）：
+终端一：生成并配置管理元数据加密密钥，启动管理 API（默认仅监听本机 `127.0.0.1:8081`）：
 
 ```bash
+export METEOR_ADMIN_ENCRYPTION_KEY="$(openssl rand -hex 32)"
 go run ./cmd/server
 ```
+
+管理元数据库默认保存在操作系统用户配置目录的 `meteor-forge/admin.db`，可通过 `METEOR_ADMIN_DB` 修改。请妥善备份密钥；丢失密钥将无法解密已登记数据源的 DSN。密钥不得提交到 Git。
 
 健康检查：
 
@@ -400,3 +403,8 @@ npm run dev
 详细架构、阶段计划和安全边界见 [Web 管理后台架构文档](docs/web-admin/architecture.md)，前端开发说明见 [web/admin/README.md](web/admin/README.md)。
 
 > 当前仅完成工程骨架、服务健康检查和管理后台导航。数据源、迁移、租户及分片页面将在后续阶段接入真实 API；尚未接入的统计不会使用虚构数据。请勿将当前开发版 API 暴露到公网。
+
+
+### 数据源管理进度
+
+管理元数据库现使用 SQLite 独立存储，数据源 DSN 使用 AES-256-GCM 加密后持久化。管理 API 已提供数据源新增、列表、详情、更新、删除和连接测试接口；列表与详情响应不会返回 DSN。连接测试支持 MySQL、PostgreSQL、SQLite 和 ClickHouse，并设置 5 秒超时。当前 API 尚未提供用户认证和角色授权，必须保持本机监听。
