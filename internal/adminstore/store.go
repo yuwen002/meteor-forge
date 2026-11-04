@@ -198,8 +198,59 @@ func (s *Store) migrate(ctx context.Context) error {
 	)`); err != nil {
 		return fmt.Errorf("create migration task progress table: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admin_tenants (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		code TEXT NOT NULL COLLATE NOCASE UNIQUE,
+		data_source_id TEXT NOT NULL,
+		status TEXT NOT NULL DEFAULT 'active',
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		FOREIGN KEY(data_source_id) REFERENCES admin_data_sources(id)
+	)`); err != nil {
+		return fmt.Errorf("create tenant table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_admin_tenants_datasource
+		ON admin_tenants(data_source_id)`); err != nil {
+		return fmt.Errorf("index tenant data source mapping: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER IF NOT EXISTS prevent_datasource_update_with_tenants
+		BEFORE UPDATE OF driver, dsn_ciphertext ON admin_data_sources
+		WHEN EXISTS (SELECT 1 FROM admin_tenants WHERE data_source_id = OLD.id)
+		BEGIN
+			SELECT RAISE(ABORT, 'data source is assigned to tenants');
+		END`); err != nil {
+		return fmt.Errorf("protect tenant data source configuration: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER IF NOT EXISTS prevent_datasource_delete_with_tenants
+		BEFORE DELETE ON admin_data_sources
+		WHEN EXISTS (SELECT 1 FROM admin_tenants WHERE data_source_id = OLD.id)
+		BEGIN
+			SELECT RAISE(ABORT, 'data source is assigned to tenants');
+		END`); err != nil {
+		return fmt.Errorf("protect tenant data source deletion: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER IF NOT EXISTS prevent_tenant_update_with_active_migrations
+		BEFORE UPDATE ON admin_tenants
+		WHEN EXISTS (SELECT 1 FROM admin_migration_tasks
+			WHERE data_source_id IN (OLD.data_source_id, NEW.data_source_id)
+			AND status IN ('queued', 'running'))
+		BEGIN
+			SELECT RAISE(ABORT, 'tenant is used by an active migration task');
+		END`); err != nil {
+		return fmt.Errorf("protect tenant updates during migration: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER IF NOT EXISTS prevent_tenant_delete_with_active_migrations
+		BEFORE DELETE ON admin_tenants
+		WHEN EXISTS (SELECT 1 FROM admin_migration_tasks
+			WHERE data_source_id = OLD.data_source_id AND status IN ('queued', 'running'))
+		BEGIN
+			SELECT RAISE(ABORT, 'tenant is used by an active migration task');
+		END`); err != nil {
+		return fmt.Errorf("protect tenant deletion during migration: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
-		VALUES (5, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		VALUES (6, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("record metadata schema version: %w", err)
 	}
 	return tx.Commit()
