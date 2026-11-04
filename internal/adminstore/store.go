@@ -23,6 +23,7 @@ var (
 	ErrNotFound = errors.New("data source not found")
 	ErrConflict = errors.New("data source name already exists")
 	ErrInvalidInput = errors.New("invalid data source input")
+	ErrActiveTasks = errors.New("data source has active migration tasks")
 )
 
 // DataSource contains only fields safe to return to API clients.
@@ -147,8 +148,29 @@ func (s *Store) migrate(ctx context.Context) error {
 		ON admin_migration_tasks(created_at DESC)`); err != nil {
 		return fmt.Errorf("index migration tasks: %w", err)
 	}
+	// Keep data source configuration stable while queued or running migrations
+	// still depend on its connection settings. Triggers make the check atomic
+	// with the mutation, including requests from concurrent HTTP handlers.
+	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER IF NOT EXISTS prevent_datasource_update_with_active_tasks
+		BEFORE UPDATE ON admin_data_sources
+		WHEN EXISTS (SELECT 1 FROM admin_migration_tasks
+			WHERE data_source_id = OLD.id AND status IN ('queued', 'running'))
+		BEGIN
+			SELECT RAISE(ABORT, 'data source has active migration tasks');
+		END`); err != nil {
+		return fmt.Errorf("protect active migration data source updates: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER IF NOT EXISTS prevent_datasource_delete_with_active_tasks
+		BEFORE DELETE ON admin_data_sources
+		WHEN EXISTS (SELECT 1 FROM admin_migration_tasks
+			WHERE data_source_id = OLD.id AND status IN ('queued', 'running'))
+		BEGIN
+			SELECT RAISE(ABORT, 'data source has active migration tasks');
+		END`); err != nil {
+		return fmt.Errorf("protect active migration data source deletion: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
-		VALUES (2, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		VALUES (3, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("record metadata schema version: %w", err)
 	}
 	return tx.Commit()
@@ -296,7 +318,7 @@ func (s *Store) Update(ctx context.Context, id string, input DataSourceInput) (D
 // Delete removes a data source registration. It does not modify the target database.
 func (s *Store) Delete(ctx context.Context, id string) error {
 	result, err := s.db.ExecContext(ctx, "DELETE FROM admin_data_sources WHERE id = ?", id)
-	if err != nil { return fmt.Errorf("delete data source: %w", err) }
+	if err != nil {\n\t\tif strings.Contains(strings.ToLower(err.Error()), ErrActiveTasks.Error()) { return ErrActiveTasks }\n\t\treturn fmt.Errorf("delete data source: %w", err)\n\t}
 	count, err := result.RowsAffected()
 	if err != nil { return err }
 	if count == 0 { return ErrNotFound }
