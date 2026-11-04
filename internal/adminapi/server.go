@@ -17,6 +17,7 @@ const apiPrefix = "/api/v1"
 type Server struct {
 	handler http.Handler
 	store   dataSourceStore
+	pools   *PoolManager
 }
 
 // NewServer builds the API without a metadata store, useful for health-only embedding.
@@ -27,7 +28,7 @@ func NewServer() *Server {
 // NewServerWithStore builds an API server backed by the management metadata store.
 func NewServerWithStore(store *adminstore.Store) *Server {
 	mux := http.NewServeMux()
-	server := &Server{store: store}
+	server := &Server{store: store, pools: NewPoolManager()}
 	mux.HandleFunc("GET "+apiPrefix+"/health", healthHandler)
 	server.registerDataSourceRoutes(mux)
 	server.handler = withCommonHeaders(mux)
@@ -36,6 +37,12 @@ func NewServerWithStore(store *adminstore.Store) *Server {
 
 // Handler returns the HTTP handler. It is exposed to support embedding and tests.
 func (s *Server) Handler() http.Handler { return s.handler }
+
+// Close releases all cached target database pools owned by the API server.
+func (s *Server) Close() error {
+	if s.pools == nil { return nil }
+	return s.pools.Close()
+}
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
