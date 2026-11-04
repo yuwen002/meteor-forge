@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 // TenantInfo 表示控制平面（Control Plane）数据库中发现的一个租户及其接入信息。
@@ -29,12 +30,33 @@ type TenantInfo struct {
 // 仅返回 status = 'active' 的租户；挂起/注销的租户自动跳过。
 // driver 列为可选：若控制表无 driver 列，返回的 TenantInfo.Driver 为空串，由调用方使用全局默认。
 func LoadActiveTenants(ctx context.Context, controlDB *sql.DB) ([]TenantInfo, error) {
+	if controlDB == nil {
+		return nil, fmt.Errorf("tenant: control database is nil")
+	}
 	tenants, err := queryTenantsWithDriver(ctx, controlDB)
 	if err == nil {
 		return tenants, nil
 	}
-
+	// Only use the legacy query when the optional driver column is absent.
+	// Connection, permission, scan and iteration failures must not be hidden.
+	if !isMissingDriverColumn(err) {
+		return nil, fmt.Errorf("tenant: query active tenants with driver failed: %w", err)
+	}
 	return queryTenantsLegacy(ctx, controlDB)
+}
+
+func isMissingDriverColumn(err error) bool {
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"no such column: driver",
+		"unknown column 'driver'",
+		"unknown column \`driver\`",
+		"column \"driver\" does not exist",
+		"column driver does not exist",
+	} {
+		if strings.Contains(message, marker) { return true }
+	}
+	return false
 }
 
 func queryTenantsWithDriver(ctx context.Context, controlDB *sql.DB) ([]TenantInfo, error) {
@@ -50,8 +72,13 @@ func queryTenantsWithDriver(ctx context.Context, controlDB *sql.DB) ([]TenantInf
 		if err := rows.Scan(&t.ID, &t.DSN, &t.Driver); err != nil {
 			return nil, fmt.Errorf("tenant: scan tenant record failed: %w", err)
 		}
-		if t.ID == "" || t.DSN == "" {
+		t.ID = strings.TrimSpace(t.ID)
+		t.Driver = strings.ToLower(strings.TrimSpace(t.Driver))
+		if t.ID == "" || strings.TrimSpace(t.DSN) == "" {
 			return nil, fmt.Errorf("tenant: found record with empty id or dsn (id=%q)", t.ID)
+		}
+		if t.Driver != "" && t.Driver != "mysql" && t.Driver != "postgres" && t.Driver != "sqlite" && t.Driver != "clickhouse" {
+			return nil, fmt.Errorf("tenant: unsupported driver %q for tenant %q", t.Driver, t.ID)
 		}
 		tenants = append(tenants, t)
 	}
