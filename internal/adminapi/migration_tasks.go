@@ -66,9 +66,9 @@ func (m *MigrationTaskManager) Submit(ctx context.Context, task adminstore.Migra
 		lock = &sync.Mutex{}
 		m.locks[task.DataSourceID] = lock
 	}
+	m.wg.Add(1)
 	m.mu.Unlock()
 
-	m.wg.Add(1)
 	go m.execute(taskCtx, cancel, lock, created)
 	return created, nil
 }
