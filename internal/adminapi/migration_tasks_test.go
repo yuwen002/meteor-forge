@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -84,7 +85,6 @@ func waitForTaskStatus(t *testing.T, store *adminstore.Store, id, expected strin
 	t.Fatalf("task did not reach %q: %+v", expected, task)
 }
 
-
 func TestMigrationTaskWorkerPanicIsPersistedAsFailure(t *testing.T) {
 	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
 	if err != nil { t.Fatal(err) }
@@ -103,4 +103,62 @@ func TestMigrationTaskWorkerPanicIsPersistedAsFailure(t *testing.T) {
 	if !strings.Contains(got.Message, "worker stopped unexpectedly") {
 		t.Fatalf("expected safe panic failure message, got %q", got.Message)
 	}
+	if len(manager.locks) != 0 { t.Fatalf("data source lock entries = %d, want 0", len(manager.locks)) }
+}
+
+func TestMigrationTasksForSameDataSourceAreSerializedAndReleaseLock(t *testing.T) {
+	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var active atomic.Int32
+	var maxActive atomic.Int32
+	manager := NewMigrationTaskManager(store, func(ctx context.Context, _ adminstore.MigrationTask) error {
+		current := active.Add(1)
+		for {
+			previous := maxActive.Load()
+			if current <= previous || maxActive.CompareAndSwap(previous, current) { break }
+		}
+		started <- struct{}{}
+		defer active.Add(-1)
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+
+	first, err := manager.Submit(context.Background(), adminstore.MigrationTask{DataSourceID: "same-source", Action: "up"})
+	if err != nil { t.Fatal(err) }
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first task did not start")
+	}
+
+	second, err := manager.Submit(context.Background(), adminstore.MigrationTask{DataSourceID: "same-source", Action: "up"})
+	if err != nil { t.Fatal(err) }
+	select {
+	case <-started:
+		t.Fatal("second task started while the first task held the data source lock")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	for i := 0; i < 1; i++ {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("second task did not start after the first task completed")
+		}
+	}
+	waitForTaskStatus(t, store, first.ID, "succeeded")
+	waitForTaskStatus(t, store, second.ID, "succeeded")
+	manager.Close()
+
+	if got := maxActive.Load(); got != 1 { t.Fatalf("maximum concurrent tasks for one data source = %d, want 1", got) }
+	if len(manager.locks) != 0 { t.Fatalf("data source lock entries = %d, want 0 after completion", len(manager.locks)) }
 }
