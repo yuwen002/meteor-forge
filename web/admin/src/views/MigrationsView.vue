@@ -46,6 +46,19 @@ const taskActive = computed(() => !!currentTask.value && ['queued', 'running'].i
 const rollbackSteps = ref(1)
 const targetVersion = ref('')
 const submittingTask = ref(false)
+const taskNow = ref(Date.now())
+const taskProgressPercent = computed(() => {
+  if (!currentTask.value || currentTask.value.total_steps <= 0) return 0
+  return Math.min(100, Math.round(currentTask.value.completed_steps / currentTask.value.total_steps * 100))
+})
+const taskElapsed = computed(() => {
+  const task = currentTask.value
+  if (!task?.started_at) return '尚未开始'
+  const end = task.finished_at ? new Date(task.finished_at).getTime() : taskNow.value
+  const seconds = Math.max(0, Math.floor((end - new Date(task.started_at).getTime()) / 1000))
+  const minutes = Math.floor(seconds / 60)
+  return minutes > 0 ? minutes + ' 分 ' + (seconds % 60) + ' 秒' : seconds + ' 秒'
+})
 
 async function loadSources() {
   loadingSources.value = true
@@ -91,6 +104,7 @@ async function loadTasks() {
 async function waitForTask(id: string) {
   for (let attempt = 0; attempt < 60; attempt++) {
     await new Promise(resolve => window.setTimeout(resolve, 1000))
+    taskNow.value = Date.now()
     try {
       const { data } = await api.get<MigrationTask>('/migration-tasks/' + id)
       currentTask.value = data
@@ -291,6 +305,17 @@ onMounted(() => { void loadSources(); void loadTasks() })
         <div v-if="currentTask" class="task-status">
           <div><strong>当前任务</strong><span>{{ currentTask.id }}</span></div>
           <el-tag>{{ currentTask.status }}</el-tag>
+          <div class="task-progress">
+            <div class="task-progress-meta">
+              <span>{{ currentTask.current_action === 'down' ? '回滚' : currentTask.current_action === 'up' ? '升级' : '等待执行' }} · {{ currentTask.current_version || '等待迁移步骤' }}</span>
+              <strong>{{ currentTask.completed_steps }} / {{ currentTask.total_steps }} 步</strong>
+            </div>
+            <el-progress :percentage="taskProgressPercent" :status="currentTask.status === 'failed' ? 'exception' : currentTask.status === 'succeeded' ? 'success' : undefined" />
+            <div class="task-progress-meta">
+              <span>执行耗时：{{ taskElapsed }}</span>
+              <span v-if="currentTask.progress_updated_at">进度更新：{{ new Date(currentTask.progress_updated_at).toLocaleTimeString() }}</span>
+            </div>
+          </div>
           <p>{{ currentTask.message || '任务已排队' }}</p>
           <el-button v-if="taskActive" size="small" type="danger" plain @click="cancelTask">取消任务</el-button>
         </div>
@@ -301,6 +326,8 @@ onMounted(() => { void loadSources(); void loadTasks() })
         <el-table :data="tasks.filter(item => item.data_source_id === selectedID)" size="small" empty-text="暂无迁移任务">
           <el-table-column prop="action" label="操作" width="120" />
           <el-table-column prop="status" label="状态" width="120" />
+          <el-table-column label="进度" width="120"><template #default="{ row }">{{ row.completed_steps }} / {{ row.total_steps }}</template></el-table-column>
+          <el-table-column prop="current_version" label="当前版本" width="140" />
           <el-table-column prop="message" label="结果说明" min-width="220" />
           <el-table-column prop="created_at" label="创建时间" min-width="190" />
         </el-table>
@@ -331,6 +358,9 @@ onMounted(() => { void loadSources(); void loadTasks() })
 .task-status > div { display: flex; flex-direction: column; gap: 4px; }
 .task-status span, .task-status p { color: #8792a5; font-size: 12px; overflow-wrap: anywhere; }
 .task-status p { grid-column: 1 / -1; margin: 0; }
+.task-progress { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 8px; }
+.task-progress-meta { display: flex; justify-content: space-between; gap: 12px; color: #8792a5; font-size: 11px; }
+.task-progress-meta strong { color: #526078; font-weight: 600; }
 .task-history-heading { margin-top: 26px; }
 @media (max-width: 680px) {
   .selector-row, .section-heading, .preview-toolbar { align-items: stretch; flex-direction: column; }
