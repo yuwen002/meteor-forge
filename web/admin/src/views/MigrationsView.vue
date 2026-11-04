@@ -208,7 +208,7 @@ onMounted(() => { void loadSources(); void loadTasks() })
     <el-empty v-if="!dataSources.length && !loadingSources" description="请先在数据源管理中添加数据库连接" />
     <template v-else-if="selectedSource">
       <el-alert
-        title="预览模式，不会执行迁移 SQL"
+        title="迁移状态与 Dry Run 说明"
         description="状态检查和预览会确保目标库存在 schema_migrations 历史表；预览不会执行待迁移脚本。"
         type="info"
         :closable="false"
