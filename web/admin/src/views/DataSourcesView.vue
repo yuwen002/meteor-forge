@@ -60,8 +60,8 @@ async function save() {
     dialogVisible.value = false
     await load()
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : '请检查输入内容'
-    ElMessage.error('保存失败：' + message)
+    const response = (error as { response?: { data?: { message?: string } } })?.response
+    ElMessage.error(response?.data?.message ?? '保存数据源失败，请检查输入内容和租户引用状态')
   } finally {
     saving.value = false
   }
@@ -97,7 +97,10 @@ async function remove(item: DataSource) {
     ElMessage.success('数据源登记已删除')
     await load()
   } catch (error: unknown) {
-    if (error !== 'cancel' && error !== 'close') ElMessage.error('删除失败')
+    if (error !== 'cancel' && error !== 'close') {
+      const response = (error as { response?: { data?: { message?: string } } })?.response
+      ElMessage.error(response?.data?.message ?? '删除数据源失败，请先解除租户引用或检查迁移任务')
+    }
   }
 }
 
