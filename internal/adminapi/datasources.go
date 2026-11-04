@@ -91,7 +91,7 @@ func (s *Server) testDataSource(w http.ResponseWriter, r *http.Request) {
 		return driverName, dsn, nil
 	})
 	if err == nil { err = db.PingContext(ctx) }
-	if err != nil { s.pools.Invalidate(id) }
+	if err != nil { s.pools.InvalidateIfCurrent(id, db) }
 	if err != nil {
 		// Do not return the driver's raw error: it may contain host or credential details.
 		writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "connection failed; verify the endpoint and credentials"})
