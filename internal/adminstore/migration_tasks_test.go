@@ -139,3 +139,49 @@ func TestMigrationAuditEventsRecordTaskLifecycle(t *testing.T) {
 		if event.Actor != "local-api" { t.Fatalf("actor = %q, want local-api", event.Actor) }
 	}
 }
+
+
+func TestMigrationTaskProgressIsPersistedOnlyWhileRunning(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	task, err := store.CreateMigrationTask(ctx, MigrationTask{
+		ID: "progress-task", DataSourceID: "progress-source", Action: "up",
+	})
+	if err != nil { t.Fatal(err) }
+	started := time.Now().UTC()
+	if err := store.UpdateMigrationTask(ctx, task.ID, "running", "running", &started, nil); err != nil { t.Fatal(err) }
+	progress := MigrationTaskProgress{
+		CurrentVersion: "000002", CompletedSteps: 1, TotalSteps: 3, CurrentAction: "up",
+	}
+	if err := store.UpdateMigrationTaskProgress(ctx, task.ID, progress); err != nil {
+		t.Fatalf("UpdateMigrationTaskProgress: %v", err)
+	}
+	got, err := store.GetMigrationTask(ctx, task.ID)
+	if err != nil { t.Fatal(err) }
+	if got.CurrentVersion != "000002" || got.CompletedSteps != 1 || got.TotalSteps != 3 ||
+		got.CurrentAction != "up" || got.ProgressUpdatedAt == nil {
+		t.Fatalf("unexpected persisted progress: %+v", got)
+	}
+	finished := time.Now().UTC()
+	if err := store.UpdateMigrationTask(ctx, task.ID, "succeeded", "completed", nil, &finished); err != nil { t.Fatal(err) }
+	if err := store.UpdateMigrationTaskProgress(ctx, task.ID, MigrationTaskProgress{
+		CurrentVersion: "000003", CompletedSteps: 3, TotalSteps: 3, CurrentAction: "up",
+	}); !errors.Is(err, ErrInvalidTaskTransition) {
+		t.Fatalf("progress update after terminal state = %v, want ErrInvalidTaskTransition", err)
+	}
+}
+
+func TestMigrationTaskProgressRejectsInvalidCounters(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	task, err := store.CreateMigrationTask(ctx, MigrationTask{
+		ID: "invalid-progress-task", DataSourceID: "progress-source", Action: "up",
+	})
+	if err != nil { t.Fatal(err) }
+	started := time.Now().UTC()
+	if err := store.UpdateMigrationTask(ctx, task.ID, "running", "running", &started, nil); err != nil { t.Fatal(err) }
+	err = store.UpdateMigrationTaskProgress(ctx, task.ID, MigrationTaskProgress{
+		CompletedSteps: 4, TotalSteps: 2, CurrentAction: "up",
+	})
+	if !errors.Is(err, ErrInvalidInput) { t.Fatalf("invalid progress error = %v, want ErrInvalidInput", err) }
+}
