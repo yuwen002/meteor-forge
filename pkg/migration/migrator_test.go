@@ -440,3 +440,25 @@ func TestMigratorToVersionPreflightsAllDownSQL(t *testing.T) {
 		t.Fatalf("preflight failure must not partially roll back records: %+v", driver.records)
 	}
 }
+
+
+func TestMigratorProgressObserverReportsStepBoundaries(t *testing.T) {
+	migrator, _ := newTestMigrator()
+	var updates []Progress
+	engine := NewDefaultMigratorWithObserver(migrator.loader, migrator.driver, func(progress Progress) {
+		updates = append(updates, progress)
+	})
+	if err := engine.Up(context.Background()); err != nil { t.Fatal(err) }
+	if len(updates) != 4 {
+		t.Fatalf("progress updates = %d, want start/completion for two migrations: %+v", len(updates), updates)
+	}
+	want := []Progress{
+		{CurrentVersion: "001", CompletedSteps: 0, TotalSteps: 2, CurrentAction: "up"},
+		{CurrentVersion: "001", CompletedSteps: 1, TotalSteps: 2, CurrentAction: "up"},
+		{CurrentVersion: "002", CompletedSteps: 1, TotalSteps: 2, CurrentAction: "up"},
+		{CurrentVersion: "002", CompletedSteps: 2, TotalSteps: 2, CurrentAction: "up"},
+	}
+	for i := range want {
+		if updates[i] != want[i] { t.Errorf("progress[%d] = %+v, want %+v", i, updates[i], want[i]) }
+	}
+}
