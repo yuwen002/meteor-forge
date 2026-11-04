@@ -30,14 +30,15 @@ func TestMigrationStatusAndPreviewAreReadOnlyForTargetSchema(t *testing.T) {
 	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
 	if err != nil { t.Fatal(err) }
 	t.Cleanup(func() { _ = store.Close() })
-	if _, err := store.Create(context.Background(), adminstore.DataSourceInput{
+	created, err := store.Create(context.Background(), adminstore.DataSourceInput{
 		Name: "migration target", Driver: "sqlite", DSN: targetDB,
-	}); err != nil { t.Fatal(err) }
+	})
+	if err != nil { t.Fatal(err) }
 
 	server := NewServerWithMigrationDir(store, migrationDir)
 	t.Cleanup(func() { _ = server.Close() })
 
-	statusReq := httptest.NewRequest(http.MethodGet, "/api/v1/datasources/migration-target/migrations/status", nil)
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/v1/datasources/"+created.ID+"/migrations/status", nil)
 	statusRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(statusRec, statusReq)
 	if statusRec.Code != http.StatusOK { t.Fatalf("status code=%d body=%s", statusRec.Code, statusRec.Body.String()) }
@@ -48,7 +49,7 @@ func TestMigrationStatusAndPreviewAreReadOnlyForTargetSchema(t *testing.T) {
 		t.Fatalf("unexpected migration status: %+v", status)
 	}
 
-	previewReq := httptest.NewRequest(http.MethodPost, "/api/v1/datasources/migration-target/migrations/preview", nil)
+	previewReq := httptest.NewRequest(http.MethodPost, "/api/v1/datasources/"+created.ID+"/migrations/preview", nil)
 	previewRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(previewRec, previewReq)
 	if previewRec.Code != http.StatusOK { t.Fatalf("preview code=%d body=%s", previewRec.Code, previewRec.Body.String()) }
