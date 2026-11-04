@@ -100,7 +100,8 @@ func queryTenantsLegacy(ctx context.Context, controlDB *sql.DB) ([]TenantInfo, e
 		if err := rows.Scan(&t.ID, &t.DSN); err != nil {
 			return nil, fmt.Errorf("tenant: scan tenant record failed: %w", err)
 		}
-		if t.ID == "" || t.DSN == "" {
+		t.ID = strings.TrimSpace(t.ID)
+		if t.ID == "" || strings.TrimSpace(t.DSN) == "" {
 			return nil, fmt.Errorf("tenant: found record with empty id or dsn (id=%q)", t.ID)
 		}
 		tenants = append(tenants, t)
