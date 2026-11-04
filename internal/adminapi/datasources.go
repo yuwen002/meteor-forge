@@ -122,9 +122,11 @@ func writeStoreError(w http.ResponseWriter, err error) {
 		writeAPIError(w, http.StatusNotFound, "not_found", "data source not found")
 	case errors.Is(err, adminstore.ErrConflict):
 		writeAPIError(w, http.StatusConflict, "conflict", "a data source with this name already exists")
+	case errors.Is(err, adminstore.ErrInvalidInput):
+		writeAPIError(w, http.StatusBadRequest, "invalid_data_source", safeValidationMessage(err))
 	default:
 		// Store errors are deliberately not returned verbatim to avoid leaking DSNs.
-		writeAPIError(w, http.StatusBadRequest, "invalid_data_source", safeValidationMessage(err))
+		writeAPIError(w, http.StatusInternalServerError, "internal_error", "unable to process data source request")
 	}
 }
 
