@@ -128,3 +128,33 @@ func TestMemoryManagerConcurrent(t *testing.T) {
 		t.Fatalf("Close failed: %v", err)
 	}
 }
+
+
+func TestMemoryManagerValidatesRegistrationAndClosedState(t *testing.T) {
+	manager := NewMemoryManager()
+	if err := manager.Register("", newTestDB(t)); !errors.Is(err, ErrInvalidTenantID) {
+		t.Fatalf("empty tenant id error = %v, want ErrInvalidTenantID", err)
+	}
+	if err := manager.Register("tenant", nil); !errors.Is(err, ErrNilTenantDB) {
+		t.Fatalf("nil database error = %v, want ErrNilTenantDB", err)
+	}
+	if err := manager.Close(); err != nil { t.Fatal(err) }
+	if err := manager.Close(); err != nil { t.Fatalf("second Close should be safe: %v", err) }
+	if err := manager.Register("tenant", newTestDB(t)); !errors.Is(err, ErrManagerClosed) {
+		t.Fatalf("Register after Close = %v, want ErrManagerClosed", err)
+	}
+	if _, err := manager.GetDB("tenant"); !errors.Is(err, ErrManagerClosed) {
+		t.Fatalf("GetDB after Close = %v, want ErrManagerClosed", err)
+	}
+}
+
+func TestMemoryManagerRegisterSameHandleDoesNotCloseIt(t *testing.T) {
+	manager := NewMemoryManager()
+	db := newTestDB(t)
+	if err := manager.Register("tenant", db); err != nil { t.Fatal(err) }
+	if err := manager.Register("tenant", db); err != nil { t.Fatal(err) }
+	if err := db.Ping(); errors.Is(err, sql.ErrDBClosed) {
+		t.Fatal("registering the same handle must not close it")
+	}
+	if err := manager.Close(); err != nil { t.Fatal(err) }
+}
