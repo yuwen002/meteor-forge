@@ -138,6 +138,8 @@ func (s *Store) UpdateMigrationTask(ctx context.Context, id, status, message str
 		return ErrNotFound
 	} else if err != nil { return fmt.Errorf("load migration task for transition: %w", err) }
 	from := task.Status
+	_ = tx.QueryRowContext(ctx, `SELECT request_source FROM admin_migration_audit_events
+		WHERE task_id = ? ORDER BY id ASC LIMIT 1`, id).Scan(&task.RequestSource)
 	query := `UPDATE admin_migration_tasks SET status = ?, message = ?,
 		started_at = COALESCE(?, started_at), finished_at = ?
 		WHERE id = ? AND status IN ('` + allowedFrom + `')`
