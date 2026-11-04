@@ -83,3 +83,24 @@ func waitForTaskStatus(t *testing.T, store *adminstore.Store, id, expected strin
 	task, _ := store.GetMigrationTask(context.Background(), id)
 	t.Fatalf("task did not reach %q: %+v", expected, task)
 }
+
+
+func TestMigrationTaskWorkerPanicIsPersistedAsFailure(t *testing.T) {
+	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	manager := NewMigrationTaskManager(store, func(context.Context, adminstore.MigrationTask) error {
+		panic("simulated worker panic")
+	})
+	task, err := manager.Submit(context.Background(), adminstore.MigrationTask{
+		DataSourceID: "source-panic", Action: "up",
+	})
+	if err != nil { t.Fatal(err) }
+	waitForTaskStatus(t, store, task.ID, "failed")
+	manager.Close()
+	got, err := store.GetMigrationTask(context.Background(), task.ID)
+	if err != nil { t.Fatal(err) }
+	if !strings.Contains(got.Message, "worker stopped unexpectedly") {
+		t.Fatalf("expected safe panic failure message, got %q", got.Message)
+	}
+}
