@@ -3,6 +3,7 @@ package adminstore
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +27,10 @@ func TestDataSourceCRUDAndCredentialEncryption(t *testing.T) {
 	list, err := store.List(context.Background())
 	if err != nil { t.Fatalf("List() error = %v", err) }
 	if len(list) != 1 || list[0].ID != created.ID { t.Fatalf("unexpected list: %+v", list) }
+
+	var stored []byte
+	if err := store.db.QueryRowContext(context.Background(), "SELECT dsn_ciphertext FROM admin_data_sources WHERE id = ?", created.ID).Scan(&stored); err != nil { t.Fatalf("read stored ciphertext: %v", err) }
+	if strings.Contains(string(stored), input.DSN) || strings.Contains(string(stored), "secret") { t.Fatal("DSN appears in plaintext in metadata database") }
 
 	driver, dsn, err := store.ConnectionConfig(context.Background(), created.ID)
 	if err != nil { t.Fatalf("ConnectionConfig() error = %v", err) }
