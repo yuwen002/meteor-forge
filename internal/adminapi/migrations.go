@@ -15,11 +15,17 @@ import (
 	"github.com/yuwen002/meteor-forge/pkg/migration"
 )
 
+type migrationStatusItem struct {
+	Version     string `json:"version"`
+	Description string `json:"description"`
+	IsApplied   bool   `json:"is_applied"`
+}
+
 type migrationStatusResponse struct {
-	DataSourceID string                 `json:"data_source_id"`
-	Items        []migration.StatusItem `json:"items"`
-	AppliedCount int                    `json:"applied_count"`
-	PendingCount int                    `json:"pending_count"`
+	DataSourceID string                `json:"data_source_id"`
+	Items        []migrationStatusItem `json:"items"`
+	AppliedCount int                   `json:"applied_count"`
+	PendingCount int                   `json:"pending_count"`
 }
 
 type migrationPlanItem struct {
@@ -60,8 +66,14 @@ func (s *Server) migrationStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := migrationStatusResponse{DataSourceID: r.PathValue("id"), Items: statuses}
+	response := migrationStatusResponse{
+		DataSourceID: r.PathValue("id"),
+		Items: make([]migrationStatusItem, 0, len(statuses)),
+	}
 	for _, item := range statuses {
+		response.Items = append(response.Items, migrationStatusItem{
+			Version: item.Version, Description: item.Description, IsApplied: item.IsApplied,
+		})
 		if item.IsApplied {
 			response.AppliedCount++
 		} else {
