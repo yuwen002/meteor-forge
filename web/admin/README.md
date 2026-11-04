@@ -26,7 +26,7 @@ go run ./cmd/server
 
 默认管理元数据库路径为当前操作系统的用户配置目录下的 `meteor-forge/admin.db`。可通过 `METEOR_ADMIN_DB` 指定路径。**必须妥善备份加密密钥**：更换或丢失密钥后，已保存的数据源 DSN 将无法解密。密钥不要提交到 Git，也不要写入前端环境变量。
 
-API 默认仅监听 `127.0.0.1:8081`。健康检查：
+API 默认仅监听 `127.0.0.1:8081`。迁移脚本目录默认是当前工作目录下的 `migrations`，可通过 `METEOR_MIGRATIONS_DIR` 指定。文件名使用 `{version}_{description}.up.sql` 和 `{version}_{description}.down.sql`。健康检查：
 
 ```bash
 curl http://127.0.0.1:8081/api/v1/health
@@ -51,7 +51,7 @@ npm run dev
 - `DELETE /api/v1/datasources/{id}`：删除管理端登记，不会删除目标数据库。
 - `POST /api/v1/datasources/{id}/test`：测试目标数据库连接，5 秒超时，错误信息不会回显连接凭据。
 
-支持驱动：MySQL、PostgreSQL、SQLite、ClickHouse。DSN 使用 AES-256-GCM 加密保存。当前管理 API 尚未实现用户认证和角色授权，因此保持 loopback 监听，不要暴露到公网。
+支持驱动：MySQL、PostgreSQL、SQLite、ClickHouse。DSN 使用 AES-256-GCM 加密保存。迁移管理当前支持版本状态查询和 Up Dry Run 预览；状态/预览会确保目标库存在 `schema_migrations` 历史表，但不会执行用户迁移 SQL。Up/Down/ToVersion 执行任务仍在开发中。当前管理 API 尚未实现用户认证和角色授权，因此保持 loopback 监听，不要暴露到公网。
 
 ## 构建检查
 
@@ -60,4 +60,4 @@ npm run typecheck
 npm run build
 ```
 
-迁移、租户和分片页面当前仍在后续开发计划中；尚未接入的模块不会显示虚构的业务数据。
+租户和分片页面仍在后续开发计划中；尚未接入的模块不会显示虚构的业务数据。
