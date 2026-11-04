@@ -112,8 +112,21 @@ func (s *Server) previewMigrations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scriptByVersion := make(map[string]*migration.Script, len(scripts))
+	for _, script := range scripts {
+		scriptByVersion[script.Version] = script
+	}
 	applied := make(map[string]string, len(records))
 	for _, record := range records {
+		script, ok := scriptByVersion[record.Version]
+		if !ok {
+			writeAPIError(w, http.StatusConflict, "applied_migration_script_missing", "an applied migration is missing from the configured migration directory")
+			return
+		}
+		if record.Checksum != "" && record.Checksum != script.Checksum() {
+			writeAPIError(w, http.StatusConflict, "migration_checksum_mismatch", "an applied migration differs from the local script; execution is blocked")
+			return
+		}
 		applied[record.Version] = record.Checksum
 	}
 	response := migrationPreviewResponse{DataSourceID: r.PathValue("id"), Items: make([]migrationPlanItem, 0, len(scripts))}
@@ -123,11 +136,7 @@ func (s *Server) previewMigrations(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		checksum := script.Checksum()
-		if stored, ok := applied[script.Version]; ok {
-			if stored != "" && stored != checksum {
-				writeAPIError(w, http.StatusConflict, "migration_checksum_mismatch", "an applied migration differs from the local script; execution is blocked")
-				return
-			}
+		if _, ok := applied[script.Version]; ok {
 			continue
 		}
 		response.Items = append(response.Items, migrationPlanItem{
