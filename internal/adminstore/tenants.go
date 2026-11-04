@@ -14,7 +14,7 @@ var (
 	ErrTenantConflict = errors.New("tenant code already exists")
 	ErrTenantInvalidInput = errors.New("invalid tenant input")
 	ErrDataSourceHasTenants = errors.New("data source is assigned to tenants")
-	ErrTenantActiveMigration = errors.New("tenant has active migration tasks")
+	ErrTenantActiveMigration = errors.New("tenant is used by an active migration task")
 )
 
 // Tenant is a logical tenant mapped to a registered target data source.
