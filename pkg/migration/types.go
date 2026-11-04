@@ -49,6 +49,17 @@ func normalizeLineEndings(sql string) string {
 	return strings.ReplaceAll(sql, "\r", "\n")
 }
 
+// Progress 描述一次迁移执行中的单步进度。它不包含 SQL 内容或连接信息。
+type Progress struct {
+	CurrentVersion string
+	CompletedSteps int
+	TotalSteps int
+	CurrentAction string
+}
+
+// ProgressObserver 接收迁移步骤开始和完成时的进度快照。
+type ProgressObserver func(Progress)
+
 // Record 表示迁移历史表中记录的一条数据
 type Record struct {
 	Version   string
