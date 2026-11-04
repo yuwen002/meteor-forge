@@ -151,6 +151,10 @@ Down、DownSteps 和 ToVersion 必须显式提交 `confirm: true`。前端还会
 
 任务状态：`queued`、`running`、`succeeded`、`failed`、`canceled`、`interrupted`。 状态转换由管理元数据库原子约束：`queued` 只能进入 `running`、`failed`、`canceled` 或 `interrupted`；`running` 只能进入 `succeeded`、`failed`、`canceled` 或 `interrupted`；终态不可重新打开或改写。无效转换会被拒绝。任务响应只包含安全的状态摘要，不包含 DSN、SQL 内容或数据库驱动原始错误。
 
+### GET /migration-tasks/{id}/audit
+
+按时间顺序返回任务审计事件，包含数据源 ID、动作、状态变更前后值、操作者标识、请求来源、事件摘要和时间戳。当前尚未实现用户认证，操作者固定标记为 `local-api`，不能视为真实登录用户；请求来源取管理 API 连接的远端地址。事件与任务创建/状态变更在同一 SQLite 事务内写入，避免任务状态更新成功但审计事件丢失。
+
 ### POST /migration-tasks/{id}/cancel
 
 请求取消当前服务实例中正在排队或执行的任务，返回 HTTP 202。任务执行上下文会被取消；具体数据库驱动和 SQL 执行是否能立即响应取消取决于驱动实现。若任务已完成或不在当前实例活动列表中，返回 HTTP 409。
