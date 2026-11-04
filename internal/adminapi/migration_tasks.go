@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"sort"
 	"sync"
 	"time"
 
@@ -132,18 +133,21 @@ func (m *MigrationTaskManager) Close() {
 	m.wg.Wait()
 }
 
-// validatePendingUpScripts prevents an Up task from running when an already-applied
-// migration is missing locally or its checksum has changed.
-func validatePendingUpScripts(ctx context.Context, driver migration.Driver, loader migration.Loader) error {
+// validateMigrationTask checks the complete applied history before any operation.
+// It blocks checksum drift and missing local scripts for both forward and rollback tasks.
+func validateMigrationTask(ctx context.Context, driver migration.Driver, loader migration.Loader, task adminstore.MigrationTask) error {
 	if err := driver.EnsureTable(ctx); err != nil { return err }
 	scripts, err := loader.LoadScripts(ctx)
 	if err != nil { return err }
 	records, err := driver.GetAppliedVersions(ctx)
 	if err != nil { return err }
+
 	byVersion := make(map[string]*migration.Script, len(scripts))
-	for _, script := range scripts {
+	indexByVersion := make(map[string]int, len(scripts))
+	for i, script := range scripts {
 		if script.UpSQL == "" { return errors.New("migration script has no up SQL") }
 		byVersion[script.Version] = script
+		indexByVersion[script.Version] = i
 	}
 	for _, record := range records {
 		script, ok := byVersion[record.Version]
@@ -152,15 +156,53 @@ func validatePendingUpScripts(ctx context.Context, driver migration.Driver, load
 			return migration.ErrChecksumMismatch
 		}
 	}
+
+	rollbackVersions := make([]string, 0)
+	switch task.Action {
+	case "down", "down_steps":
+		sort.Slice(records, func(i, j int) bool { return records[i].Version > records[j].Version })
+		count := 1
+		if task.Action == "down_steps" { count = min(task.Steps, len(records)) }
+		for i := 0; i < count; i++ { rollbackVersions = append(rollbackVersions, records[i].Version) }
+	case "to_version":
+		targetIndex := len(scripts) - 1
+		if task.TargetVersion == "0" {
+			targetIndex = -1
+		} else {
+			for i, script := range scripts {
+				if script.Version == task.TargetVersion { targetIndex = i; break }
+			}
+			if task.TargetVersion != "" && targetIndex == len(scripts)-1 {
+				found := false
+				for _, script := range scripts { if script.Version == task.TargetVersion { found = true; break } }
+				if !found { return migration.ErrInvalidVersion }
+			}
+		}
+		currentIndex := -1
+		for _, record := range records {
+			if index, ok := indexByVersion[record.Version]; ok && index > currentIndex { currentIndex = index }
+		}
+		applied := make(map[string]bool, len(records))
+		for _, record := range records { applied[record.Version] = true }
+		for i := currentIndex; i > targetIndex; i-- {
+			if applied[scripts[i].Version] { rollbackVersions = append(rollbackVersions, scripts[i].Version) }
+		}
+	}
+	for _, version := range rollbackVersions {
+		script := byVersion[version]
+		if script == nil || script.DownSQL == "" {
+			return errors.New("a migration selected for rollback has no down SQL")
+		}
+	}
 	return nil
 }
 
 // runMigrationTask delegates execution to the existing core migration engine.
 func runMigrationTask(ctx context.Context, driver migration.Driver, loader migration.Loader, task adminstore.MigrationTask) error {
+	if err := validateMigrationTask(ctx, driver, loader, task); err != nil { return err }
 	engine := migration.NewDefaultMigrator(loader, driver)
 	switch task.Action {
 	case "up":
-		if err := validatePendingUpScripts(ctx, driver, loader); err != nil { return err }
 		err := engine.Up(ctx)
 		if errors.Is(err, migration.ErrNoPendingMigrations) { return nil }
 		return err
