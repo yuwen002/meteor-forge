@@ -10,6 +10,8 @@ import (
 
 // MigrationTask is a durable record of a migration operation. It deliberately
 // contains no DSN, SQL text, or raw driver error.
+var ErrInvalidTaskTransition = errors.New("invalid migration task state transition")
+
 type MigrationTask struct {
 	ID           string     `json:"id"`
 	DataSourceID string     `json:"data_source_id"`
@@ -102,14 +104,30 @@ func (s *Store) UpdateMigrationTask(ctx context.Context, id, status, message str
 	var started, finished any
 	if startedAt != nil { started = startedAt.UTC().Format(time.RFC3339Nano) }
 	if finishedAt != nil { finished = finishedAt.UTC().Format(time.RFC3339Nano) }
-	result, err := s.db.ExecContext(ctx, `UPDATE admin_migration_tasks SET status = ?,
+	allowedFrom := ""
+	switch status {
+	case "running":
+		allowedFrom = "queued"
+	case "succeeded":
+		allowedFrom = "running"
+	case "failed", "canceled", "interrupted":
+		allowedFrom = "queued', 'running"
+	}
+	query := `UPDATE admin_migration_tasks SET status = ?,
 		message = ?, started_at = COALESCE(?, started_at), finished_at = ?
-		WHERE id = ?`, status, message, started, finished, id)
+		WHERE id = ? AND status IN ('` + allowedFrom + `')`
+	result, err := s.db.ExecContext(ctx, query, status, message, started, finished, id)
 	if err != nil { return fmt.Errorf("update migration task: %w", err) }
 	count, err := result.RowsAffected()
 	if err != nil { return err }
-	if count == 0 { return ErrNotFound }
-	return nil
+	if count > 0 { return nil }
+	var exists int
+	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM admin_migration_tasks WHERE id = ?", id).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return fmt.Errorf("check migration task state: %w", err)
+	}
+	return ErrInvalidTaskTransition
 }
 
 // RecoverInterruptedTasks marks tasks left running or queued by a process crash.
