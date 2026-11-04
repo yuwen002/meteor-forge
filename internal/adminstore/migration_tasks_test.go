@@ -105,3 +105,32 @@ func TestMigrationTaskStateTransitionsAreEnforced(t *testing.T) {
 		t.Fatalf("missing task error = %v, want ErrNotFound", err)
 	}
 }
+
+
+func TestMigrationAuditEventsRecordTaskLifecycle(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	task, err := store.CreateMigrationTask(ctx, MigrationTask{
+		ID: "audit-task", DataSourceID: "audit-source", Action: "up", RequestSource: "127.0.0.1",
+	})
+	if err != nil { t.Fatalf("create task: %v", err) }
+	started := time.Now().UTC()
+	if err := store.UpdateMigrationTask(ctx, task.ID, "running", "migration is running", &started, nil); err != nil {
+		t.Fatalf("mark task running: %v", err)
+	}
+	finished := time.Now().UTC()
+	if err := store.UpdateMigrationTask(ctx, task.ID, "succeeded", "migration completed successfully", nil, &finished); err != nil {
+		t.Fatalf("mark task succeeded: %v", err)
+	}
+	events, err := store.ListMigrationAuditEvents(ctx, task.ID)
+	if err != nil { t.Fatalf("list audit events: %v", err) }
+	if len(events) != 3 { t.Fatalf("audit event count = %d, want 3", len(events)) }
+	if events[0].ToStatus != "queued" || events[1].FromStatus != "queued" || events[1].ToStatus != "running" ||
+		events[2].FromStatus != "running" || events[2].ToStatus != "succeeded" {
+		t.Fatalf("unexpected audit lifecycle: %+v", events)
+	}
+	for _, event := range events {
+		if event.RequestSource != "127.0.0.1" { t.Fatalf("request source = %q", event.RequestSource) }
+		if event.Actor != "local-api" { t.Fatalf("actor = %q, want local-api", event.Actor) }
+	}
+}
