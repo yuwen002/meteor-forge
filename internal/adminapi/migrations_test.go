@@ -116,6 +116,15 @@ func TestMigrationPreviewBlocksChangedAppliedScript(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("changed applied migration preview code=%d body=%s, want 409", rec.Code, rec.Body.String())
 	}
+
+	if err := os.Remove(upPath); err != nil { t.Fatal(err) }
+	if err := os.Remove(filepath.Join(migrationDir, "000001_checksum_guard.down.sql")); err != nil { t.Fatal(err) }
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/datasources/"+created.ID+"/migrations/preview", nil)
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("missing applied migration preview code=%d body=%s, want 409", rec.Code, rec.Body.String())
+	}
 }
 
 func writeMigrationPair(t *testing.T, dir, base, upSQL, downSQL string) string {
