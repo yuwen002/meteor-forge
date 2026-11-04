@@ -323,3 +323,60 @@ func TestMigratorUpToleratesLegacyRecordsWithoutChecksum(t *testing.T) {
 		t.Errorf("expected 2 applied records, got %d", len(driver.records))
 	}
 }
+
+
+// 已应用记录必须在本地存在；Up 不得在版本历史漂移时继续执行。
+func TestMigratorUpBlocksMissingAppliedScript(t *testing.T) {
+	migrator, driver := newTestMigrator()
+	driver.records = []Record{{Version: "999", Name: "missing"}}
+	err := migrator.Up(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "999") {
+		t.Fatalf("expected missing local script error for version 999, got %v", err)
+	}
+	if len(driver.records) != 1 {
+		t.Fatalf("history must remain unchanged, got %+v", driver.records)
+	}
+}
+
+// Down 在迁移锁内校验已应用脚本 checksum，不能回滚与本地版本不一致的历史。
+func TestMigratorDownBlocksTamperedAppliedScript(t *testing.T) {
+	migrator, driver := newTestMigrator()
+	if err := migrator.Up(context.Background()); err != nil { t.Fatal(err) }
+	driver.records[len(driver.records)-1].Checksum = "deadbeef"
+	err := migrator.Down(context.Background())
+	if !errors.Is(err, ErrChecksumMismatch) {
+		t.Fatalf("expected ErrChecksumMismatch, got %v", err)
+	}
+	if len(driver.records) != 2 {
+		t.Fatalf("history must remain unchanged, got %+v", driver.records)
+	}
+}
+
+// ToVersion 与 Up/Down 使用相同的已应用历史校验规则。
+func TestMigratorToVersionBlocksMissingAppliedScript(t *testing.T) {
+	migrator, driver := newTestMigrator()
+	driver.records = []Record{{Version: "999", Name: "missing"}}
+	err := migrator.ToVersion(context.Background(), "001")
+	if err == nil || !strings.Contains(err.Error(), "999") {
+		t.Fatalf("expected missing local script error for version 999, got %v", err)
+	}
+	if len(driver.records) != 1 {
+		t.Fatalf("history must remain unchanged, got %+v", driver.records)
+	}
+}
+
+// 选中回滚的脚本必须包含 Down SQL；在执行任何 DDL 前拒绝不完整脚本。
+func TestMigratorDownBlocksEmptyDownSQL(t *testing.T) {
+	fsys := fstest.MapFS{"001_only.up.sql": {Data: []byte("SELECT 1;")}}
+	script := &Script{Version: "001", Description: "only", UpSQL: "SELECT 1;"}
+	driver := NewMockDriver()
+	driver.records = []Record{{Version: "001", Name: "only", Checksum: script.Checksum()}}
+	migrator := NewDefaultMigrator(NewFileSystemLoader(fsys, "."), driver)
+	err := migrator.Down(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "down SQL") {
+		t.Fatalf("expected empty Down SQL error, got %v", err)
+	}
+	if len(driver.records) != 1 {
+		t.Fatalf("history must remain unchanged, got %+v", driver.records)
+	}
+}
