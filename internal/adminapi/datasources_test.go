@@ -19,6 +19,7 @@ func TestDataSourceAPIEncryptsAndRedactsDSN(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	t.Cleanup(func() { _ = store.Close() })
 	server := NewServerWithStore(store)
+	t.Cleanup(func() { _ = server.Close() })
 
 	body := []byte(`{"name":"test-db","driver":"sqlite","dsn":":memory:"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/datasources", bytes.NewReader(body))
@@ -60,6 +61,7 @@ func TestDataSourceConnectionTestEndpoint(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 
 	server := NewServerWithStore(store)
+	t.Cleanup(func() { _ = server.Close() })
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/datasources/"+created.ID+"/test", nil)
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
