@@ -49,3 +49,22 @@ func TestDataSourceAPIRejectsUnknownFields(t *testing.T) {
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest { t.Fatalf("status = %d, want 400", rec.Code) }
 }
+
+func TestDataSourceConnectionTestEndpoint(t *testing.T) {
+	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
+	if err != nil { t.Fatal(err) }
+	t.Cleanup(func() { _ = store.Close() })
+	created, err := store.Create(context.Background(), adminstore.DataSourceInput{
+		Name: "local sqlite", Driver: "sqlite", DSN: ":memory:",
+	})
+	if err != nil { t.Fatal(err) }
+
+	server := NewServerWithStore(store)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/datasources/"+created.ID+"/test", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK { t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String()) }
+	if !strings.Contains(rec.Body.String(), `"success":true`) {
+		t.Fatalf("connection test did not succeed: %s", rec.Body.String())
+	}
+}
