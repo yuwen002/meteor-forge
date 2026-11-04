@@ -20,6 +20,7 @@ const apiPrefix = "/api/v1"
 type Server struct {
 	handler http.Handler
 	store   dataSourceStore
+	tenants tenantStore
 	pools        *PoolManager
 	tasks        *MigrationTaskManager
 	migrationDir string
@@ -39,7 +40,7 @@ func NewServerWithStore(store *adminstore.Store) *Server {
 func NewServerWithMigrationDir(store *adminstore.Store, migrationDir string) *Server {
 	if migrationDir == "" { migrationDir = "migrations" }
 	mux := http.NewServeMux()
-	server := &Server{store: store, pools: NewPoolManager(), migrationDir: migrationDir}
+	server := &Server{store: store, tenants: store, pools: NewPoolManager(), migrationDir: migrationDir}
 	if store != nil {
 		server.tasks = NewMigrationTaskManager(store, func(ctx context.Context, task adminstore.MigrationTask) error {
 			driver, err := server.migrationDriver(ctx, task.DataSourceID)
@@ -62,6 +63,7 @@ func NewServerWithMigrationDir(store *adminstore.Store, migrationDir string) *Se
 	}
 	mux.HandleFunc("GET "+apiPrefix+"/health", healthHandler)
 	server.registerDataSourceRoutes(mux)
+	server.registerTenantRoutes(mux)
 	server.registerMigrationRoutes(mux)
 	server.handler = withCommonHeaders(mux)
 	return server
