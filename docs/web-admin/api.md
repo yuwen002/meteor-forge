@@ -60,6 +60,52 @@ DSN 仅在创建和更新请求中提交。服务端使用 AES-256-GCM 加密后
 
 失败时只返回通用错误信息，不回传驱动原始错误，以免泄漏连接串或服务端信息。
 
+## 多租户管理
+
+租户记录保存在管理元数据库中。每个租户通过 `data_source_id` 引用一个已登记的数据源，不重复保存 DSN；租户 API 只返回数据源名称和驱动类型，不返回连接凭据。租户标识 `code` 会归一化为小写，并且全局唯一；允许字符为字母、数字、短横线和下划线。状态为 `active` 或 `suspended`，创建时默认 `active`。
+
+### GET /tenants
+
+返回租户列表：`{"items": Tenant[]}`。
+
+### POST /tenants
+
+请求：
+
+```json
+{
+  "name": "Acme Workspace",
+  "code": "acme-prod",
+  "data_source_id": "registered-data-source-id",
+  "status": "active"
+}
+```
+
+`status` 可省略，默认为 `active`。成功返回 HTTP 201。租户必须引用已登记的数据源；重复 code 返回 HTTP 409。
+
+### GET /tenants/{id}
+
+读取租户详情，不包含 DSN。
+
+### PUT /tenants/{id}
+
+请求字段与创建接口一致，可修改租户名称、code、数据源映射和状态。更新成功返回 HTTP 200。
+
+### DELETE /tenants/{id}
+
+删除管理端租户登记，返回 HTTP 204。不会删除目标数据库、目标库中的数据或被引用的数据源。
+
+### POST /tenants/{id}/test
+
+使用租户关联数据源的连接池执行 Ping，超时 5 秒。失败响应只返回通用提示，不暴露驱动错误或 DSN。
+
+### 租户与数据源的生命周期保护
+
+- 被任一租户引用的数据源不能更新连接配置或删除，返回 HTTP 409（`data_source_has_tenants`）。请先调整或删除租户映射。
+- 当租户当前或目标数据源存在 queued/running 迁移任务时，禁止创建、更新或删除该租户，返回 HTTP 409（`tenant_has_active_migration`）。
+- 多个租户可以引用同一数据源；此时它们共享该数据源的连接池。需要数据库级隔离时，应为每个租户登记独立数据源。
+- 当前租户状态用于管理登记和启停标识；尚未接入面向业务请求的认证身份解析与租户数据访问中间件。管理 API 仍未实现用户认证/授权，不得暴露公网。
+
 ## 管理元数据库配置
 
 - `METEOR_ADMIN_DB`：SQLite 文件路径；默认位于操作系统用户配置目录的 `meteor-forge/admin.db`。
