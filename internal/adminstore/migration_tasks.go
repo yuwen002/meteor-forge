@@ -23,6 +23,20 @@ type MigrationTask struct {
 	CreatedAt    time.Time  `json:"created_at"`
 	StartedAt    *time.Time `json:"started_at,omitempty"`
 	FinishedAt   *time.Time `json:"finished_at,omitempty"`
+	RequestSource string    `json:"-"`
+}
+
+type MigrationAuditEvent struct {
+	ID int64 `json:"id"`
+	TaskID string `json:"task_id"`
+	DataSourceID string `json:"data_source_id"`
+	Action string `json:"action"`
+	FromStatus string `json:"from_status,omitempty"`
+	ToStatus string `json:"to_status"`
+	Actor string `json:"actor"`
+	RequestSource string `json:"request_source,omitempty"`
+	Message string `json:"message,omitempty"`
+	OccurredAt time.Time `json:"occurred_at"`
 }
 
 // CreateMigrationTask persists a queued task before it is handed to a worker.
@@ -33,14 +47,19 @@ func (s *Store) CreateMigrationTask(ctx context.Context, task MigrationTask) (Mi
 	now := time.Now().UTC()
 	task.CreatedAt = now
 	task.Status = "queued"
-	_, err := s.db.ExecContext(ctx, `INSERT INTO admin_migration_tasks
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil { return MigrationTask{}, fmt.Errorf("begin migration task creation: %w", err) }
+	defer tx.Rollback() //nolint:errcheck
+	_, err = tx.ExecContext(ctx, `INSERT INTO admin_migration_tasks
 		(id, data_source_id, action, target_version, steps, status, message, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID, task.DataSourceID, task.Action, task.TargetVersion, task.Steps,
 		task.Status, "", now.Format(time.RFC3339Nano))
-	if err != nil {
-		return MigrationTask{}, fmt.Errorf("create migration task: %w", err)
+	if err != nil { return MigrationTask{}, fmt.Errorf("create migration task: %w", err) }
+	if err := insertMigrationAuditEvent(ctx, tx, task, "", "queued", "task submitted", now); err != nil {
+		return MigrationTask{}, err
 	}
+	if err := tx.Commit(); err != nil { return MigrationTask{}, fmt.Errorf("commit migration task: %w", err) }
 	return task, nil
 }
 
@@ -106,28 +125,62 @@ func (s *Store) UpdateMigrationTask(ctx context.Context, id, status, message str
 	if finishedAt != nil { finished = finishedAt.UTC().Format(time.RFC3339Nano) }
 	allowedFrom := ""
 	switch status {
-	case "running":
-		allowedFrom = "queued"
-	case "succeeded":
-		allowedFrom = "running"
-	case "failed", "canceled", "interrupted":
-		allowedFrom = "queued', 'running"
+	case "running": allowedFrom = "queued"
+	case "succeeded": allowedFrom = "running"
+	case "failed", "canceled", "interrupted": allowedFrom = "queued', 'running"
 	}
-	query := `UPDATE admin_migration_tasks SET status = ?,
-		message = ?, started_at = COALESCE(?, started_at), finished_at = ?
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil { return fmt.Errorf("begin migration task transition: %w", err) }
+	defer tx.Rollback() //nolint:errcheck
+	var task MigrationTask
+	if err := tx.QueryRowContext(ctx, `SELECT id, data_source_id, action, status, message FROM admin_migration_tasks WHERE id = ?`, id).
+		Scan(&task.ID, &task.DataSourceID, &task.Action, &task.Status, &task.Message); errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil { return fmt.Errorf("load migration task for transition: %w", err) }
+	from := task.Status
+	query := `UPDATE admin_migration_tasks SET status = ?, message = ?,
+		started_at = COALESCE(?, started_at), finished_at = ?
 		WHERE id = ? AND status IN ('` + allowedFrom + `')`
-	result, err := s.db.ExecContext(ctx, query, status, message, started, finished, id)
+	result, err := tx.ExecContext(ctx, query, status, message, started, finished, id)
 	if err != nil { return fmt.Errorf("update migration task: %w", err) }
 	count, err := result.RowsAffected()
 	if err != nil { return err }
-	if count > 0 { return nil }
-	var exists int
-	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM admin_migration_tasks WHERE id = ?", id).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
-		return ErrNotFound
-	} else if err != nil {
-		return fmt.Errorf("check migration task state: %w", err)
+	if count == 0 { return ErrInvalidTaskTransition }
+	now := time.Now().UTC()
+	if finishedAt != nil { now = finishedAt.UTC() } else if startedAt != nil { now = startedAt.UTC() }
+	task.RequestSource = ""
+	if err := insertMigrationAuditEvent(ctx, tx, task, from, status, message, now); err != nil { return err }
+	return tx.Commit()
+}
+
+func insertMigrationAuditEvent(ctx context.Context, tx *sql.Tx, task MigrationTask, from, to, message string, at time.Time) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO admin_migration_audit_events
+		(task_id, data_source_id, action, from_status, to_status, actor, request_source, message, occurred_at)
+		VALUES (?, ?, ?, ?, ?, 'local-api', ?, ?, ?)`,
+		task.ID, task.DataSourceID, task.Action, from, to, task.RequestSource, message, at.UTC().Format(time.RFC3339Nano))
+	if err != nil { return fmt.Errorf("record migration audit event: %w", err) }
+	return nil
+}
+
+// ListMigrationAuditEvents returns chronological state changes for one task.
+func (s *Store) ListMigrationAuditEvents(ctx context.Context, taskID string) ([]MigrationAuditEvent, error) {
+	if _, err := s.GetMigrationTask(ctx, taskID); err != nil { return nil, err }
+	rows, err := s.db.QueryContext(ctx, `SELECT id, task_id, data_source_id, action, from_status, to_status,
+		actor, request_source, message, occurred_at FROM admin_migration_audit_events
+		WHERE task_id = ? ORDER BY id ASC`, taskID)
+	if err != nil { return nil, fmt.Errorf("list migration audit events: %w", err) }
+	defer rows.Close()
+	items := make([]MigrationAuditEvent, 0)
+	for rows.Next() {
+		var item MigrationAuditEvent
+		var at string
+		if err := rows.Scan(&item.ID, &item.TaskID, &item.DataSourceID, &item.Action, &item.FromStatus,
+			&item.ToStatus, &item.Actor, &item.RequestSource, &item.Message, &at); err != nil { return nil, err }
+		item.OccurredAt, err = time.Parse(time.RFC3339Nano, at)
+		if err != nil { return nil, fmt.Errorf("parse migration audit timestamp: %w", err) }
+		items = append(items, item)
 	}
-	return ErrInvalidTaskTransition
+	return items, rows.Err()
 }
 
 // RecoverInterruptedTasks marks tasks left running or queued by a process crash.
