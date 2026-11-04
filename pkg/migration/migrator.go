@@ -12,15 +12,25 @@ import (
 type DefaultMigrator struct {
 	loader Loader
 	driver Driver
+	observer ProgressObserver
 }
 
 // 确保 DefaultMigrator 实现了 Migrator 接口。
 var _ Migrator = (*DefaultMigrator)(nil)
 
 func NewDefaultMigrator(loader Loader, driver Driver) *DefaultMigrator {
-	return &DefaultMigrator{
-		loader: loader,
-		driver: driver,
+	return NewDefaultMigratorWithObserver(loader, driver, nil)
+}
+
+// NewDefaultMigratorWithObserver 创建支持执行进度回调的迁移引擎。
+// observer 在每条迁移开始和成功完成时同步调用；回调应快速返回且不得重入当前引擎。
+func NewDefaultMigratorWithObserver(loader Loader, driver Driver, observer ProgressObserver) *DefaultMigrator {
+	return &DefaultMigrator{loader: loader, driver: driver, observer: observer}
+}
+
+func (m *DefaultMigrator) reportProgress(progress Progress) {
+	if m.observer != nil {
+		m.observer(progress)
 	}
 }
 
@@ -96,11 +106,13 @@ func (m *DefaultMigrator) Up(ctx context.Context) error {
 		return ErrNoPendingMigrations
 	}
 
-	// 5. 依次向上执行
-	for _, script := range pendingScripts {
+	// 5. 依次向上执行，并在每个版本开始/完成时报告进度。
+	for i, script := range pendingScripts {
+		m.reportProgress(Progress{CurrentVersion: script.Version, CompletedSteps: i, TotalSteps: len(pendingScripts), CurrentAction: "up"})
 		if err := m.driver.ApplyMigration(ctx, script, false); err != nil {
 			return fmt.Errorf("migration up failed at version %s: %w", script.Version, err)
 		}
+		m.reportProgress(Progress{CurrentVersion: script.Version, CompletedSteps: i + 1, TotalSteps: len(pendingScripts), CurrentAction: "up"})
 	}
 
 	return nil
@@ -166,9 +178,11 @@ func (m *DefaultMigrator) DownSteps(ctx context.Context, steps int) error {
 	}
 	for i := 0; i < count; i++ {
 		version := appliedRecords[i].Version
+		m.reportProgress(Progress{CurrentVersion: version, CompletedSteps: i, TotalSteps: count, CurrentAction: "down"})
 		if err := m.driver.ApplyMigration(ctx, scriptMap[version], true); err != nil {
 			return fmt.Errorf("migration down failed at version %s: %w", version, err)
 		}
+		m.reportProgress(Progress{CurrentVersion: version, CompletedSteps: i + 1, TotalSteps: count, CurrentAction: "down"})
 	}
 
 	return nil
@@ -226,15 +240,22 @@ func (m *DefaultMigrator) ToVersion(ctx context.Context, version string) error {
 	}
 
 	applied := 0
+	totalSteps := 0
+	if targetIdx > currentIdx { totalSteps = targetIdx - currentIdx }
+	if currentIdx > targetIdx { totalSteps = currentIdx - targetIdx }
+	completedSteps := 0
 	// 升级：从 currentIdx 到 targetIdx 逐个应用未执行的脚本
 	for i := currentIdx + 1; i <= targetIdx; i++ {
 		if appliedMap[scripts[i].Version] {
 			continue
 		}
+		m.reportProgress(Progress{CurrentVersion: scripts[i].Version, CompletedSteps: completedSteps, TotalSteps: totalSteps, CurrentAction: "up"})
 		if err := m.driver.ApplyMigration(ctx, scripts[i], false); err != nil {
 			return fmt.Errorf("migration to version %s failed at %s: %w", version, scripts[i].Version, err)
 		}
 		applied++
+		completedSteps++
+		m.reportProgress(Progress{CurrentVersion: scripts[i].Version, CompletedSteps: completedSteps, TotalSteps: totalSteps, CurrentAction: "up"})
 	}
 
 	// 回退前先校验全部待回滚脚本，避免因后续脚本缺失 Down SQL 导致部分退档。
@@ -246,10 +267,13 @@ func (m *DefaultMigrator) ToVersion(ctx context.Context, version string) error {
 	// 回退：从 currentIdx 向下（不含 targetIdx）逐个回滚
 	for i := currentIdx; i > targetIdx; i-- {
 		if !appliedMap[scripts[i].Version] { continue }
+		m.reportProgress(Progress{CurrentVersion: scripts[i].Version, CompletedSteps: completedSteps, TotalSteps: totalSteps, CurrentAction: "down"})
 		if err := m.driver.ApplyMigration(ctx, scripts[i], true); err != nil {
 			return fmt.Errorf("migration to version %s failed rollback at %s: %w", version, scripts[i].Version, err)
 		}
 		applied++
+		completedSteps++
+		m.reportProgress(Progress{CurrentVersion: scripts[i].Version, CompletedSteps: completedSteps, TotalSteps: totalSteps, CurrentAction: "down"})
 	}
 
 	if applied == 0 {
