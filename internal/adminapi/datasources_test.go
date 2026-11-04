@@ -70,3 +70,42 @@ func TestDataSourceConnectionTestEndpoint(t *testing.T) {
 		t.Fatalf("connection test did not succeed: %s", rec.Body.String())
 	}
 }
+
+func TestDataSourceMutationInvalidatesCachedPool(t *testing.T) {
+	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
+	if err != nil { t.Fatal(err) }
+	t.Cleanup(func() { _ = store.Close() })
+	created, err := store.Create(context.Background(), adminstore.DataSourceInput{
+		Name: "pool target", Driver: "sqlite", DSN: ":memory:",
+	})
+	if err != nil { t.Fatal(err) }
+
+	server := NewServerWithStore(store)
+	t.Cleanup(func() { _ = server.Close() })
+	request := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	testPath := "/api/v1/datasources/" + created.ID + "/test"
+	if rec := request(http.MethodPost, testPath, ""); rec.Code != http.StatusOK {
+		t.Fatalf("initial connection test status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(server.pools.pools) != 1 { t.Fatalf("cached pools = %d, want 1", len(server.pools.pools)) }
+
+	updateBody := `{"name":"pool target updated","driver":"sqlite","dsn":":memory:"}`
+	if rec := request(http.MethodPut, "/api/v1/datasources/"+created.ID, updateBody); rec.Code != http.StatusOK {
+		t.Fatalf("update status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(server.pools.pools) != 0 { t.Fatalf("pools after update = %d, want 0", len(server.pools.pools)) }
+
+	if rec := request(http.MethodPost, testPath, ""); rec.Code != http.StatusOK {
+		t.Fatalf("connection test after update status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := request(http.MethodDelete, "/api/v1/datasources/"+created.ID, ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(server.pools.pools) != 0 { t.Fatalf("pools after delete = %d, want 0", len(server.pools.pools)) }
+}
