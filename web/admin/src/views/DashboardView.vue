@@ -1,14 +1,20 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { getHealth, type HealthResponse } from '../api'
+import { api, getHealth, type HealthResponse } from '../api'
 
 const health = ref<HealthResponse | null>(null)
 const healthError = ref('')
+const dataSourceCount = ref<number | null>(null)
 const loading = ref(true)
 
 onMounted(async () => {
   try {
-    health.value = await getHealth()
+    const [healthResult, dataSourceResult] = await Promise.all([
+      getHealth(),
+      api.get<{ items: unknown[] }>('/datasources'),
+    ])
+    health.value = healthResult
+    dataSourceCount.value = dataSourceResult.data.items.length
   } catch {
     healthError.value = '无法连接管理 API，请确认 Go 服务已启动。'
   } finally {
@@ -28,8 +34,8 @@ onMounted(async () => {
   </div>
 
   <el-alert
-    title="尚未连接管理元数据库"
-    description="当前为工程初始化版本。数据源、租户、迁移和分片统计将在对应模块接入真实服务后展示，不使用模拟数字。"
+    title="管理平台初始化中"
+    description="管理元数据库和数据源登记已接入。租户、迁移与分片统计将在对应业务 API 完成后展示；未接入的数据不会使用模拟数字。"
     type="info"
     :closable="false"
     show-icon
@@ -39,8 +45,8 @@ onMounted(async () => {
   <div class="overview-grid">
     <el-card shadow="never" class="overview-card">
       <div class="card-label">数据源</div>
-      <div class="card-value">—</div>
-      <div class="card-foot">等待配置数据源</div>
+      <div class="card-value">{{ dataSourceCount ?? '—' }}</div>
+      <div class="card-foot">已登记的数据源</div>
     </el-card>
     <el-card shadow="never" class="overview-card">
       <div class="card-label">租户</div>
