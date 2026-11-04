@@ -3,6 +3,7 @@ package adminapi
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -49,6 +50,7 @@ func (s *Server) registerMigrationRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+apiPrefix+"/migration-tasks", s.listMigrationTasks)
 	mux.HandleFunc("GET "+apiPrefix+"/migration-tasks/{id}", s.getMigrationTask)
 	mux.HandleFunc("POST "+apiPrefix+"/migration-tasks/{id}/cancel", s.cancelMigrationTask)
+	mux.HandleFunc("GET "+apiPrefix+"/migration-tasks/{id}/audit", s.listMigrationTaskAudit)
 }
 
 func (s *Server) migrationStatus(w http.ResponseWriter, r *http.Request) {
@@ -190,9 +192,12 @@ func (s *Server) createMigrationTask(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "invalid_action", "action must be up, down, down_steps, or to_version")
 		return
 	}
+	requestSource, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if requestSource == "" { requestSource = r.RemoteAddr }
 	task, err := s.tasks.Submit(r.Context(), adminstore.MigrationTask{
 		DataSourceID: dataSourceID, Action: request.Action,
 		TargetVersion: request.TargetVersion, Steps: request.Steps,
+		RequestSource: requestSource,
 	})
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "task_submission_failed", "unable to create migration task")
@@ -281,4 +286,18 @@ func writeMigrationSetupError(w http.ResponseWriter, err error) {
 		return
 	}
 	writeAPIError(w, http.StatusUnprocessableEntity, "migration_connection_failed", "unable to connect to the selected data source")
+}
+
+func (s *Server) listMigrationTaskAudit(w http.ResponseWriter, r *http.Request) {
+	if !s.requireStore(w) { return }
+	store, ok := s.store.(interface {
+		ListMigrationAuditEvents(context.Context, string) ([]adminstore.MigrationAuditEvent, error)
+	})
+	if !ok { writeAPIError(w, http.StatusServiceUnavailable, "audit_store_unavailable", "migration audit storage is unavailable"); return }
+	items, err := store.ListMigrationAuditEvents(r.Context(), r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, adminstore.ErrNotFound) { writeAPIError(w, http.StatusNotFound, "not_found", "migration task not found") } else { writeAPIError(w, http.StatusInternalServerError, "audit_query_failed", "unable to read migration audit events") }
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
