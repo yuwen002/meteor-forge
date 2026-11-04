@@ -33,8 +33,10 @@ type MigrationTaskManager struct {
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
 	locks   map[string]*dataSourceTaskLock
-	closed  bool
-	wg      sync.WaitGroup
+	closed    bool
+	wg        sync.WaitGroup
+	closeOnce sync.Once
+	done      chan struct{}
 }
 
 func NewMigrationTaskManager(store migrationTaskStore, run func(context.Context, adminstore.MigrationTask) error) *MigrationTaskManager {
@@ -42,6 +44,7 @@ func NewMigrationTaskManager(store migrationTaskStore, run func(context.Context,
 		store: store, run: run,
 		cancels: make(map[string]context.CancelFunc),
 		locks:   make(map[string]*dataSourceTaskLock),
+		done:    make(chan struct{}),
 	}
 }
 
@@ -147,14 +150,36 @@ func (m *MigrationTaskManager) Cancel(id string) error {
 	return nil
 }
 
-func (m *MigrationTaskManager) Close() {
-	m.mu.Lock()
-	m.closed = true
-	cancels := make([]context.CancelFunc, 0, len(m.cancels))
-	for _, cancel := range m.cancels { cancels = append(cancels, cancel) }
-	m.mu.Unlock()
-	for _, cancel := range cancels { cancel() }
-	m.wg.Wait()
+// CloseContext cancels queued/running workers and waits until they have released
+// their per-data-source locks. A driver that ignores context cancellation may
+// outlive the supplied deadline; callers must then keep shared pools alive.
+func (m *MigrationTaskManager) CloseContext(ctx context.Context) error {
+	m.closeOnce.Do(func() {
+		m.mu.Lock()
+		m.closed = true
+		cancels := make([]context.CancelFunc, 0, len(m.cancels))
+		for _, cancel := range m.cancels { cancels = append(cancels, cancel) }
+		m.mu.Unlock()
+		for _, cancel := range cancels { cancel() }
+		go func() {
+			m.wg.Wait()
+			close(m.done)
+		}()
+	})
+	select {
+	case <-m.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Close provides a bounded default shutdown wait for callers that do not
+// manage their own process shutdown deadline.
+func (m *MigrationTaskManager) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return m.CloseContext(ctx)
 }
 
 // runMigrationTask delegates execution to the existing core migration engine.
