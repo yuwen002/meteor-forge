@@ -72,7 +72,13 @@ func (s *Server) Handler() http.Handler { return s.handler }
 
 // Close releases all cached target database pools owned by the API server.
 func (s *Server) Close() error {
-	if s.tasks != nil { s.tasks.Close() }
+	if s.tasks != nil {
+		if err := s.tasks.Close(); err != nil {
+			// Keep target pools alive while a driver that ignores cancellation may
+			// still be using them. The process supervisor enforces final shutdown.
+			return err
+		}
+	}
 	if s.pools == nil { return nil }
 	return s.pools.Close()
 }
