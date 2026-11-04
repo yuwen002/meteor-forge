@@ -150,7 +150,6 @@ func (s *Store) UpdateMigrationTask(ctx context.Context, id, status, message str
 	if count == 0 { return ErrInvalidTaskTransition }
 	now := time.Now().UTC()
 	if finishedAt != nil { now = finishedAt.UTC() } else if startedAt != nil { now = startedAt.UTC() }
-	task.RequestSource = ""
 	if err := insertMigrationAuditEvent(ctx, tx, task, from, status, message, now); err != nil { return err }
 	return tx.Commit()
 }
