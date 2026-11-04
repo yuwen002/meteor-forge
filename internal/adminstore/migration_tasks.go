@@ -23,7 +23,19 @@ type MigrationTask struct {
 	CreatedAt    time.Time  `json:"created_at"`
 	StartedAt    *time.Time `json:"started_at,omitempty"`
 	FinishedAt   *time.Time `json:"finished_at,omitempty"`
+	CurrentVersion string   `json:"current_version,omitempty"`
+	CompletedSteps int      `json:"completed_steps"`
+	TotalSteps int           `json:"total_steps"`
+	CurrentAction string     `json:"current_action,omitempty"`
+	ProgressUpdatedAt *time.Time `json:"progress_updated_at,omitempty"`
 	RequestSource string    `json:"-"`
+}
+
+type MigrationTaskProgress struct {
+	CurrentVersion string
+	CompletedSteps int
+	TotalSteps int
+	CurrentAction string
 }
 
 type MigrationAuditEvent struct {
@@ -68,11 +80,17 @@ func (s *Store) GetMigrationTask(ctx context.Context, id string) (MigrationTask,
 	var task MigrationTask
 	var created string
 	var started, finished sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT id, data_source_id, action, target_version,
-		steps, status, message, created_at, started_at, finished_at
-		FROM admin_migration_tasks WHERE id = ?`, id).Scan(
+	var progressUpdated sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT t.id, t.data_source_id, t.action, t.target_version,
+		t.steps, t.status, t.message, t.created_at, t.started_at, t.finished_at,
+		COALESCE(p.current_version, ''), COALESCE(p.completed_steps, 0),
+		COALESCE(p.total_steps, 0), COALESCE(p.current_action, ''), p.updated_at
+		FROM admin_migration_tasks t
+		LEFT JOIN admin_migration_task_progress p ON p.task_id = t.id
+		WHERE t.id = ?`, id).Scan(
 		&task.ID, &task.DataSourceID, &task.Action, &task.TargetVersion,
-		&task.Steps, &task.Status, &task.Message, &created, &started, &finished)
+		&task.Steps, &task.Status, &task.Message, &created, &started, &finished,
+		&task.CurrentVersion, &task.CompletedSteps, &task.TotalSteps, &task.CurrentAction, &progressUpdated)
 	if errors.Is(err, sql.ErrNoRows) { return MigrationTask{}, ErrNotFound }
 	if err != nil { return MigrationTask{}, fmt.Errorf("get migration task: %w", err) }
 	task.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
@@ -87,7 +105,37 @@ func (s *Store) GetMigrationTask(ctx context.Context, id string) (MigrationTask,
 		if parseErr != nil { return MigrationTask{}, fmt.Errorf("parse task finish time: %w", parseErr) }
 		task.FinishedAt = &value
 	}
+	if progressUpdated.Valid {
+		value, parseErr := time.Parse(time.RFC3339Nano, progressUpdated.String)
+		if parseErr != nil { return MigrationTask{}, fmt.Errorf("parse task progress timestamp: %w", parseErr) }
+		task.ProgressUpdatedAt = &value
+	}
 	return task, nil
+}
+
+// UpdateMigrationTaskProgress stores a bounded, safe progress snapshot for a running task.
+func (s *Store) UpdateMigrationTaskProgress(ctx context.Context, id string, progress MigrationTaskProgress) error {
+	if progress.CompletedSteps < 0 || progress.TotalSteps < 0 || progress.CompletedSteps > progress.TotalSteps {
+		return fmt.Errorf("%w: invalid migration task progress", ErrInvalidInput)
+	}
+	now := time.Now().UTC()
+	result, err := s.db.ExecContext(ctx, `INSERT INTO admin_migration_task_progress
+		(task_id, current_version, completed_steps, total_steps, current_action, updated_at)
+		SELECT id, ?, ?, ?, ?, ? FROM admin_migration_tasks WHERE id = ? AND status = 'running'
+		ON CONFLICT(task_id) DO UPDATE SET current_version = excluded.current_version,
+		completed_steps = excluded.completed_steps, total_steps = excluded.total_steps,
+		current_action = excluded.current_action, updated_at = excluded.updated_at
+		WHERE EXISTS (SELECT 1 FROM admin_migration_tasks WHERE id = ? AND status = 'running')`,
+		progress.CurrentVersion, progress.CompletedSteps, progress.TotalSteps, progress.CurrentAction,
+		now.Format(time.RFC3339Nano), id, id)
+	if err != nil { return fmt.Errorf("update migration task progress: %w", err) }
+	affected, err := result.RowsAffected()
+	if err != nil { return err }
+	if affected == 0 {
+		if _, err := s.GetMigrationTask(ctx, id); err != nil { return err }
+		return ErrInvalidTaskTransition
+	}
+	return nil
 }
 
 // ListMigrationTasks returns the newest task records first.
