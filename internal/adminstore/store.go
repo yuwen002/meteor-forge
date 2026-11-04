@@ -307,6 +307,7 @@ func (s *Store) Update(ctx context.Context, id string, input DataSourceInput) (D
 		strings.TrimSpace(input.Name), input.Driver, encrypted, now.Format(time.RFC3339Nano), id)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") { return DataSource{}, ErrConflict }
+		if strings.Contains(strings.ToLower(err.Error()), ErrActiveTasks.Error()) { return DataSource{}, ErrActiveTasks }
 		return DataSource{}, fmt.Errorf("update data source: %w", err)
 	}
 	count, err := result.RowsAffected()
@@ -318,7 +319,10 @@ func (s *Store) Update(ctx context.Context, id string, input DataSourceInput) (D
 // Delete removes a data source registration. It does not modify the target database.
 func (s *Store) Delete(ctx context.Context, id string) error {
 	result, err := s.db.ExecContext(ctx, "DELETE FROM admin_data_sources WHERE id = ?", id)
-	if err != nil {\n\t\tif strings.Contains(strings.ToLower(err.Error()), ErrActiveTasks.Error()) { return ErrActiveTasks }\n\t\treturn fmt.Errorf("delete data source: %w", err)\n\t}
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), ErrActiveTasks.Error()) { return ErrActiveTasks }
+		return fmt.Errorf("delete data source: %w", err)
+	}
 	count, err := result.RowsAffected()
 	if err != nil { return err }
 	if count == 0 { return ErrNotFound }
