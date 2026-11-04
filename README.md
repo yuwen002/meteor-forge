@@ -368,3 +368,35 @@ cd examples/demo && go run main.go
 ## 📄 License
 
 本项目基于 [MIT License](LICENSE) 开源，你可以自由地将其用于商业或个人项目。
+
+## 🖥️ Web 管理后台（开发中）
+
+项目正在建设独立的 Web 管理后台，用于统一管理数据源、Schema Migration、多租户和分库分表。管理后台通过 Go HTTP API 调用现有核心包，不会把 Web 依赖引入 `pkg/`。
+
+### 本地启动
+
+终端一：启动管理 API（默认仅监听本机 `127.0.0.1:8081`）：
+
+```bash
+go run ./cmd/server
+```
+
+健康检查：
+
+```bash
+curl http://127.0.0.1:8081/api/v1/health
+```
+
+终端二：启动前端：
+
+```bash
+cd web/admin
+npm install
+npm run dev
+```
+
+打开 Vite 提示的本地地址（默认 `http://127.0.0.1:5173`）。前端通过开发代理访问 Go API。
+
+详细架构、阶段计划和安全边界见 [Web 管理后台架构文档](docs/web-admin/architecture.md)，前端开发说明见 [web/admin/README.md](web/admin/README.md)。
+
+> 当前仅完成工程骨架、服务健康检查和管理后台导航。数据源、迁移、租户及分片页面将在后续阶段接入真实 API；尚未接入的统计不会使用虚构数据。请勿将当前开发版 API 暴露到公网。
