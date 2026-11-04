@@ -400,7 +400,7 @@ npm run dev
 
 打开 Vite 提示的本地地址（默认 `http://127.0.0.1:5173`）。前端通过开发代理访问 Go API。
 
-详细架构、阶段计划和安全边界见 [Web 管理后台架构文档](docs/web-admin/architecture.md)，前端开发说明见 [web/admin/README.md](web/admin/README.md)。
+详细架构、阶段计划和安全边界见 [Web 管理后台架构文档](docs/web-admin/architecture.md)，[管理 API 文档](docs/web-admin/api.md)，前端开发说明见 [web/admin/README.md](web/admin/README.md)。
 
 > 当前仅完成工程骨架、服务健康检查和管理后台导航。数据源、迁移、租户及分片页面将在后续阶段接入真实 API；尚未接入的统计不会使用虚构数据。请勿将当前开发版 API 暴露到公网。
 
