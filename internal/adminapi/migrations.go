@@ -45,6 +45,10 @@ type migrationPreviewResponse struct {
 func (s *Server) registerMigrationRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+apiPrefix+"/datasources/{id}/migrations/status", s.migrationStatus)
 	mux.HandleFunc("POST "+apiPrefix+"/datasources/{id}/migrations/preview", s.previewMigrations)
+	mux.HandleFunc("POST "+apiPrefix+"/datasources/{id}/migrations/tasks", s.createMigrationTask)
+	mux.HandleFunc("GET "+apiPrefix+"/migration-tasks", s.listMigrationTasks)
+	mux.HandleFunc("GET "+apiPrefix+"/migration-tasks/{id}", s.getMigrationTask)
+	mux.HandleFunc("POST "+apiPrefix+"/migration-tasks/{id}/cancel", s.cancelMigrationTask)
 }
 
 func (s *Server) migrationStatus(w http.ResponseWriter, r *http.Request) {
@@ -152,6 +156,80 @@ func (s *Server) previewMigrations(w http.ResponseWriter, r *http.Request) {
 	}
 	response.ChangeCount = len(response.Items)
 	writeJSON(w, http.StatusOK, response)
+}
+
+
+type createMigrationTaskRequest struct {
+	Action        string `json:"action"`
+	TargetVersion string `json:"target_version"`
+	Steps         int    `json:"steps"`
+	Confirm       bool   `json:"confirm"`
+}
+
+func (s *Server) createMigrationTask(w http.ResponseWriter, r *http.Request) {
+	if !s.requireStore(w) || s.tasks == nil { return }
+	if !s.requireMigrationDirectory(w) { return }
+	dataSourceID := r.PathValue("id")
+	if _, err := s.store.Get(r.Context(), dataSourceID); err != nil { writeStoreError(w, err); return }
+	var request createMigrationTaskRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	switch request.Action {
+	case "up":
+	case "down":
+		if !request.Confirm { writeAPIError(w, http.StatusBadRequest, "confirmation_required", "rollback requires explicit confirmation"); return }
+	case "down_steps":
+		if !request.Confirm { writeAPIError(w, http.StatusBadRequest, "confirmation_required", "rollback requires explicit confirmation"); return }
+		if request.Steps < 1 || request.Steps > 100 { writeAPIError(w, http.StatusBadRequest, "invalid_steps", "steps must be between 1 and 100"); return }
+	case "to_version":
+		if !request.Confirm { writeAPIError(w, http.StatusBadRequest, "confirmation_required", "version changes require explicit confirmation"); return }
+		if request.TargetVersion == "" { writeAPIError(w, http.StatusBadRequest, "invalid_version", "target_version is required; use 0 to roll back all migrations"); return }
+	default:
+		writeAPIError(w, http.StatusBadRequest, "invalid_action", "action must be up, down, down_steps, or to_version")
+		return
+	}
+	task, err := s.tasks.Submit(r.Context(), adminstore.MigrationTask{
+		DataSourceID: dataSourceID, Action: request.Action,
+		TargetVersion: request.TargetVersion, Steps: request.Steps,
+	})
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "task_submission_failed", "unable to create migration task")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, task)
+}
+
+func (s *Server) listMigrationTasks(w http.ResponseWriter, r *http.Request) {
+	if !s.requireStore(w) { return }
+	store, ok := s.store.(migrationTaskStore)
+	if !ok { writeAPIError(w, http.StatusServiceUnavailable, "task_store_unavailable", "migration task storage is unavailable"); return }
+	items, err := store.ListMigrationTasks(r.Context(), 50)
+	if err != nil { writeAPIError(w, http.StatusInternalServerError, "task_query_failed", "unable to list migration tasks"); return }
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) getMigrationTask(w http.ResponseWriter, r *http.Request) {
+	if !s.requireStore(w) { return }
+	store, ok := s.store.(migrationTaskStore)
+	if !ok { writeAPIError(w, http.StatusServiceUnavailable, "task_store_unavailable", "migration task storage is unavailable"); return }
+	item, err := store.GetMigrationTask(r.Context(), r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, adminstore.ErrNotFound) { writeAPIError(w, http.StatusNotFound, "not_found", "migration task not found") } else { writeAPIError(w, http.StatusInternalServerError, "task_query_failed", "unable to read migration task") }
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) cancelMigrationTask(w http.ResponseWriter, r *http.Request) {
+	if !s.requireStore(w) || s.tasks == nil { return }
+	id := r.PathValue("id")
+	if err := s.tasks.Cancel(id); err != nil {
+		writeAPIError(w, http.StatusConflict, "task_not_active", "migration task is not currently active")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"id": id, "status": "cancel_requested"})
 }
 
 func (s *Server) requireMigrationDirectory(w http.ResponseWriter) bool {
