@@ -33,7 +33,8 @@ func main() {
 		}
 	}()
 
-	apiServer := adminapi.NewServerWithStore(store)
+	migrationDir := os.Getenv("METEOR_MIGRATIONS_DIR")
+	apiServer := adminapi.NewServerWithMigrationDir(store, migrationDir)
 	defer func() {
 		if err := apiServer.Close(); err != nil { log.Printf("close target database pools: %v", err) }
 	}()
