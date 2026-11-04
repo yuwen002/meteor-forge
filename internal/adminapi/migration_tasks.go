@@ -20,13 +20,18 @@ type migrationTaskStore interface {
 	RecoverInterruptedTasks(context.Context) error
 }
 
+type dataSourceTaskLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
 type MigrationTaskManager struct {
 	store migrationTaskStore
 	run   func(context.Context, adminstore.MigrationTask) error
 
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
-	locks   map[string]*sync.Mutex
+	locks   map[string]*dataSourceTaskLock
 	closed  bool
 	wg      sync.WaitGroup
 }
@@ -35,7 +40,7 @@ func NewMigrationTaskManager(store migrationTaskStore, run func(context.Context,
 	return &MigrationTaskManager{
 		store: store, run: run,
 		cancels: make(map[string]context.CancelFunc),
-		locks: make(map[string]*sync.Mutex),
+		locks:   make(map[string]*dataSourceTaskLock),
 	}
 }
 
@@ -63,9 +68,12 @@ func (m *MigrationTaskManager) Submit(ctx context.Context, task adminstore.Migra
 	m.cancels[id] = cancel
 	lock := m.locks[task.DataSourceID]
 	if lock == nil {
-		lock = &sync.Mutex{}
+		lock = &dataSourceTaskLock{}
 		m.locks[task.DataSourceID] = lock
 	}
+	// Count queued and running workers so the lock is removed only after the
+	// final task for this data source has released it.
+	lock.refs++
 	m.wg.Add(1)
 	m.mu.Unlock()
 
@@ -73,18 +81,19 @@ func (m *MigrationTaskManager) Submit(ctx context.Context, task adminstore.Migra
 	return created, nil
 }
 
-func (m *MigrationTaskManager) execute(ctx context.Context, cancel context.CancelFunc, lock *sync.Mutex, task adminstore.MigrationTask) {
+func (m *MigrationTaskManager) execute(ctx context.Context, cancel context.CancelFunc, lock *dataSourceTaskLock, task adminstore.MigrationTask) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			finished := time.Now().UTC()
 			_ = m.store.UpdateMigrationTask(context.Background(), task.ID, "failed", "migration worker stopped unexpectedly; inspect target schema before retrying", nil, &finished)
 		}
 		m.remove(task.ID)
+		m.releaseDataSourceLock(task.DataSourceID, lock)
 		cancel()
 		m.wg.Done()
 	}()
-	lock.Lock()
-	defer lock.Unlock()
+	lock.mu.Lock()
+	defer lock.mu.Unlock()
 
 	now := time.Now().UTC()
 	if err := ctx.Err(); err != nil {
@@ -112,10 +121,20 @@ func (m *MigrationTaskManager) execute(ctx context.Context, cancel context.Cance
 	}
 	_ = m.store.UpdateMigrationTask(context.Background(), task.ID, status, message, nil, &finished)
 }
+
 func (m *MigrationTaskManager) remove(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.cancels, id)
+}
+
+func (m *MigrationTaskManager) releaseDataSourceLock(dataSourceID string, lock *dataSourceTaskLock) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lock.refs--
+	if lock.refs == 0 && m.locks[dataSourceID] == lock {
+		delete(m.locks, dataSourceID)
+	}
 }
 
 func (m *MigrationTaskManager) Cancel(id string) error {
