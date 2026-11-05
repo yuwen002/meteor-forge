@@ -102,7 +102,9 @@ func NewServerWithMigrationDir(store *adminstore.Store, migrationDir string) *Se
 	var protected bool
 	if store != nil {
 		checkCtx, checkCancel := context.WithTimeout(context.Background(), 2*time.Second)
-		protected, _ = store.HasAdmin(checkCtx)
+		var checkErr error
+		protected, checkErr = store.HasAdmin(checkCtx)
+		if checkErr != nil { protected = true }
 		checkCancel()
 	}
 	var handler http.Handler = mux

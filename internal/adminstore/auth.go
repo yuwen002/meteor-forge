@@ -69,7 +69,7 @@ func(s *Store) HasAdmin(ctx context.Context)(bool,error){var n int;if err:=s.db.
 func(s *Store) AuthenticateAdmin(ctx context.Context,username,password string)(Admin,error){
  var a Admin;var encoded,created string
  err:=s.db.QueryRowContext(ctx,"SELECT id,username,password_hash,role,created_at FROM admin_users WHERE username=? COLLATE NOCASE",strings.TrimSpace(username)).Scan(&a.ID,&a.Username,&encoded,&a.Role,&created)
- if errors.Is(err,sql.ErrNoRows){return Admin{},ErrInvalidCredentials};if err!=nil{return Admin{},fmt.Errorf("load administrator credentials: %w",err)}
+ if errors.Is(err,sql.ErrNoRows){ _ = hashPassword(password, []byte("meteor-forge-dummy-salt")); return Admin{},ErrInvalidCredentials };if err!=nil{return Admin{},fmt.Errorf("load administrator credentials: %w",err)}
  if !verifyPassword(encoded,password){return Admin{},ErrInvalidCredentials};a.CreatedAt,err=time.Parse(time.RFC3339Nano,created);if err!=nil{return Admin{},fmt.Errorf("parse administrator creation time: %w",err)};return a,nil
 }
 func(s *Store) CreateAdminSession(ctx context.Context,adminID string,lifetime time.Duration)(string,time.Time,error){

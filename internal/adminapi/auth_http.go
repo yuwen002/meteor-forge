@@ -4,7 +4,7 @@ import (
  "context"
  "encoding/json"
  "errors"
- "fmt"
+ "io"
  "net"
  "net/http"
  "net/url"
@@ -54,7 +54,7 @@ func decodeAuthJSON(w http.ResponseWriter,r *http.Request,dst any)bool{
  dec:=json.NewDecoder(http.MaxBytesReader(w,r.Body,8<<10));dec.DisallowUnknownFields()
  if err:=dec.Decode(dst);err!=nil{writeJSON(w,http.StatusBadRequest,map[string]string{"error":"invalid request"});return false}
  var extra any
- if err:=dec.Decode(&extra);err==nil{writeJSON(w,http.StatusBadRequest,map[string]string{"error":"invalid request"});return false}
+ if err:=dec.Decode(&extra);!errors.Is(err,io.EOF){writeJSON(w,http.StatusBadRequest,map[string]string{"error":"invalid request"});return false}
  return true
 }
 func(s *Server) loginHandler(w http.ResponseWriter,r *http.Request){
@@ -125,4 +125,3 @@ func sameOrigin(r *http.Request)bool{
  if parsed.Scheme!="http"&&parsed.Scheme!="https"{return false}
  return strings.EqualFold(parsed.Host,r.Host)
 }
-var _ = fmt.Sprintf
