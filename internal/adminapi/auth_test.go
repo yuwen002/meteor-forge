@@ -112,3 +112,33 @@ func TestMigrationOperatorCannotSubmitRollback(t *testing.T) {
  tasks,err:=store.ListMigrationTasks(context.Background(),10);if err!=nil{t.Fatal(err)}
  if len(tasks)!=0{t.Fatalf("rollback request created %d tasks",len(tasks))}
 }
+
+func TestAdministratorUserManagementEndpoints(t *testing.T) {
+ store,err:=adminstore.Open(context.Background(),":memory:",apiTestKey);if err!=nil{t.Fatal(err)};defer store.Close()
+ root,err:=store.BootstrapAdmin(context.Background(),"root","a-strong-password-123");if err!=nil{t.Fatal(err)}
+ server:=NewServerWithStore(store);defer server.Close()
+ login:=httptest.NewRequest(http.MethodPost,"http://localhost/api/v1/auth/login",bytes.NewBufferString(`{"username":"root","password":"a-strong-password-123"}`))
+ login.Header.Set("Content-Type","application/json")
+ loginRec:=httptest.NewRecorder();server.Handler().ServeHTTP(loginRec,login)
+ if loginRec.Code!=http.StatusOK{t.Fatalf("login status=%d body=%s",loginRec.Code,loginRec.Body.String())}
+ cookie:=loginRec.Result().Cookies()[0]
+ request:=func(method,path,body string)*httptest.ResponseRecorder{
+  req:=httptest.NewRequest(method,"http://localhost"+path,bytes.NewBufferString(body));req.AddCookie(cookie)
+  if body!=""{req.Header.Set("Content-Type","application/json")}
+  if method!=http.MethodGet{req.Header.Set("Origin","http://localhost")}
+  rec:=httptest.NewRecorder();server.Handler().ServeHTTP(rec,req);return rec
+ }
+ created:=request(http.MethodPost,"/api/v1/auth/users",`{"username":"operator","password":"a-operator-password-123","role":"migration_operator"}`)
+ if created.Code!=http.StatusCreated{t.Fatalf("create user status=%d body=%s",created.Code,created.Body.String())}
+ var user adminstore.Admin
+ if err:=json.Unmarshal(created.Body.Bytes(),&user);err!=nil{t.Fatal(err)}
+ if user.ID==""||user.Role!="migration_operator"{t.Fatalf("unexpected created user: %+v",user)}
+ token,_,err:=store.CreateAdminSession(context.Background(),user.ID,12*time.Hour);if err!=nil{t.Fatal(err)}
+ updated:=request(http.MethodPut,"/api/v1/auth/users/"+user.ID+"/role",`{"role":"shard_operator"}`)
+ if updated.Code!=http.StatusNoContent{t.Fatalf("role update status=%d body=%s",updated.Code,updated.Body.String())}
+ if _,err:=store.GetAdminSession(context.Background(),token);!errors.Is(err,adminstore.ErrSessionNotFound){t.Fatalf("role update did not revoke session: %v",err)}
+ removed:=request(http.MethodDelete,"/api/v1/auth/users/"+user.ID,`{}`)
+ if removed.Code!=http.StatusNoContent{t.Fatalf("delete user status=%d body=%s",removed.Code,removed.Body.String())}
+ if got:=request(http.MethodDelete,"/api/v1/auth/users/"+root.ID,`{}`);got.Code!=http.StatusConflict{t.Fatalf("self-delete status=%d body=%s",got.Code,got.Body.String())}
+ if got:=request(http.MethodPut,"/api/v1/auth/users/"+root.ID+"/role",`{"role":"viewer"}`);got.Code!=http.StatusConflict{t.Fatalf("self-role-change status=%d body=%s",got.Code,got.Body.String())}
+}
