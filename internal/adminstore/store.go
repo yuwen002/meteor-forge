@@ -313,6 +313,22 @@ func (s *Store) migrate(ctx context.Context) error {
 		ON admin_shard_rules(data_source_id)`); err != nil {
 		return fmt.Errorf("index shard rules: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER IF NOT EXISTS prevent_datasource_driver_update_with_shard_rules
+		BEFORE UPDATE OF driver ON admin_data_sources
+		WHEN EXISTS (SELECT 1 FROM admin_shard_rules WHERE data_source_id = OLD.id)
+		BEGIN
+			SELECT RAISE(ABORT, 'data source is referenced by shard rules');
+		END`); err != nil {
+		return fmt.Errorf("protect shard rule data source driver: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER IF NOT EXISTS prevent_datasource_delete_with_shard_rules
+		BEFORE DELETE ON admin_data_sources
+		WHEN EXISTS (SELECT 1 FROM admin_shard_rules WHERE data_source_id = OLD.id)
+		BEGIN
+			SELECT RAISE(ABORT, 'data source is referenced by shard rules');
+		END`); err != nil {
+		return fmt.Errorf("protect shard rule data source deletion: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
 		VALUES (9, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("record metadata schema version: %w", err)
@@ -453,6 +469,7 @@ func (s *Store) Update(ctx context.Context, id string, input DataSourceInput) (D
 		if strings.Contains(strings.ToLower(err.Error()), "unique") { return DataSource{}, ErrConflict }
 		if strings.Contains(strings.ToLower(err.Error()), ErrActiveTasks.Error()) { return DataSource{}, ErrActiveTasks }
 		if strings.Contains(strings.ToLower(err.Error()), ErrDataSourceHasTenants.Error()) { return DataSource{}, ErrDataSourceHasTenants }
+		if strings.Contains(strings.ToLower(err.Error()), ErrDataSourceHasShardRules.Error()) { return DataSource{}, ErrDataSourceHasShardRules }
 		return DataSource{}, fmt.Errorf("update data source: %w", err)
 	}
 	count, err := result.RowsAffected()
@@ -467,6 +484,7 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), ErrActiveTasks.Error()) { return ErrActiveTasks }
 		if strings.Contains(strings.ToLower(err.Error()), ErrDataSourceHasTenants.Error()) { return ErrDataSourceHasTenants }
+		if strings.Contains(strings.ToLower(err.Error()), ErrDataSourceHasShardRules.Error()) { return ErrDataSourceHasShardRules }
 		return fmt.Errorf("delete data source: %w", err)
 	}
 	count, err := result.RowsAffected()
