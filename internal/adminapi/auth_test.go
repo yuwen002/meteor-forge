@@ -90,3 +90,22 @@ func TestSameOriginChecksSchemeAndHost(t *testing.T) {
  crossHost.Header.Set("Origin","http://attacker.example")
  if sameOrigin(crossHost){t.Fatal("cross-host Origin must be rejected")}
 }
+
+func TestMigrationOperatorCannotSubmitRollback(t *testing.T) {
+ store,err:=adminstore.Open(context.Background(),":memory:",apiTestKey);if err!=nil{t.Fatal(err)};defer store.Close()
+ if _,err:=store.BootstrapAdmin(context.Background(),"root","a-strong-password-123");err!=nil{t.Fatal(err)}
+ operator,err:=store.CreateAdminUser(context.Background(),"operator","a-operator-password-123","migration_operator");if err!=nil{t.Fatal(err)}
+ source,err:=store.Create(context.Background(),adminstore.DataSourceInput{Name:"rollback target",Driver:"sqlite",DSN:":memory:"});if err!=nil{t.Fatal(err)}
+ _=operator
+ server:=NewServerWithMigrationDir(store,"../../migrations");defer server.Close()
+ login:=httptest.NewRequest(http.MethodPost,"http://localhost/api/v1/auth/login",bytes.NewBufferString(`{"username":"operator","password":"a-operator-password-123"}`))
+ login.Header.Set("Content-Type","application/json")
+ loginRec:=httptest.NewRecorder();server.Handler().ServeHTTP(loginRec,login)
+ if loginRec.Code!=http.StatusOK{t.Fatalf("login status=%d body=%s",loginRec.Code,loginRec.Body.String())}
+ req:=httptest.NewRequest(http.MethodPost,"http://localhost/api/v1/datasources/"+source.ID+"/migrations/tasks",bytes.NewBufferString(`{"action":"down","confirm":true}`))
+ req.Header.Set("Content-Type","application/json");req.Header.Set("Origin","http://localhost");req.AddCookie(loginRec.Result().Cookies()[0])
+ rec:=httptest.NewRecorder();server.Handler().ServeHTTP(rec,req)
+ if rec.Code!=http.StatusForbidden||!strings.Contains(rec.Body.String(),"administrator_required"){t.Fatalf("rollback status=%d body=%s",rec.Code,rec.Body.String())}
+ tasks,err:=store.ListMigrationTasks(context.Background(),10);if err!=nil{t.Fatal(err)}
+ if len(tasks)!=0{t.Fatalf("rollback request created %d tasks",len(tasks))}
+}
