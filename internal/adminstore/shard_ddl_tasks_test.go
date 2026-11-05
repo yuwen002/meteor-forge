@@ -19,6 +19,9 @@ func TestShardDDLTaskPersistenceAndAudit(t *testing.T) {
 	task, err := store.CreateShardDDLTask(ctx, ShardDDLTask{ShardRuleID:rule.ID, DataSourceID:source.ID, Action:"clone", SourceTable:"orders", TargetTable:"orders_202611", RequestSource:"127.0.0.1"})
 	if err != nil { t.Fatal(err) }
 	if task.Status != "queued" || task.ID == "" { t.Fatalf("unexpected task: %+v", task) }
+	if _, err := store.CreateMigrationTask(ctx, MigrationTask{ID: "migration-conflict", DataSourceID: source.ID, Action: "up"}); !errors.Is(err, ErrActiveShardDDLTasks) {
+		t.Fatalf("migration submission during shard DDL error=%v, want ErrActiveShardDDLTasks", err)
+	}
 	if _, err := store.UpdateShardRule(ctx, rule.ID, ShardRuleInput{DataSourceID: source.ID, BaseTable: "orders", ShardType: "year"}); !errors.Is(err, ErrShardRuleHasActiveDDLTasks) {
 		t.Fatalf("updating rule with active DDL task error=%v, want ErrShardRuleHasActiveDDLTasks", err)
 	}
@@ -67,3 +70,18 @@ func TestRecoverInterruptedShardDDLTasks(t *testing.T) {
 	audit, err := store.ListShardDDLAuditEvents(ctx, task.ID)
 	if err != nil || len(audit) != 2 || audit[1].ToStatus != "interrupted" { t.Fatalf("recovery audit = %+v, %v", audit, err) }
 }
+
+func TestMigrationTaskBlocksShardDDLTask(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, ":memory:", testKey)
+	if err != nil { t.Fatal(err) }
+	t.Cleanup(func(){ _ = store.Close() })
+	source, err := store.Create(ctx, DataSourceInput{Name:"migration target", Driver:"sqlite", DSN:":memory:"})
+	if err != nil { t.Fatal(err) }
+	rule, err := store.CreateShardRule(ctx, ShardRuleInput{DataSourceID:source.ID, BaseTable:"logs", ShardType:"month"})
+	if err != nil { t.Fatal(err) }
+	if _, err := store.CreateMigrationTask(ctx, MigrationTask{ID:"active-migration", DataSourceID:source.ID, Action:"up"}); err != nil { t.Fatal(err) }
+	_, err = store.CreateShardDDLTask(ctx, ShardDDLTask{ShardRuleID:rule.ID, DataSourceID:source.ID, Action:"clone", SourceTable:"logs", TargetTable:"logs_202611"})
+	if !errors.Is(err, ErrActiveTasks) { t.Fatalf("shard DDL submission during migration error=%v, want ErrActiveTasks", err) }
+}
+
