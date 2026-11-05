@@ -192,7 +192,14 @@ func (s *Server) createShardCloneTask(w http.ResponseWriter, r *http.Request) {
 	requestSource, _, _ := net.SplitHostPort(r.RemoteAddr)
 	if requestSource == "" { requestSource = r.RemoteAddr }
 	task, err := s.shardDDL.Submit(r.Context(), adminstore.ShardDDLTask{ShardRuleID: rule.ID, DataSourceID: rule.DataSourceID, Action: "clone", SourceTable: source, TargetTable: target, RequestSource: requestSource})
-	if err != nil { writeAPIError(w, http.StatusInternalServerError, "task_submission_failed", "unable to create shard DDL task"); return }
+	if err != nil {
+		if errors.Is(err, adminstore.ErrActiveTasks) {
+			writeAPIError(w, http.StatusConflict, "data_source_has_active_migration_tasks", "shard DDL tasks cannot be queued while migration tasks are active")
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "task_submission_failed", "unable to create shard DDL task")
+		return
+	}
 	writeJSON(w, http.StatusAccepted, task)
 }
 
