@@ -98,7 +98,7 @@ func NewServerWithMigrationDir(store *adminstore.Store, migrationDir string) *Se
 	server.registerShardingRoutes(mux)
 	server.registerShardDDLRoutes(mux)
 	server.registerAuditRoutes(mux)
-	server.registerAuthRoutes(mux)
+	if store != nil { server.registerAuthRoutes(mux) }
 	var protected bool
 	if store != nil {
 		checkCtx, checkCancel := context.WithTimeout(context.Background(), 2*time.Second)
