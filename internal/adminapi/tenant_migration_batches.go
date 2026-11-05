@@ -151,9 +151,24 @@ func (s *Server) getTenantMigrationBatch(w http.ResponseWriter, r *http.Request)
 		case "queued": response.Queued++
 		case "running": response.Running++
 		case "succeeded": response.Succeeded++
-		case "failed": response.Failed++
-		case "canceled": response.Canceled++
-		case "interrupted": response.Interrupted++
+		case "failed":
+			response.Failed++
+			response.Failures = append(response.Failures, tenantMigrationBatchFailure{
+				TenantID: item.TenantID, Code: "migration_failed",
+				Message: item.Message,
+			})
+		case "canceled":
+			response.Canceled++
+			response.Failures = append(response.Failures, tenantMigrationBatchFailure{
+				TenantID: item.TenantID, Code: "migration_canceled",
+				Message: item.Message,
+			})
+		case "interrupted":
+			response.Interrupted++
+			response.Failures = append(response.Failures, tenantMigrationBatchFailure{
+				TenantID: item.TenantID, Code: "migration_interrupted",
+				Message: item.Message,
+			})
 		}
 	}
 	writeJSON(w, http.StatusOK, response)
