@@ -108,7 +108,7 @@ func (s *Server) createTenantMigrationBatch(w http.ResponseWriter, r *http.Reque
 	for _, item := range selected {
 		task, submitErr := s.tasks.Submit(r.Context(), adminstore.MigrationTask{
 			BatchID: batchID, TenantID: item.ID, DataSourceID: item.DataSourceID,
-			Action: "up", RequestSource: requestSource,
+			Action: "up", RequestSource: requestSource, Actor: authenticatedActor(r),
 		})
 		if submitErr != nil {
 			response.Failed++

@@ -71,7 +71,7 @@ func (s *Server) createTenantMigrationTask(w http.ResponseWriter, r *http.Reques
 	task, err := s.tasks.Submit(r.Context(), adminstore.MigrationTask{
 		TenantID: tenant.ID, DataSourceID: tenant.DataSourceID,
 		Action: request.Action, TargetVersion: request.TargetVersion,
-		Steps: request.Steps, RequestSource: requestSource,
+		Steps: request.Steps, RequestSource: requestSource, Actor: authenticatedActor(r),
 	})
 	if err != nil {
 		if errors.Is(err, adminstore.ErrActiveShardDDLTasks) {
