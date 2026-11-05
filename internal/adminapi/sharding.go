@@ -312,6 +312,8 @@ func writeShardRuleError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, adminstore.ErrShardRuleHasActiveDDLTasks):
 		writeAPIError(w, http.StatusConflict, "shard_rule_has_active_ddl_tasks", "the shard rule cannot be changed or deleted while DDL tasks are queued or running")
+	case errors.Is(err, adminstore.ErrShardRuleHasDDLHistory):
+		writeAPIError(w, http.StatusConflict, "shard_rule_has_ddl_history", "the shard rule cannot be deleted while DDL task history references it")
 	case errors.Is(err, adminstore.ErrShardRuleNotFound):
 		writeAPIError(w, http.StatusNotFound, "shard_rule_not_found", "shard rule not found")
 	case errors.Is(err, adminstore.ErrShardRuleConflict):
