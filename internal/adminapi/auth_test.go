@@ -100,7 +100,7 @@ func TestMigrationOperatorCannotSubmitRollback(t *testing.T) {
  operator,err:=store.CreateAdminUser(context.Background(),"operator","a-operator-password-123","migration_operator");if err!=nil{t.Fatal(err)}
  source,err:=store.Create(context.Background(),adminstore.DataSourceInput{Name:"rollback target",Driver:"sqlite",DSN:":memory:"});if err!=nil{t.Fatal(err)}
  _=operator
- server:=NewServerWithMigrationDir(store,"../../migrations");defer server.Close()
+ server:=NewServerWithMigrationDir(store,t.TempDir());defer server.Close()
  login:=httptest.NewRequest(http.MethodPost,"http://localhost/api/v1/auth/login",bytes.NewBufferString(`{"username":"operator","password":"a-operator-password-123"}`))
  login.Header.Set("Content-Type","application/json")
  loginRec:=httptest.NewRecorder();server.Handler().ServeHTTP(loginRec,login)
