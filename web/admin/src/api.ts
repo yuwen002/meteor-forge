@@ -59,3 +59,19 @@ export async function updateAdminUserRole(id: string, role: AdminUser['role']): 
 export async function deleteAdminUser(id: string): Promise<void> {
   await api.delete(`/auth/users/${encodeURIComponent(id)}`, { data: {} })
 }
+
+export interface SecurityAuditEvent {
+  id: number
+  actor: string
+  subject: string
+  action: 'login' | 'logout' | 'password_change' | 'admin_create' | 'admin_role_update' | 'admin_delete'
+  outcome: 'succeeded' | 'failed' | 'denied'
+  request_source?: string
+  details?: string
+  occurred_at: string
+}
+
+export async function listSecurityAuditEvents(limit = 50, offset = 0): Promise<{ items: SecurityAuditEvent[]; total: number }> {
+  const { data } = await api.get<{ items: SecurityAuditEvent[]; total: number }>('/auth/security-events', { params: { limit, offset } })
+  return data
+}
