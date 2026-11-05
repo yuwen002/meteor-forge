@@ -313,7 +313,7 @@ ID 范围分片示例：
 
 ### DELETE /shard-rules/{id}
 
-只删除管理元数据库中的规则配置，返回 HTTP 204。不会删除任何目标物理表或数据。存在 queued/running DDL 任务时返回 HTTP 409；只要有 DDL 历史记录就保留规则，避免审计记录失去关联。
+只删除管理元数据库中的规则配置，返回 HTTP 204。不会删除任何目标物理表或数据。存在 queued/running DDL 任务时返回 HTTP 409。终态任务及审计记录独立保留，删除规则不会删除历史任务或审计记录。
 
 ### POST /shard-rules/{id}/preview
 
