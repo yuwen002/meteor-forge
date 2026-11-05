@@ -22,7 +22,7 @@ const routes = [
   { path: '/audit', name: 'audit', component: AuditView, meta: { title: '操作审计', section: '运维审计', description: '追踪操作者、操作对象、执行耗时和结果。' } },
 ]
 
-export default createRouter({
+const router = createRouter({
   history: createWebHistory(),
   routes,
 })
@@ -38,3 +38,5 @@ router.beforeEach(async (to) => {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
 })
+
+export default router
