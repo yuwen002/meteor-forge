@@ -314,7 +314,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("index shard rules: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER IF NOT EXISTS prevent_datasource_driver_update_with_shard_rules
-		BEFORE UPDATE OF driver ON admin_data_sources
+		BEFORE UPDATE OF driver, dsn_ciphertext ON admin_data_sources
 		WHEN EXISTS (SELECT 1 FROM admin_shard_rules WHERE data_source_id = OLD.id)
 		BEGIN
 			SELECT RAISE(ABORT, 'data source is referenced by shard rules');
