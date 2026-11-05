@@ -199,6 +199,27 @@ Down、DownSteps 和 ToVersion 必须显式提交 `confirm: true`。前端还会
 
 **迁移作用范围：** 租户 ID 用于校验、任务归属和审计追踪；当前迁移脚本仍由 `pkg/migration` 在租户映射的数据源上执行，属于数据库级迁移，不会自动按租户过滤 SQL。多个租户若映射到同一个数据源，会共享同一套 `schema_migrations` 版本记录，并按数据源串行执行；因此同一物理数据库上的迁移只会应用一次。需要独立迁移历史时，应为租户配置独立数据源/数据库。
 
+### POST /tenant-migration-batches
+
+批量为多个租户提交 Up 迁移任务。请求：
+
+```json
+{"tenant_ids":["tenant-id-1","tenant-id-2"]}
+```
+
+- 每批 1–100 个租户，ID 不允许重复。
+- 请求先整体校验租户存在且均为 active；校验不通过时不会创建任何子任务。
+- 任务提交阶段采用失败隔离：单个租户提交失败会记录在响应的 `failures`，继续处理后续租户。
+- 每个子任务单独持久化、单独审计，包含共同的 `batch_id`。同一数据源的子任务仍串行；不同数据源最多同时执行 4 个迁移 Worker。
+- 批量接口只开放 Up，不提供批量回滚，避免一次误操作影响多个租户。
+- 失败的迁移不会自动重试。迁移可能已经执行部分步骤，必须先检查目标库的迁移历史和实际结构，再由操作者决定是否重新提交。
+
+成功返回 HTTP 202，包含批次 ID、提交数量、提交失败数量和子任务列表。
+
+### GET /tenant-migration-batches/{id}
+
+根据持久化的 `batch_id` 返回子任务和汇总状态：queued、running、succeeded、failed、canceled、interrupted。失败、取消或重启中断的租户会列在 `failures` 中；提交阶段失败的记录仅在创建批次的响应中返回。
+
 ### GET /migration-tasks/{id}
 
 读取单个任务状态。
