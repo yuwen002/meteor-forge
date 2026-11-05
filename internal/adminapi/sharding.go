@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -210,15 +211,44 @@ func physicalTableNames(ctx context.Context, db *sql.DB, driver string) ([]strin
 	return names, nil
 }
 
-func isShardTableName(base, table string) bool {
-	if table == base { return true }
-	if !strings.HasPrefix(table, base+"_") || len(table) > 64 { return false }
-	for _, r := range table {
-		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' {
-			return false
-		}
+func isShardTableName(rule adminstore.ShardRule, table string) bool {
+	if table == rule.BaseTable { return true }
+	prefix := rule.BaseTable + "_"
+	if !strings.HasPrefix(table, prefix) || len(table) > 64 { return false }
+	suffix := strings.TrimPrefix(table, prefix)
+	switch rule.ShardType {
+	case "year":
+		if len(suffix) != 4 { return false }
+		_, err := strconv.Atoi(suffix)
+		return err == nil
+	case "quarter":
+		if len(suffix) != 6 || suffix[4] != 'Q' || suffix[5] < '1' || suffix[5] > '4' { return false }
+		_, err := strconv.Atoi(suffix[:4])
+		return err == nil
+	case "month":
+		if len(suffix) != 6 { return false }
+		year, yearErr := strconv.Atoi(suffix[:4])
+		month, monthErr := strconv.Atoi(suffix[4:])
+		return yearErr == nil && monthErr == nil && month >= 1 && month <= 12
+	case "week":
+		if len(suffix) != 7 || suffix[4] != 'W' { return false }
+		year, yearErr := strconv.Atoi(suffix[:4])
+		week, weekErr := strconv.Atoi(suffix[5:])
+		return yearErr == nil && weekErr == nil && week >= 1 && week <= 53
+	case "ten_day":
+		if len(suffix) != 8 || suffix[6] != '_' { return false }
+		yearMonth, yearMonthErr := strconv.Atoi(suffix[:6])
+		segment, segmentErr := strconv.Atoi(suffix[7:])
+		return yearMonthErr == nil && yearMonth >= 100001 && segmentErr == nil && segment >= 1 && segment <= 3
+	case "id_hash":
+		value, err := strconv.Atoi(suffix)
+		return err == nil && value >= 0 && value < rule.HashShards
+	case "id_range":
+		value, err := strconv.ParseInt(suffix, 10, 64)
+		return err == nil && value >= 0
+	default:
+		return false
 	}
-	return true
 }
 
 func (s *Server) listPhysicalShardTables(w http.ResponseWriter, r *http.Request) {
@@ -239,7 +269,7 @@ func (s *Server) listPhysicalShardTables(w http.ResponseWriter, r *http.Request)
 	}
 	items := make([]string, 0)
 	for _, name := range names {
-		if isShardTableName(rule.BaseTable, name) { items = append(items, name) }
+		if isShardTableName(rule, name) { items = append(items, name) }
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"shard_rule_id": rule.ID, "items": items, "count": len(items)})
 }
@@ -251,7 +281,7 @@ func (s *Server) checkPhysicalShardTable(w http.ResponseWriter, r *http.Request)
 	var input shardTableExistsRequest
 	if err := decodeJSON(w, r, &input); err != nil { writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error()); return }
 	input.TableName = strings.TrimSpace(input.TableName)
-	if !isShardTableName(rule.BaseTable, input.TableName) {
+	if !isShardTableName(rule, input.TableName) {
 		writeAPIError(w, http.StatusBadRequest, "invalid_table_name", "table_name must be the base table or a valid table with this rule's prefix")
 		return
 	}
