@@ -4,7 +4,7 @@ import { getAdminSession, logoutAdmin } from './api'
 import { useRoute, useRouter } from 'vue-router'
 import {
   DataAnalysis, Connection, Files, OfficeBuilding, Grid, List, Document,
-  Setting, Menu as MenuIcon, User, ShieldCheck,
+  Setting, Menu as MenuIcon, User, Lock,
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -62,7 +62,7 @@ const navigation = [
             <span>管理员管理</span>
           </el-menu-item>
           <el-menu-item index="/security-audit">
-            <el-icon><ShieldCheck /></el-icon>
+            <el-icon><Lock /></el-icon>
             <span>安全审计</span>
           </el-menu-item>
         </el-menu>
