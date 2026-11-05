@@ -26,6 +26,7 @@ type Server struct {
 	shards shardRuleStore
 	pools        *PoolManager
 	tasks        *MigrationTaskManager
+	shardDDL     *shardDDLTaskManager
 	migrationDir string
 }
 
@@ -46,6 +47,25 @@ func NewServerWithMigrationDir(store *adminstore.Store, migrationDir string) *Se
 	server := &Server{store: store, tenants: store, shards: store, pools: NewPoolManager(), migrationDir: migrationDir}
 	if store != nil {
 		server.tenantConnections = newTenantConnectionResolver(tenant.HeaderResolver{}, store, store, server.pools)
+		server.shardDDL = newShardDDLTaskManager(store, func(ctx context.Context, task adminstore.ShardDDLTask) error {
+			rule, err := store.GetShardRule(ctx, task.ShardRuleID)
+			if err != nil { return err }
+			db, err := server.targetShardDB(ctx, task.DataSourceID)
+			if err != nil { return err }
+			names, err := physicalTableNames(ctx, db, rule.Driver)
+			if err != nil { return err }
+			sourceExists, targetExists := false, false
+			for _, name := range names { if name == task.SourceTable { sourceExists = true }; if name == task.TargetTable { targetExists = true } }
+			if !sourceExists { return errors.New("source physical table does not exist") }
+			if targetExists { return errors.New("target physical table already exists") }
+			statement, _, err := shardCloneSQL(rule.Driver, task.TargetTable, task.SourceTable)
+			if err != nil { return err }
+			_, err = db.ExecContext(ctx, statement)
+			return err
+		})
+		recoveryDDLContext, recoveryDDLCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = store.RecoverInterruptedShardDDLTasks(recoveryDDLContext)
+		recoveryDDLCancel()
 		server.tasks = NewMigrationTaskManager(store, func(ctx context.Context, task adminstore.MigrationTask) error {
 			driver, err := server.migrationDriver(ctx, task.DataSourceID)
 			if err != nil { return err }
@@ -70,6 +90,7 @@ func NewServerWithMigrationDir(store *adminstore.Store, migrationDir string) *Se
 	server.registerTenantRoutes(mux)
 	server.registerMigrationRoutes(mux)
 	server.registerShardingRoutes(mux)
+	server.registerShardDDLRoutes(mux)
 	server.handler = withCommonHeaders(mux)
 	return server
 }
@@ -79,6 +100,9 @@ func (s *Server) Handler() http.Handler { return s.handler }
 
 // Close releases all cached target database pools owned by the API server.
 func (s *Server) Close() error {
+	if s.shardDDL != nil {
+		if err := s.shardDDL.Close(); err != nil { return err }
+	}
 	if s.tasks != nil {
 		if err := s.tasks.Close(); err != nil {
 			// Keep target pools alive while a driver that ignores cancellation may
