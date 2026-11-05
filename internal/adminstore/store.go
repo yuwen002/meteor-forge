@@ -24,6 +24,7 @@ var (
 	ErrConflict = errors.New("data source name already exists")
 	ErrInvalidInput = errors.New("invalid data source input")
 	ErrActiveTasks = errors.New("data source has active migration tasks")
+	ErrActiveShardDDLTasks = errors.New("data source has active shard DDL tasks")
 )
 
 // DataSource contains only fields safe to return to API clients.
