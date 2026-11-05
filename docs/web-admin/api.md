@@ -313,7 +313,7 @@ ID 范围分片示例：
 
 ### DELETE /shard-rules/{id}
 
-只删除管理元数据库中的规则配置，返回 HTTP 204。不会删除任何目标物理表或数据。
+只删除管理元数据库中的规则配置，返回 HTTP 204。不会删除任何目标物理表或数据。存在 queued/running DDL 任务时返回 HTTP 409；只要有 DDL 历史记录就保留规则，避免审计记录失去关联。
 
 ### POST /shard-rules/{id}/preview
 
@@ -392,8 +392,8 @@ ID 策略支持单点或闭区间预览：
 请求取消当前服务实例中的活动任务，返回 HTTP 202。取消不保证底层数据库立即中断 DDL；必须重新盘点目标表确认最终状态。
 
 **克隆语义与限制：**
-- MySQL 使用 `CREATE TABLE ... LIKE ...`，复制结构、索引和约束，不复制数据。
-- PostgreSQL 使用 `LIKE ... INCLUDING ALL`，复制列、默认值、约束、索引和存储属性，不复制数据。
+- MySQL 使用 `CREATE TABLE ... LIKE ...`，复制列定义、索引和生成列，不复制数据、外键定义或触发器。
+- PostgreSQL 使用 `LIKE ... INCLUDING ALL`，复制列、默认值、检查/非空约束、索引和存储属性，不复制数据、外键约束或触发器。
 - ClickHouse 使用 `CREATE TABLE ... AS ...`，复制表结构/引擎定义，不复制数据。
 - SQLite 使用 CTAS（`CREATE TABLE ... AS SELECT ... WHERE 0`），仅复制列结构，不复制主键、约束、索引和触发器。生产环境需要这些对象时，应在克隆后通过独立、受审计的迁移补齐。
 - 当前只开放结构克隆，不提供数据复制、覆盖已有表、DROP 或自动清理。
