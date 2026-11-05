@@ -128,6 +128,8 @@ func writeStoreError(w http.ResponseWriter, err error) {
 		writeAPIError(w, http.StatusConflict, "data_source_has_active_tasks", "the data source cannot be changed or deleted while migration tasks are queued or running")
 	case errors.Is(err, adminstore.ErrDataSourceHasTenants):
 		writeAPIError(w, http.StatusConflict, "data_source_has_tenants", "the data source cannot be changed or deleted while tenants reference it")
+	case errors.Is(err, adminstore.ErrDataSourceHasShardRules):
+		writeAPIError(w, http.StatusConflict, "data_source_has_shard_rules", "the data source driver cannot be changed or the data source deleted while shard rules reference it")
 	case errors.Is(err, adminstore.ErrInvalidInput):
 		writeAPIError(w, http.StatusBadRequest, "invalid_data_source", safeValidationMessage(err))
 	default:
