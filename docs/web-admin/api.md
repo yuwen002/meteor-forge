@@ -341,4 +341,18 @@ ID 策略支持单点或闭区间预览：
 
 响应包含 `shard_rule_id`、`data_source_id`、`base_table`、`shard_type`、`tables` 和 `table_count`。时间范围最多 10 年，ID 范围策略最多预览 1000 张表，所有预览最多返回 4096 张表；超限返回 HTTP 400。ID 必须为非负整数，时间必须为 RFC3339。
 
-**当前边界：** 物理表列表/存在性检查、DDL 建表/克隆/删除、DDL 异步任务和分片操作审计尚未开放。管理 API 当前没有认证/授权，仍只允许 loopback 监听，不得暴露公网。
+### GET /shard-rules/{id}/tables
+
+通过已登记数据源的连接池读取当前数据库元数据，并按分片策略校验表名后缀，返回符合该规则命名约定的物理表名列表和数量。支持 MySQL、PostgreSQL、SQLite、ClickHouse；单次元数据读取超时为 5 秒。该接口不执行 DDL。
+
+### POST /shard-rules/{id}/tables/exists
+
+检查指定物理表是否存在。请求：
+
+```json
+{"table_name":"orders_202611"}
+```
+
+表名必须符合该规则对应的后缀格式（例如 month 策略为 `{base}_{YYYY}{MM}`，id_hash 策略的序号必须位于配置范围内）。无效表名返回 HTTP 400；有效但不存在的表返回 HTTP 200 和 `{"exists":false}`。
+
+**当前边界：** DDL 建表/克隆/删除、DDL 异步任务和分片操作审计尚未开放。管理 API 当前没有认证/授权，仍只允许 loopback 监听，不得暴露公网。
