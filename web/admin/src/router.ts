@@ -5,6 +5,7 @@ import MigrationsView from './views/MigrationsView.vue'
 import TenantsView from './views/TenantsView.vue'
 import ShardingView from './views/ShardingView.vue'
 import TaskCenterView from './views/TaskCenterView.vue'
+import PlaceholderView from './views/PlaceholderView.vue'
 
 const routes = [
   { path: '/', name: 'dashboard', component: DashboardView, meta: { title: '总览', section: '工作台' } },
