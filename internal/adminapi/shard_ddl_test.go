@@ -95,3 +95,26 @@ func TestShardCloneTaskAPI(t *testing.T) {
 		t.Fatalf("duplicate target preview status=%d body=%s", duplicate.Code, duplicate.Body.String())
 	}
 }
+
+func TestShardCloneSQLByDriver(t *testing.T) {
+	tests := []struct {
+		driver string
+		want string
+	}{
+		{driver:"mysql", want:"CREATE TABLE `orders_202611` LIKE `orders`"},
+		{driver:"postgres", want:`CREATE TABLE "orders_202611" (LIKE "orders" INCLUDING ALL)`},
+		{driver:"sqlite", want:`CREATE TABLE "orders_202611" AS SELECT * FROM "orders" WHERE 0`},
+		{driver:"clickhouse", want:"CREATE TABLE `orders_202611` AS `orders`"},
+	}
+	for _, test := range tests {
+		t.Run(test.driver, func(t *testing.T) {
+			statement, warning, err := shardCloneSQL(test.driver, "orders_202611", "orders")
+			if err != nil { t.Fatal(err) }
+			if statement != test.want { t.Fatalf("DDL = %q, want %q", statement, test.want) }
+			if warning == "" { t.Fatal("driver-specific clone warning must be provided") }
+		})
+	}
+	if _, _, err := shardCloneSQL("unknown", "orders_202611", "orders"); err == nil {
+		t.Fatal("unsupported driver should be rejected")
+	}
+}
