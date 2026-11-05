@@ -28,6 +28,27 @@ interface RoutePreview {
   tables: string[]
   table_count: number
 }
+interface ClonePreview {
+  driver: string
+  source_table: string
+  target_table: string
+  sql: string
+  copies_data: boolean
+  warning: string
+}
+interface ShardDDLTask {
+  id: string
+  source_table: string
+  target_table: string
+  status: string
+  message: string
+}
+interface ShardDDLAuditEvent {
+  from_status: string
+  to_status: string
+  message: string
+  occurred_at: string
+}
 
 const loading = ref(false)
 const saving = ref(false)
@@ -43,6 +64,14 @@ const physicalTables = ref<string[]>([])
 const tableRule = ref<ShardRule | null>(null)
 const tableCheckName = ref("")
 const tableCheckResult = ref<boolean | null>(null)
+const cloneSource = ref('')
+const cloneTarget = ref('')
+const clonePreview = ref<ClonePreview | null>(null)
+const clonePreviewing = ref(false)
+const cloneSubmitting = ref(false)
+const cloneTask = ref<ShardDDLTask | null>(null)
+const cloneAudit = ref<ShardDDLAuditEvent[]>([])
+const cloneTaskRefreshing = ref(false)
 const editingID = ref('')
 const previewRule = ref<ShardRule | null>(null)
 const previewResult = ref<RoutePreview | null>(null)
@@ -140,6 +169,11 @@ async function openTables(rule: ShardRule) {
   physicalTables.value = []
   tableCheckName.value = ''
   tableCheckResult.value = null
+  cloneSource.value = rule.base_table
+  cloneTarget.value = ''
+  clonePreview.value = null
+  cloneTask.value = null
+  cloneAudit.value = []
   tableDialogVisible.value = true
   tableLoading.value = true
   try {
@@ -150,6 +184,81 @@ async function openTables(rule: ShardRule) {
     ElMessage.error(response?.data?.message ?? '读取物理分片表失败')
   } finally {
     tableLoading.value = false
+  }
+}
+
+async function previewClone() {
+  if (!tableRule.value || !cloneSource.value.trim() || !cloneTarget.value.trim()) {
+    ElMessage.warning('请填写模板物理表和目标分片表名')
+    return
+  }
+  clonePreviewing.value = true
+  clonePreview.value = null
+  try {
+    const { data } = await api.post<ClonePreview>(`/shard-rules/${tableRule.value.id}/clone-preview`, {
+      source_table: cloneSource.value.trim(),
+      target_table: cloneTarget.value.trim(),
+    })
+    clonePreview.value = data
+  } catch (error: unknown) {
+    const response = (error as { response?: { data?: { message?: string } } })?.response
+    ElMessage.error(response?.data?.message ?? '生成克隆预览失败')
+  } finally {
+    clonePreviewing.value = false
+  }
+}
+
+async function submitClone() {
+  if (!tableRule.value || !clonePreview.value) return
+  try {
+    await ElMessageBox.confirm(
+      `将仅复制 ${clonePreview.value.source_table} 的表结构到 ${clonePreview.value.target_table}，不会复制数据。请确认目标表不存在，并已检查 SQL 与驱动限制。`,
+      '确认创建物理分片表',
+      { type: 'warning', confirmButtonText: '提交 DDL 任务', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  cloneSubmitting.value = true
+  try {
+    const { data } = await api.post<ShardDDLTask>(`/shard-rules/${tableRule.value.id}/clone-tasks`, {
+      source_table: clonePreview.value.source_table,
+      target_table: clonePreview.value.target_table,
+      confirm: true,
+    })
+    cloneTask.value = data
+    cloneAudit.value = []
+    clonePreview.value = null
+    ElMessage.success('物理表克隆任务已提交')
+    await refreshCloneTask()
+  } catch (error: unknown) {
+    const response = (error as { response?: { data?: { message?: string } } })?.response
+    ElMessage.error(response?.data?.message ?? '提交物理表克隆任务失败')
+  } finally {
+    cloneSubmitting.value = false
+  }
+}
+
+async function refreshCloneTask() {
+  if (!cloneTask.value) return
+  cloneTaskRefreshing.value = true
+  try {
+    const [taskResponse, auditResponse] = await Promise.all([
+      api.get<ShardDDLTask>(`/shard-ddl-tasks/${cloneTask.value.id}`),
+      api.get<{ items: ShardDDLAuditEvent[] }>(`/shard-ddl-tasks/${cloneTask.value.id}/audit`),
+    ])
+    cloneTask.value = taskResponse.data
+    cloneAudit.value = auditResponse.data.items
+    if (cloneTask.value.status === 'succeeded') {
+      ElMessage.success('物理表结构克隆完成')
+      const { data } = await api.get<{ items: string[] }>(`/shard-rules/${tableRule.value?.id}/tables`)
+      physicalTables.value = data.items
+    }
+  } catch (error: unknown) {
+    const response = (error as { response?: { data?: { message?: string } } })?.response
+    ElMessage.error(response?.data?.message ?? '刷新 DDL 任务失败')
+  } finally {
+    cloneTaskRefreshing.value = false
   }
 }
 
@@ -351,7 +460,32 @@ onMounted(load)
         <el-button type="primary" :loading="tableChecking" @click="checkTableExists">检查存在性</el-button>
       </div>
       <el-alert v-if="tableCheckResult !== null" :title="tableCheckResult ? '物理表存在' : '物理表不存在'" :type="tableCheckResult ? 'success' : 'warning'" :closable="false" show-icon class="table-check-result" />
-      <p class="table-inventory-note">此页面仅查询数据库元数据，不会创建、修改或删除物理表。</p>
+      <el-divider />
+      <div class="clone-heading"><strong>结构克隆</strong><el-tag type="warning" effect="plain">不会复制数据</el-tag></div>
+      <div class="clone-form">
+        <el-input v-model="cloneSource" placeholder="模板表，例如 orders" />
+        <el-input v-model="cloneTarget" placeholder="目标表，例如 orders_202611" />
+        <el-button type="primary" :loading="clonePreviewing" @click="previewClone">生成 DDL 预览</el-button>
+      </div>
+      <template v-if="clonePreview">
+        <el-alert :title="clonePreview.warning" type="warning" :closable="false" show-icon class="clone-warning" />
+        <pre class="clone-sql">{{ clonePreview.sql }}</pre>
+        <el-button type="danger" :loading="cloneSubmitting" @click="submitClone">确认并提交克隆任务</el-button>
+      </template>
+      <div v-if="cloneTask" class="clone-task">
+        <div class="clone-task-heading">
+          <strong>任务 {{ cloneTask.id.slice(0, 12) }}</strong>
+          <el-tag :type="cloneTask.status === 'succeeded' ? 'success' : cloneTask.status === 'failed' ? 'danger' : 'info'">{{ cloneTask.status }}</el-tag>
+          <el-button text :loading="cloneTaskRefreshing" @click="refreshCloneTask">刷新状态与审计</el-button>
+        </div>
+        <p>{{ cloneTask.message }}</p>
+        <el-timeline v-if="cloneAudit.length">
+          <el-timeline-item v-for="(event, index) in cloneAudit" :key="index" :timestamp="new Date(event.occurred_at).toLocaleString()">
+            {{ event.from_status || 'created' }} → {{ event.to_status }} · {{ event.message }}
+          </el-timeline-item>
+        </el-timeline>
+      </div>
+      <p class="table-inventory-note">物理表盘点为只读。克隆操作会创建新表，需先预览 SQL 并二次确认；不复制数据，不提供 DROP。</p>
     </template>
     <template #footer><el-button @click="tableDialogVisible = false">关闭</el-button></template>
   </el-dialog>
@@ -409,10 +543,18 @@ onMounted(load)
 .table-inventory-heading span, .table-inventory-note { color: #98a2b3; font-size: 11px; }
 .table-check-row { display: flex; gap: 10px; }
 .table-check-result { margin-top: 12px; }
+.clone-heading, .clone-task-heading { display: flex; align-items: center; gap: 10px; margin: 14px 0 10px; }
+.clone-form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; }
+.clone-warning { margin: 12px 0; }
+.clone-sql { overflow-x: auto; padding: 12px; border-radius: 8px; background: #f5f7fa; color: #344054; font-size: 11px; white-space: pre-wrap; }
+.clone-task { margin-top: 18px; padding-top: 12px; border-top: 1px solid #edf0f5; }
+.clone-task-heading { justify-content: space-between; }
+.clone-task p { color: #667085; font-size: 12px; }
 .preview-form { margin-top: 18px; }
 .range-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .preview-result { margin-top: 22px; padding-top: 16px; border-top: 1px solid #edf0f5; }
 .preview-result-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .table-tag { margin: 0 8px 8px 0; }
+@media (max-width: 720px) { .clone-form { grid-template-columns: 1fr; } .clone-task-heading { flex-wrap: wrap; } }
 @media (max-width: 560px) { .range-fields { grid-template-columns: 1fr; gap: 0; } }
 </style>
