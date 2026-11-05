@@ -71,7 +71,10 @@ func (s *Store) CreateMigrationTask(ctx context.Context, task MigrationTask) (Mi
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID, task.DataSourceID, task.Action, task.TargetVersion, task.Steps,
 		task.Status, "", now.Format(time.RFC3339Nano), task.BatchID)
-	if err != nil { return MigrationTask{}, fmt.Errorf("create migration task: %w", err) }
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), ErrActiveShardDDLTasks.Error()) { return MigrationTask{}, ErrActiveShardDDLTasks }
+		return MigrationTask{}, fmt.Errorf("create migration task: %w", err)
+	}
 	if task.TenantID != "" {
 		var mappedDataSourceID, tenantStatus string
 		if err := tx.QueryRowContext(ctx, `SELECT data_source_id, status FROM admin_tenants WHERE id = ?`, task.TenantID).Scan(&mappedDataSourceID, &tenantStatus); err != nil {
