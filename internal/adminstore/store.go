@@ -330,8 +330,48 @@ func (s *Store) migrate(ctx context.Context) error {
 		END`); err != nil {
 		return fmt.Errorf("protect shard rule data source deletion: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admin_shard_ddl_tasks (
+		id TEXT PRIMARY KEY,
+		shard_rule_id TEXT NOT NULL,
+		data_source_id TEXT NOT NULL,
+		action TEXT NOT NULL,
+		source_table TEXT NOT NULL,
+		target_table TEXT NOT NULL,
+		status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','failed','canceled','interrupted')),
+		message TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		started_at TEXT,
+		finished_at TEXT,
+		FOREIGN KEY(shard_rule_id) REFERENCES admin_shard_rules(id)
+	)`); err != nil {
+		return fmt.Errorf("create shard DDL task table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_admin_shard_ddl_tasks_created
+		ON admin_shard_ddl_tasks(created_at DESC)`); err != nil {
+		return fmt.Errorf("index shard DDL tasks: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admin_shard_ddl_audit_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		task_id TEXT NOT NULL,
+		shard_rule_id TEXT NOT NULL,
+		data_source_id TEXT NOT NULL,
+		action TEXT NOT NULL,
+		from_status TEXT NOT NULL DEFAULT '',
+		to_status TEXT NOT NULL,
+		actor TEXT NOT NULL DEFAULT 'local-api',
+		request_source TEXT NOT NULL DEFAULT '',
+		message TEXT NOT NULL DEFAULT '',
+		occurred_at TEXT NOT NULL,
+		FOREIGN KEY(task_id) REFERENCES admin_shard_ddl_tasks(id) ON DELETE CASCADE
+	)`); err != nil {
+		return fmt.Errorf("create shard DDL audit table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_admin_shard_ddl_audit_task
+		ON admin_shard_ddl_audit_events(task_id, occurred_at)`); err != nil {
+		return fmt.Errorf("index shard DDL audit events: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
-		VALUES (9, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		VALUES (10, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("record metadata schema version: %w", err)
 	}
 	return tx.Commit()
