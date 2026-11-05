@@ -106,6 +106,12 @@ func scanShardRule(row shardRuleScanner) (ShardRule, error) {
 func (s *Store) CreateShardRule(ctx context.Context, raw ShardRuleInput) (ShardRule, error) {
 	input, err := validateShardRuleInput(raw)
 	if err != nil { return ShardRule{}, err }
+	var sourceExists int
+	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM admin_data_sources WHERE id = ?", input.DataSourceID).Scan(&sourceExists); errors.Is(err, sql.ErrNoRows) {
+		return ShardRule{}, ErrShardRuleDataSourceNotFound
+	} else if err != nil {
+		return ShardRule{}, fmt.Errorf("verify shard rule data source: %w", err)
+	}
 	id, err := newID()
 	if err != nil { return ShardRule{}, err }
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -150,6 +156,12 @@ func (s *Store) GetShardRule(ctx context.Context, id string) (ShardRule, error) 
 func (s *Store) UpdateShardRule(ctx context.Context, id string, raw ShardRuleInput) (ShardRule, error) {
 	input, err := validateShardRuleInput(raw)
 	if err != nil { return ShardRule{}, err }
+	var sourceExists int
+	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM admin_data_sources WHERE id = ?", input.DataSourceID).Scan(&sourceExists); errors.Is(err, sql.ErrNoRows) {
+		return ShardRule{}, ErrShardRuleDataSourceNotFound
+	} else if err != nil {
+		return ShardRule{}, fmt.Errorf("verify shard rule data source: %w", err)
+	}
 	result, err := s.db.ExecContext(ctx, `UPDATE admin_shard_rules SET data_source_id = ?,
 		base_table = ?, shard_type = ?, hash_shards = ?, range_size = ?, updated_at = ? WHERE id = ?`,
 		input.DataSourceID, input.BaseTable, input.ShardType, input.HashShards, input.RangeSize,
