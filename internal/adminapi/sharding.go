@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"net/http"
 	"strings"
@@ -35,6 +36,8 @@ func (s *Server) registerShardingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT "+apiPrefix+"/shard-rules/{id}", s.updateShardRule)
 	mux.HandleFunc("DELETE "+apiPrefix+"/shard-rules/{id}", s.deleteShardRule)
 	mux.HandleFunc("POST "+apiPrefix+"/shard-rules/{id}/preview", s.previewShardRoute)
+	mux.HandleFunc("GET "+apiPrefix+"/shard-rules/{id}/tables", s.listPhysicalShardTables)
+	mux.HandleFunc("POST "+apiPrefix+"/shard-rules/{id}/tables/exists", s.checkPhysicalShardTable)
 }
 
 func (s *Server) requireShardStore(w http.ResponseWriter) bool {
@@ -162,6 +165,113 @@ func (s *Server) previewShardRoute(w http.ResponseWriter, r *http.Request) {
 		"tables": tables,
 		"table_count": len(tables),
 	})
+}
+
+
+type shardTableExistsRequest struct {
+	TableName string `json:"table_name"`
+}
+
+func (s *Server) targetShardDB(ctx context.Context, dataSourceID string) (*sql.DB, error) {
+	if s.store == nil || s.pools == nil { return nil, errors.New("target database access is unavailable") }
+	return s.pools.Get(ctx, dataSourceID, func(ctx context.Context, id string) (string, string, error) {
+		driver, dsn, err := s.store.ConnectionConfig(ctx, id)
+		if err != nil { return "", "", err }
+		driverName := map[string]string{"mysql": "mysql", "postgres": "pgx", "sqlite": "sqlite", "clickhouse": "clickhouse"}[driver]
+		if driverName == "" { return "", "", errors.New("unsupported database driver") }
+		return driverName, dsn, nil
+	})
+}
+
+func physicalTableNames(ctx context.Context, db *sql.DB, driver string) ([]string, error) {
+	var query string
+	switch driver {
+	case "mysql":
+		query = "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name"
+	case "postgres":
+		query = "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() ORDER BY table_name"
+	case "sqlite":
+		query = "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+	case "clickhouse":
+		query = "SELECT name FROM system.tables WHERE database = currentDatabase() ORDER BY name"
+	default:
+		return nil, errors.New("unsupported database driver")
+	}
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil { return nil, err }
+	defer rows.Close()
+	names := make([]string, 0)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil { return nil, err }
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil { return nil, err }
+	return names, nil
+}
+
+func isShardTableName(base, table string) bool {
+	if table == base { return true }
+	if !strings.HasPrefix(table, base+"_") || len(table) > 64 { return false }
+	for _, r := range table {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Server) listPhysicalShardTables(w http.ResponseWriter, r *http.Request) {
+	if !s.requireShardStore(w) { return }
+	rule, err := s.shards.GetShardRule(r.Context(), r.PathValue("id"))
+	if err != nil { writeShardRuleError(w, err); return }
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	db, err := s.targetShardDB(ctx, rule.DataSourceID)
+	if err != nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "target_database_unavailable", "unable to connect to the configured target database")
+		return
+	}
+	names, err := physicalTableNames(ctx, db, rule.Driver)
+	if err != nil {
+		writeAPIError(w, http.StatusBadGateway, "table_inspection_failed", "unable to inspect tables in the target database")
+		return
+	}
+	items := make([]string, 0)
+	for _, name := range names {
+		if isShardTableName(rule.BaseTable, name) { items = append(items, name) }
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"shard_rule_id": rule.ID, "items": items, "count": len(items)})
+}
+
+func (s *Server) checkPhysicalShardTable(w http.ResponseWriter, r *http.Request) {
+	if !s.requireShardStore(w) { return }
+	rule, err := s.shards.GetShardRule(r.Context(), r.PathValue("id"))
+	if err != nil { writeShardRuleError(w, err); return }
+	var input shardTableExistsRequest
+	if err := decodeJSON(w, r, &input); err != nil { writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error()); return }
+	input.TableName = strings.TrimSpace(input.TableName)
+	if !isShardTableName(rule.BaseTable, input.TableName) {
+		writeAPIError(w, http.StatusBadRequest, "invalid_table_name", "table_name must be the base table or a valid table with this rule's prefix")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	db, err := s.targetShardDB(ctx, rule.DataSourceID)
+	if err != nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "target_database_unavailable", "unable to connect to the configured target database")
+		return
+	}
+	names, err := physicalTableNames(ctx, db, rule.Driver)
+	if err != nil {
+		writeAPIError(w, http.StatusBadGateway, "table_inspection_failed", "unable to inspect tables in the target database")
+		return
+	}
+	exists := false
+	for _, name := range names {
+		if name == input.TableName { exists = true; break }
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"table_name": input.TableName, "exists": exists})
 }
 
 func writeShardRuleError(w http.ResponseWriter, err error) {
