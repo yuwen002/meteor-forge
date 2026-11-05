@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -61,7 +62,10 @@ func (s *Store) CreateShardDDLTask(ctx context.Context, task ShardDDLTask) (Shar
 		(id, shard_rule_id, data_source_id, action, source_table, target_table, status, message, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, 'queued', '', ?)`,
 		task.ID, task.ShardRuleID, task.DataSourceID, task.Action, task.SourceTable, task.TargetTable, now.Format(time.RFC3339Nano))
-	if err != nil { return ShardDDLTask{}, fmt.Errorf("insert shard DDL task: %w", err) }
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), ErrActiveTasks.Error()) { return ShardDDLTask{}, ErrActiveTasks }
+		return ShardDDLTask{}, fmt.Errorf("insert shard DDL task: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO admin_shard_ddl_audit_events
 		(task_id, shard_rule_id, data_source_id, action, from_status, to_status, actor, request_source, message, occurred_at)
 		VALUES (?, ?, ?, ?, '', 'queued', 'local-api', ?, 'DDL task submitted', ?)`,
