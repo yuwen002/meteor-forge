@@ -34,7 +34,7 @@ func TestAuthenticationProtectsManagementRoutesAndSupportsLogout(t *testing.T){
  if len(cookie.Value)<40{t.Fatal("session token missing")}
  session:=call(http.MethodGet,"/api/v1/auth/session",nil,cookie,"")
  if session.Code!=http.StatusOK{t.Fatalf("session status=%d body=%s",session.Code,session.Body.String())}
- if got:=call(http.MethodPost,"/api/v1/auth/logout",[]byte(`{}`),cookie,"");got.Code!=http.StatusNoContent{t.Fatalf("logout status=%d body=%s",got.Code,got.Body.String())}
+ if got:=call(http.MethodPost,"/api/v1/auth/logout",[]byte(`{}`),cookie,"http://localhost");got.Code!=http.StatusNoContent{t.Fatalf("logout status=%d body=%s",got.Code,got.Body.String())}
  if got:=call(http.MethodGet,"/api/v1/datasources",nil,cookie,"");got.Code!=http.StatusUnauthorized{t.Fatalf("revoked session status=%d",got.Code)}
 }
 func TestAuthenticationRejectsMissingOriginOnMutation(t *testing.T){
