@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { logoutAdmin } from './api'
 import { useRoute, useRouter } from 'vue-router'
 import {
   DataAnalysis, Connection, Files, OfficeBuilding, Grid, List, Document,
@@ -9,6 +10,10 @@ import {
 const route = useRoute()
 const router = useRouter()
 const currentTitle = computed(() => String(route.meta.title ?? '管理后台'))
+
+async function handleLogout() {
+  try { await logoutAdmin() } finally { await router.replace({ name: 'login' }) }
+}
 
 const navigation = [
   { section: '工作台', items: [{ path: '/', label: '总览', icon: DataAnalysis }] },
@@ -26,7 +31,8 @@ const navigation = [
 </script>
 
 <template>
-  <el-container class="app-shell">
+  <router-view v-if="route.name === 'login'" />
+  <el-container v-else class="app-shell">
     <el-aside width="248px" class="sidebar">
       <div class="brand">
         <div class="brand-mark">MF</div>
@@ -60,6 +66,7 @@ const navigation = [
           <span class="status-dot"></span>
           <span>本地管理服务</span>
           <el-tag size="small" effect="plain" type="info">0.1.0-dev</el-tag>
+          <el-button link type="primary" @click="handleLogout">退出登录</el-button>
         </div>
       </el-header>
       <el-main class="main-content">

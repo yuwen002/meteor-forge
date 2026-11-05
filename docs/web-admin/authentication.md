@@ -1,6 +1,6 @@
 # Web Admin Authentication and Authorization
 
-> Status: implementation specification. The current management API does not yet enforce administrator authentication or RBAC. Until the implementation and security tests are complete, keep the server bound to loopback and do not expose it through a reverse proxy or public interface.
+> Status: administrator bootstrap, password verification, session persistence, login/logout/password-change endpoints, session middleware, and frontend login guard are implemented. RBAC is not yet enforced. Keep the service bound to loopback; do not expose it through a reverse proxy or public interface until RBAC and security validation are complete.
 
 ## Goals
 
@@ -33,11 +33,19 @@ Do not trust `X-Forwarded-For` or similar headers for authentication, audit iden
 
 ## Password and session storage
 
-The initial implementation should use a reviewed password hashing algorithm with a per-password cryptographic salt and versioned parameters. Prefer Argon2id; if the repository avoids adding a dependency, use a carefully implemented standard-library PBKDF2-HMAC-SHA256 with a high iteration count and constant-time comparison, and document the trade-off. Never use plain SHA-256, reversible encryption, or a fast hash for passwords.
+The current implementation uses standard-library PBKDF2-HMAC-SHA256 with 310,000 iterations, a 16-byte random per-password salt, a 32-byte derived key, versioned storage encoding, and constant-time comparison. This avoids a new dependency but is a deliberate trade-off versus Argon2id; reassess the work factor and consider Argon2id before wider deployment. Never use plain SHA-256, reversible encryption, or a fast hash for passwords.
 
 Session tokens must be generated from a cryptographically secure random source (at least 256 bits). Return the raw token only in a cookie; persist only its SHA-256 hash. Store username, creation time, expiry time, and revocation state. Use a bounded lifetime (initially 12 hours), HttpOnly, SameSite=Strict, Path=/api/v1 cookies, and Secure when served over HTTPS. Expired sessions must be rejected even if cleanup has not run.
 
 Logout revokes the server-side session and clears the cookie. Password change and administrator disablement revoke all active sessions for that account.
+
+## Implemented bootstrap configuration
+
+- `METEOR_ADMIN_USERNAME`: optional; defaults to `admin`.
+- `METEOR_ADMIN_BOOTSTRAP_PASSWORD`: required only when the metadata store has no administrator; minimum 12 characters. Once an administrator exists, the environment variable is ignored and cannot reset its password.
+- `POST /api/v1/auth/login` accepts JSON credentials and issues the 12-hour HttpOnly, SameSite=Strict cookie `meteor_admin_session`. The raw token is never persisted; only its SHA-256 digest is stored.
+- `POST /api/v1/auth/logout` revokes the current session. `POST /api/v1/auth/password` verifies the current password, changes the password, and revokes all sessions.
+- The Vite development proxy preserves the browser Host header so same-origin checks compare the browser Origin to the original UI host.
 
 ## HTTP contract
 
@@ -64,7 +72,7 @@ Login accepts username/password in a JSON body and returns generic authenticatio
 
 ## Login abuse controls
 
-Implement a bounded in-memory rate limiter keyed by the direct peer address and normalized username, with a generic error response and a short cooldown. Bound the number of tracked keys and periodically discard expired entries. Do not trust forwarded headers by default. Record authentication success/failure without recording passwords, cookies, or raw tokens. A future multi-instance deployment must move throttling to shared storage.
+A bounded in-memory limiter is implemented, keyed by the direct peer address and normalized username, allowing five attempts per minute followed by a 30-second cooldown. It caps tracked keys at 4,096 and prunes expired entries. It does not trust forwarded headers. A future multi-instance deployment must move throttling to shared storage.
 
 ## RBAC model (second milestone)
 
