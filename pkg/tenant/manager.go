@@ -32,7 +32,8 @@ func NewMemoryManager() *MemoryManager {
 
 // Register 注册或替换租户数据库连接。相同连接重复注册不会关闭当前连接。
 func (m *MemoryManager) Register(tenantID string, db *sql.DB) error {
-	if strings.TrimSpace(tenantID) == "" {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
 		return ErrInvalidTenantID
 	}
 	if db == nil {
@@ -56,7 +57,8 @@ func (m *MemoryManager) Register(tenantID string, db *sql.DB) error {
 
 // GetDB 获取指定租户的数据库连接池。
 func (m *MemoryManager) GetDB(tenantID string) (*sql.DB, error) {
-	if strings.TrimSpace(tenantID) == "" {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
 		return nil, ErrInvalidTenantID
 	}
 	m.mu.RLock()
