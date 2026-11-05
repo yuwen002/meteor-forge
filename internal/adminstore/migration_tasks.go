@@ -42,6 +42,7 @@ type MigrationTaskProgress struct {
 type MigrationAuditEvent struct {
 	ID int64 `json:"id"`
 	TaskID string `json:"task_id"`
+	TenantID string `json:"tenant_id,omitempty"`
 	DataSourceID string `json:"data_source_id"`
 	Action string `json:"action"`
 	FromStatus string `json:"from_status,omitempty"`
@@ -230,16 +231,17 @@ func insertMigrationAuditEvent(ctx context.Context, tx *sql.Tx, task MigrationTa
 // ListMigrationAuditEvents returns chronological state changes for one task.
 func (s *Store) ListMigrationAuditEvents(ctx context.Context, taskID string) ([]MigrationAuditEvent, error) {
 	if _, err := s.GetMigrationTask(ctx, taskID); err != nil { return nil, err }
-	rows, err := s.db.QueryContext(ctx, `SELECT id, task_id, data_source_id, action, from_status, to_status,
-		actor, request_source, message, occurred_at FROM admin_migration_audit_events
-		WHERE task_id = ? ORDER BY id ASC`, taskID)
+	rows, err := s.db.QueryContext(ctx, `SELECT e.id, e.task_id, COALESCE(tt.tenant_id, ''), e.data_source_id, e.action, e.from_status, e.to_status,
+		e.actor, e.request_source, e.message, e.occurred_at FROM admin_migration_audit_events e
+		LEFT JOIN admin_migration_task_tenants tt ON tt.task_id = e.task_id
+		WHERE e.task_id = ? ORDER BY e.id ASC`, taskID)
 	if err != nil { return nil, fmt.Errorf("list migration audit events: %w", err) }
 	defer rows.Close()
 	items := make([]MigrationAuditEvent, 0)
 	for rows.Next() {
 		var item MigrationAuditEvent
 		var at string
-		if err := rows.Scan(&item.ID, &item.TaskID, &item.DataSourceID, &item.Action, &item.FromStatus,
+		if err := rows.Scan(&item.ID, &item.TaskID, &item.TenantID, &item.DataSourceID, &item.Action, &item.FromStatus,
 			&item.ToStatus, &item.Actor, &item.RequestSource, &item.Message, &at); err != nil { return nil, err }
 		item.OccurredAt, err = time.Parse(time.RFC3339Nano, at)
 		if err != nil { return nil, fmt.Errorf("parse migration audit timestamp: %w", err) }
