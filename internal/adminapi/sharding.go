@@ -312,16 +312,6 @@ func writeShardRuleError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, adminstore.ErrShardRuleHasActiveDDLTasks):
 		writeAPIError(w, http.StatusConflict, "shard_rule_has_active_ddl_tasks", "the shard rule cannot be changed or deleted while DDL tasks are queued or running")
-	default:
-		if errors.Is(err, adminstore.ErrShardRuleNotFound) { writeAPIError(w, http.StatusNotFound, "not_found", "shard rule not found"); return }
-		if errors.Is(err, adminstore.ErrShardRuleConflict) { writeAPIError(w, http.StatusConflict, "conflict", "a shard rule already exists for this data source and base table"); return }
-		if errors.Is(err, adminstore.ErrShardRuleInvalidInput) { writeAPIError(w, http.StatusBadRequest, "invalid_shard_rule", "invalid shard rule configuration"); return }
-		writeAPIError(w, http.StatusInternalServerError, "internal_error", "shard rule operation failed")
-	}
-}
-
-func writeShardRuleErrorLegacy(w http.ResponseWriter, err error) {
-	switch {
 	case errors.Is(err, adminstore.ErrShardRuleNotFound):
 		writeAPIError(w, http.StatusNotFound, "shard_rule_not_found", "shard rule not found")
 	case errors.Is(err, adminstore.ErrShardRuleConflict):
