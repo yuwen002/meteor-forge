@@ -3,6 +3,7 @@ package adminstore
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -67,13 +68,38 @@ func TestRecoverInterruptedShardDDLTasks(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	rule, err := store.CreateShardRule(ctx, ShardRuleInput{DataSourceID:source.ID, BaseTable:"events", ShardType:"id_hash", HashShards:4})
 	if err != nil { t.Fatal(err) }
-	task, err := store.CreateShardDDLTask(ctx, ShardDDLTask{ShardRuleID:rule.ID, DataSourceID:source.ID, Action:"clone", SourceTable:"events", TargetTable:"events_1"})
+	task, err := store.CreateShardDDLTask(ctx, ShardDDLTask{ShardRuleID:rule.ID, DataSourceID:source.ID, Action:"clone", SourceTable:"events", TargetTable:"events_1", RequestSource:"127.0.0.2"})
 	if err != nil { t.Fatal(err) }
 	if err := store.RecoverInterruptedShardDDLTasks(ctx); err != nil { t.Fatal(err) }
 	got, err := store.GetShardDDLTask(ctx, task.ID)
 	if err != nil || got.Status != "interrupted" { t.Fatalf("recovered task = %+v, %v", got, err) }
 	audit, err := store.ListShardDDLAuditEvents(ctx, task.ID)
 	if err != nil || len(audit) != 2 || audit[1].ToStatus != "interrupted" { t.Fatalf("recovery audit = %+v, %v", audit, err) }
+	for _, event := range audit {
+		if event.RequestSource != "127.0.0.2" { t.Errorf("recovery audit event %q request source = %q, want 127.0.0.2", event.ToStatus, event.RequestSource) }
+	}
+}
+
+func TestUpdateShardDDLTaskReturnsAuditSourceReadError(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, ":memory:", testKey)
+	if err != nil { t.Fatal(err) }
+	t.Cleanup(func(){ _ = store.Close() })
+	source, err := store.Create(ctx, DataSourceInput{Name:"audit source failure", Driver:"sqlite", DSN:":memory:"})
+	if err != nil { t.Fatal(err) }
+	rule, err := store.CreateShardRule(ctx, ShardRuleInput{DataSourceID:source.ID, BaseTable:"events", ShardType:"month"})
+	if err != nil { t.Fatal(err) }
+	task, err := store.CreateShardDDLTask(ctx, ShardDDLTask{ShardRuleID:rule.ID, DataSourceID:source.ID, Action:"clone", SourceTable:"events", TargetTable:"events_1"})
+	if err != nil { t.Fatal(err) }
+	if _, err := store.db.ExecContext(ctx, "DROP TABLE admin_shard_ddl_audit_events"); err != nil { t.Fatal(err) }
+	started := time.Now().UTC()
+	err = store.UpdateShardDDLTask(ctx, task.ID, "running", "running", &started, nil)
+	if err == nil || !strings.Contains(err.Error(), "load shard DDL audit request source") {
+		t.Fatalf("UpdateShardDDLTask error = %v, want audit source read error", err)
+	}
+	got, err := store.GetShardDDLTask(ctx, task.ID)
+	if err != nil { t.Fatal(err) }
+	if got.Status != "queued" { t.Fatalf("task status after audit source read failure = %q, want queued", got.Status) }
 }
 
 func TestMigrationTaskBlocksShardDDLTask(t *testing.T) {

@@ -107,7 +107,9 @@ func (s *Store) UpdateShardDDLTask(ctx context.Context, id, status, message stri
 	if errors.Is(err, sql.ErrNoRows) { return ErrShardDDLTaskNotFound }
 	if err != nil { return err }
 	var requestSource string
-	_ = tx.QueryRowContext(ctx, "SELECT request_source FROM admin_shard_ddl_audit_events WHERE task_id = ? ORDER BY id ASC LIMIT 1", id).Scan(&requestSource)
+	if err := tx.QueryRowContext(ctx, "SELECT request_source FROM admin_shard_ddl_audit_events WHERE task_id = ? ORDER BY id ASC LIMIT 1", id).Scan(&requestSource); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("load shard DDL audit request source: %w", err)
+	}
 	valid := (task.Status == "queued" && (status == "running" || status == "failed" || status == "canceled" || status == "interrupted")) ||
 		(task.Status == "running" && (status == "succeeded" || status == "failed" || status == "canceled" || status == "interrupted"))
 	if !valid { return ErrInvalidTaskTransition }
