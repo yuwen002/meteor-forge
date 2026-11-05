@@ -33,6 +33,7 @@ const saving = ref(false)
 const dialogVisible = ref(false)
 const editingID = ref('')
 const testingID = ref('')
+const migratingID = ref('')
 const form = reactive<TenantInput>({
   name: '', code: '', data_source_id: '', status: 'active',
 })
@@ -86,6 +87,26 @@ async function save() {
     ElMessage.error(response?.data?.message ?? '保存租户失败')
   } finally {
     saving.value = false
+  }
+}
+
+async function runMigrations(item: Tenant) {
+  try {
+    await ElMessageBox.confirm(
+      '系统将在租户关联的数据源上执行全部待执行迁移。若多个租户共用该数据源，迁移只会执行一次并共享版本记录。',
+      '确认执行迁移：' + item.name,
+      { type: 'warning', confirmButtonText: '提交迁移任务', cancelButtonText: '取消' },
+    )
+    migratingID.value = item.id
+    const { data } = await api.post<{ id: string }>('/tenants/' + item.id + '/migrations/tasks', { action: 'up' })
+    ElMessage.success('迁移任务已提交：' + data.id)
+  } catch (error: unknown) {
+    if (error !== 'cancel' && error !== 'close') {
+      const response = (error as { response?: { data?: { message?: string } } })?.response
+      ElMessage.error(response?.data?.message ?? '提交租户迁移任务失败')
+    }
+  } finally {
+    migratingID.value = ''
   }
 }
 
@@ -172,9 +193,10 @@ onMounted(load)
       <el-table-column prop="updated_at" label="最近更新" min-width="190">
         <template #default="{ row }">{{ new Date(row.updated_at).toLocaleString() }}</template>
       </el-table-column>
-      <el-table-column label="操作" fixed="right" width="210">
+      <el-table-column label="操作" fixed="right" width="290">
         <template #default="{ row }">
           <el-button link type="primary" :loading="testingID === row.id" @click="testConnection(row)">测试连接</el-button>
+          <el-button link type="success" :loading="migratingID === row.id" :disabled="row.status !== 'active'" @click="runMigrations(row)">执行 Up</el-button>
           <el-button link @click="openEdit(row)">编辑</el-button>
           <el-button link type="danger" @click="remove(row)">删除</el-button>
         </template>
