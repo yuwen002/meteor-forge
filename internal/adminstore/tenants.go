@@ -14,7 +14,7 @@ var (
 	ErrTenantConflict = errors.New("tenant code already exists")
 	ErrTenantInvalidInput = errors.New("invalid tenant input")
 	ErrDataSourceHasTenants = errors.New("data source is assigned to tenants")
-	ErrTenantActiveMigration = errors.New("tenant is used by an active migration task"),
+	ErrTenantActiveMigration = errors.New("tenant is used by an active migration task")
 	ErrTenantMigrationUnavailable = errors.New("tenant is unavailable for migration")
 )
 
