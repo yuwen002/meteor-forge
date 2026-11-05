@@ -38,6 +38,12 @@ func (s *Server) createTenantMigrationTask(w http.ResponseWriter, r *http.Reques
 		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	if request.Action != "up" {
+		if session, ok := adminSessionFromRequest(r); !ok || session.Admin.Role != "administrator" {
+			writeAPIError(w, http.StatusForbidden, "administrator_required", "rollback and version-change operations require an administrator")
+			return
+		}
+	}
 	switch request.Action {
 	case "up":
 	case "down", "down_steps", "to_version":

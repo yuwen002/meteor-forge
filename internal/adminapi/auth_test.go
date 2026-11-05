@@ -53,3 +53,19 @@ func TestLoginDoesNotRevealUnknownUsername(t *testing.T){
  if rec.Code!=http.StatusUnauthorized||!bytes.Contains(rec.Body.Bytes(),[]byte("invalid username or password")){t.Fatalf("unexpected login response: %d %s",rec.Code,rec.Body.String())}
  var ignored map[string]any;_ = json.Unmarshal(rec.Body.Bytes(),&ignored)
 }
+
+func TestRoleAuthorizationPolicy(t *testing.T) {
+ cases:=[]struct{role,method,path string;want bool}{
+  {"viewer",http.MethodGet,"/api/v1/audit-events",true},
+  {"viewer",http.MethodPost,"/api/v1/datasources",false},
+  {"viewer",http.MethodPost,"/api/v1/shard-rules/r1/preview",true},
+  {"viewer",http.MethodPost,"/api/v1/datasources/d1/migrations/preview",false},
+  {"migration_operator",http.MethodPost,"/api/v1/datasources/d1/migrations/tasks",true},
+  {"migration_operator",http.MethodPost,"/api/v1/shard-rules/r1/clone-tasks",false},
+  {"shard_operator",http.MethodPost,"/api/v1/shard-rules/r1/clone-tasks",true},
+  {"shard_operator",http.MethodPost,"/api/v1/datasources/d1/migrations/tasks",false},
+  {"viewer",http.MethodPost,"/api/v1/auth/users",false},
+  {"administrator",http.MethodDelete,"/api/v1/datasources/d1",true},
+ }
+ for _,tc:=range cases{if got:=authorizeAdminRole(tc.role,tc.method,tc.path);got!=tc.want{t.Errorf("authorizeAdminRole(%q,%q,%q)=%v, want %v",tc.role,tc.method,tc.path,got,tc.want)}}
+}
