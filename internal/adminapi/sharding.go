@@ -239,9 +239,11 @@ func isShardTableName(rule adminstore.ShardRule, table string) bool {
 		return isDecimalDigits(suffix[:4]) && isDecimalDigits(suffix[5:]) && weekErr == nil && week >= 1 && week <= 53
 	case "ten_day":
 		if len(suffix) != 8 || suffix[6] != '_' { return false }
-		yearMonth, yearMonthErr := strconv.Atoi(suffix[:6])
+		year, yearErr := strconv.Atoi(suffix[:4])
+		month, monthErr := strconv.Atoi(suffix[4:6])
 		segment, segmentErr := strconv.Atoi(suffix[7:])
-		return isDecimalDigits(suffix[:6]) && yearMonthErr == nil && yearMonth >= 100001 && segmentErr == nil && isDecimalDigits(suffix[7:]) && segment >= 1 && segment <= 3
+		return isDecimalDigits(suffix[:6]) && yearErr == nil && year >= 1 && monthErr == nil && month >= 1 && month <= 12 &&
+			segmentErr == nil && isDecimalDigits(suffix[7:]) && segment >= 1 && segment <= 3
 	case "id_hash":
 		value, err := strconv.Atoi(suffix)
 		return isDecimalDigits(suffix) && err == nil && value >= 0 && value < rule.HashShards
