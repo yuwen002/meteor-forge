@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -18,8 +19,12 @@ func TestOperationAuditEndpointFiltersAndPaginates(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	defer store.Close()
 
+	migrationSource, err := store.Create(ctx, adminstore.DataSourceInput{Name:"audit migration target", Driver:"sqlite", DSN:":memory:"})
+	if err != nil { t.Fatal(err) }
+	tenant, err := store.CreateTenant(ctx, adminstore.TenantInput{Name:"audit tenant", Code:"audit-tenant", DataSourceID:migrationSource.ID})
+	if err != nil { t.Fatal(err) }
 	migrationTask, err := store.CreateMigrationTask(ctx, adminstore.MigrationTask{
-		ID: "audit-task-1", DataSourceID: "audit-source", Action: "up",
+		ID: "audit-task-1", DataSourceID: migrationSource.ID, TenantID:tenant.ID, Action: "up",
 	})
 	if err != nil { t.Fatal(err) }
 	started := time.Now().UTC()
@@ -77,6 +82,25 @@ func TestOperationAuditEndpointFiltersAndPaginates(t *testing.T) {
 	for _, event := range shardResult.Items {
 		if event.Kind != "shard_ddl" { t.Errorf("kind filter returned %q", event.Kind) }
 	}
+	for _, tc := range []struct{ path string; want int }{
+		{"/api/v1/audit-events?task_id="+shardTask.ID, 3},
+		{"/api/v1/audit-events?data_source_id="+source.ID, 3},
+		{"/api/v1/audit-events?tenant_id="+tenant.ID, 3},
+		{"/api/v1/audit-events?shard_rule_id="+rule.ID, 3},
+	} {
+		response := request(tc.path)
+		if response.Code != http.StatusOK { t.Fatalf("%s status=%d body=%s", tc.path, response.Code, response.Body.String()) }
+		var result auditResponse
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil { t.Fatal(err) }
+		if result.Total != tc.want { t.Errorf("%s total=%d, want %d", tc.path, result.Total, tc.want) }
+	}
+	from := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano)
+	to := time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano)
+	timeFiltered := request("/api/v1/audit-events?from="+url.QueryEscape(from)+"&to="+url.QueryEscape(to))
+	if timeFiltered.Code != http.StatusOK { t.Fatalf("time range status=%d body=%s", timeFiltered.Code, timeFiltered.Body.String()) }
+	var timeResult auditResponse
+	if err := json.Unmarshal(timeFiltered.Body.Bytes(), &timeResult); err != nil { t.Fatal(err) }
+	if timeResult.Total != 6 { t.Fatalf("time range total=%d, want 6", timeResult.Total) }
 
 	filtered := request("/api/v1/audit-events?kind=migration&status=succeeded&limit=1&offset=0")
 	if filtered.Code != http.StatusOK { t.Fatalf("filtered audit status=%d body=%s", filtered.Code, filtered.Body.String()) }
@@ -99,6 +123,8 @@ func TestOperationAuditEndpointFiltersAndPaginates(t *testing.T) {
 		{"/api/v1/audit-events?status=unknown", http.StatusBadRequest},
 		{"/api/v1/audit-events?limit=201", http.StatusBadRequest},
 		{"/api/v1/audit-events?offset=-1", http.StatusBadRequest},
+		{"/api/v1/audit-events?from=not-a-time", http.StatusBadRequest},
+		{"/api/v1/audit-events?from=2026-11-05T12:00:00Z&to=2026-11-04T12:00:00Z", http.StatusBadRequest},
 	} {
 		response := request(tc.path)
 		if response.Code != tc.want || !strings.Contains(response.Body.String(), "error") {

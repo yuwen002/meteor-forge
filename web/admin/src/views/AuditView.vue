@@ -7,6 +7,8 @@ type AuditStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 
 interface AuditEvent { id:number; task_id:string; kind:AuditKind; data_source_id:string; tenant_id?:string; shard_rule_id?:string; action:string; from_status?:string; to_status:AuditStatus; actor:string; request_source?:string; message?:string; source_table?:string; target_table?:string; occurred_at:string }
 interface AuditResponse { items:AuditEvent[]; total:number; limit:number; offset:number }
 const events=ref<AuditEvent[]>([]), loading=ref(false), kind=ref(''), status=ref(''), page=ref(1), total=ref(0)
+const taskId=ref(''), dataSourceId=ref(''), tenantId=ref(''), shardRuleId=ref('')
+const timeRange=ref<[string,string]|[]>([])
 const pageSize=20
 const statuses:AuditStatus[]=['queued','running','succeeded','failed','canceled','interrupted']
 function eventKey(item:AuditEvent){return item.kind+'-'+item.id}
@@ -15,7 +17,7 @@ function statusType(value:AuditStatus){if(value==='succeeded')return 'success';i
 function kindLabel(value:AuditKind){return value==='migration'?'数据库迁移':'分片 DDL'}
 function targetLabel(item:AuditEvent){if(item.kind==='shard_ddl')return (item.source_table||'—')+' → '+(item.target_table||'—');return item.tenant_id?'租户 '+item.tenant_id:'数据源 '+item.data_source_id}
 function actionLabel(item:AuditEvent){if(item.kind==='shard_ddl')return item.action==='clone'?'物理表结构克隆':item.action;const labels:Record<string,string>={up:'升级迁移',down:'回滚一步',down_steps:'按步数回滚',to_version:'迁移到指定版本'};return labels[item.action]??item.action}
-async function loadEvents(){loading.value=true;try{const params=new URLSearchParams({limit:String(pageSize),offset:String((page.value-1)*pageSize)});if(kind.value)params.set('kind',kind.value);if(status.value)params.set('status',status.value);const result=await api.get<AuditResponse>('/audit-events?'+params.toString());events.value=result.data.items;total.value=result.data.total}catch{ElMessage.error('操作审计加载失败')}finally{loading.value=false}}
+async function loadEvents(){loading.value=true;try{const params=new URLSearchParams({limit:String(pageSize),offset:String((page.value-1)*pageSize)});if(kind.value)params.set('kind',kind.value);if(status.value)params.set('status',status.value);if(taskId.value.trim())params.set('task_id',taskId.value.trim());if(dataSourceId.value.trim())params.set('data_source_id',dataSourceId.value.trim());if(tenantId.value.trim())params.set('tenant_id',tenantId.value.trim());if(shardRuleId.value.trim())params.set('shard_rule_id',shardRuleId.value.trim());if(timeRange.value.length===2){params.set('from',new Date(timeRange.value[0].replace(' ','T')).toISOString());params.set('to',new Date(timeRange.value[1].replace(' ','T')).toISOString())}const result=await api.get<AuditResponse>('/audit-events?'+params.toString());events.value=result.data.items;total.value=result.data.total}catch{ElMessage.error('操作审计加载失败')}finally{loading.value=false}}
 function applyFilters(){page.value=1;void loadEvents()}
 function changePage(next:number){page.value=next;void loadEvents()}
 onMounted(()=>void loadEvents())
@@ -26,6 +28,12 @@ onMounted(()=>void loadEvents())
 <el-card shadow="never" class="audit-card"><div class="audit-toolbar"><strong>审计事件</strong><div class="audit-filters">
 <el-select v-model="kind" clearable placeholder="全部操作类型" style="width:160px" @change="applyFilters"><el-option label="数据库迁移" value="migration"/><el-option label="分片 DDL" value="shard_ddl"/></el-select>
 <el-select v-model="status" clearable placeholder="全部状态" style="width:140px" @change="applyFilters"><el-option v-for="item in statuses" :key="item" :label="statusLabel(item)" :value="item"/></el-select>
+<el-input v-model="taskId" clearable placeholder="任务 ID" style="width:190px" @keyup.enter="applyFilters"/>
+<el-input v-model="dataSourceId" clearable placeholder="数据源 ID" style="width:190px" @keyup.enter="applyFilters"/>
+<el-input v-model="tenantId" clearable placeholder="租户 ID" style="width:170px" @keyup.enter="applyFilters"/>
+<el-input v-model="shardRuleId" clearable placeholder="分片规则 ID" style="width:190px" @keyup.enter="applyFilters"/>
+<el-date-picker v-model="timeRange" type="datetimerange" value-format="YYYY-MM-DD HH:mm:ss" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" @change="applyFilters"/>
+<el-button @click="applyFilters">查询</el-button>
 </div></div>
 <el-table :data="events" v-loading="loading" :row-key="eventKey" empty-text="暂无审计事件">
 <el-table-column label="时间" min-width="180"><template #default="{row}">{{new Date(row.occurred_at).toLocaleString()}}</template></el-table-column>
@@ -38,5 +46,5 @@ onMounted(()=>void loadEvents())
 </el-table><div class="audit-pagination"><span>共 {{total}} 条记录</span><el-pagination :current-page="page" :page-size="pageSize" :total="total" layout="prev, pager, next" @current-change="changePage"/></div></el-card>
 </template>
 <style scoped>
-.audit-note{margin-bottom:16px}.audit-card{border:1px solid #e8edf4;border-radius:12px}.audit-toolbar,.audit-pagination{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-bottom:16px}.audit-toolbar>strong{color:#26354d;font-size:14px}.audit-filters{display:flex;gap:9px}.audit-pagination{justify-content:flex-end;margin:18px 0 0;color:#78859a;font-size:12px}@media(max-width:760px){.audit-toolbar{align-items:flex-start;flex-direction:column}.audit-filters{width:100%}.audit-filters .el-select{flex:1;min-width:0}.audit-pagination{align-items:flex-start;flex-direction:column}}
+.audit-note{margin-bottom:16px}.audit-card{border:1px solid #e8edf4;border-radius:12px}.audit-toolbar,.audit-pagination{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-bottom:16px}.audit-toolbar>strong{color:#26354d;font-size:14px}.audit-filters{display:flex;flex-wrap:wrap;gap:9px}.audit-pagination{justify-content:flex-end;margin:18px 0 0;color:#78859a;font-size:12px}@media(max-width:760px){.audit-toolbar{align-items:flex-start;flex-direction:column}.audit-filters{width:100%}.audit-filters .el-select,.audit-filters .el-input,.audit-filters .el-date-editor{flex:1;min-width:150px}.audit-pagination{align-items:flex-start;flex-direction:column}}
 </style>

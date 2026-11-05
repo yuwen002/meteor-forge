@@ -24,6 +24,17 @@ type OperationAuditEvent struct {
 	OccurredAt time.Time `json:"occurred_at"`
 }
 
+type OperationAuditFilter struct {
+	Kind string
+	Status string
+	TaskID string
+	DataSourceID string
+	TenantID string
+	ShardRuleID string
+	From *time.Time
+	To *time.Time
+}
+
 const operationAuditUnion = `
 	SELECT e.id, e.task_id, 'migration' AS kind, e.data_source_id,
 		COALESCE(tt.tenant_id, '') AS tenant_id, '' AS shard_rule_id,
@@ -40,17 +51,43 @@ const operationAuditUnion = `
 	LEFT JOIN admin_shard_ddl_tasks t ON t.id = e.task_id
 `
 
-func (s *Store) ListOperationAuditEvents(ctx context.Context, limit, offset int, kind, status string) ([]OperationAuditEvent, int, error) {
+func (s *Store) ListOperationAuditEvents(ctx context.Context, limit, offset int, filter OperationAuditFilter) ([]OperationAuditEvent, int, error) {
 	if limit <= 0 || limit > 200 { limit = 50 }
 	if offset < 0 { offset = 0 }
-	filtered := " FROM (" + operationAuditUnion + ") AS events WHERE (? = '' OR kind = ?) AND (? = '' OR to_status = ?)"
+
+	conditions := make([]string, 0, 8)
+	args := make([]any, 0, 16)
+	addExact := func(column, value string) {
+		if value == "" { return }
+		conditions = append(conditions, column+" = ?")
+		args = append(args, value)
+	}
+	addExact("kind", filter.Kind)
+	addExact("to_status", filter.Status)
+	addExact("task_id", filter.TaskID)
+	addExact("data_source_id", filter.DataSourceID)
+	addExact("tenant_id", filter.TenantID)
+	addExact("shard_rule_id", filter.ShardRuleID)
+	if filter.From != nil {
+		conditions = append(conditions, "julianday(occurred_at) >= julianday(?)")
+		args = append(args, filter.From.UTC().Format(time.RFC3339Nano))
+	}
+	if filter.To != nil {
+		conditions = append(conditions, "julianday(occurred_at) <= julianday(?)")
+		args = append(args, filter.To.UTC().Format(time.RFC3339Nano))
+	}
+	where := ""
+	if len(conditions) > 0 { where = " WHERE " + conditions[0]; for _, condition := range conditions[1:] { where += " AND " + condition } }
+	filtered := " FROM (" + operationAuditUnion + ") AS events" + where
+
 	var total int
-	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*)"+filtered, kind, kind, status, status).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*)"+filtered, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count operation audit events: %w", err)
 	}
 	query := "SELECT id, task_id, kind, data_source_id, tenant_id, shard_rule_id, action, from_status, to_status, actor, request_source, message, source_table, target_table, occurred_at" +
-		filtered + " ORDER BY occurred_at DESC, kind ASC, id DESC LIMIT ? OFFSET ?"
-	rows, err := s.db.QueryContext(ctx, query, kind, kind, status, status, limit, offset)
+		filtered + " ORDER BY julianday(occurred_at) DESC, kind ASC, id DESC LIMIT ? OFFSET ?"
+	queryArgs := append(append([]any(nil), args...), limit, offset)
+	rows, err := s.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil { return nil, 0, fmt.Errorf("list operation audit events: %w", err) }
 	defer rows.Close()
 	items := make([]OperationAuditEvent, 0)
