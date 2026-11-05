@@ -19,6 +19,25 @@ interface Tenant {
   created_at: string
   updated_at: string
 }
+interface MigrationBatch {
+  id: string
+  total: number
+  queued: number
+  running: number
+  succeeded: number
+  failed: number
+  canceled: number
+  interrupted: number
+  failures: Array<{ tenant_id: string; code: string; message: string }>
+  tasks: Array<{
+    id: string
+    tenant_id: string
+    status: string
+    message: string
+    completed_steps: number
+    total_steps: number
+  }>
+}
 interface TenantInput {
   name: string
   code: string
@@ -36,6 +55,8 @@ const testingID = ref('')
 const migratingID = ref('')
 const selectedTenantIDs = ref<string[]>([])
 const batching = ref(false)
+const batchDialogVisible = ref(false)
+const batch = ref<MigrationBatch | null>(null)
 const form = reactive<TenantInput>({
   name: '', code: '', data_source_id: '', status: 'active',
 })
@@ -133,13 +154,15 @@ async function runBatchMigrations() {
       { type: 'warning', confirmButtonText: '提交批量任务', cancelButtonText: '取消' },
     )
     batching.value = true
-    const { data } = await api.post<{
-      id: string; total: number; queued: number; failed: number
-      failures: Array<{ tenant_id: string; message: string }>
-    }>('/tenant-migration-batches', { tenant_ids: selectedTenantIDs.value })
+    const { data } = await api.post<MigrationBatch>(
+      '/tenant-migration-batches', { tenant_ids: selectedTenantIDs.value },
+    )
+    batch.value = data
+    batchDialogVisible.value = true
     ElMessage.success(`批次 ${data.id}：已提交 ${data.queued}/${data.total} 个任务，提交失败 ${data.failed} 个`)
     selectedTenantIDs.value = []
     await load()
+    await refreshBatch()
   } catch (error: unknown) {
     if (error !== 'cancel' && error !== 'close') {
       const response = (error as { response?: { data?: { message?: string } } })?.response
@@ -147,6 +170,16 @@ async function runBatchMigrations() {
     }
   } finally {
     batching.value = false
+  }
+}
+
+async function refreshBatch() {
+  if (!batch.value) return
+  try {
+    const { data } = await api.get<MigrationBatch>('/tenant-migration-batches/' + batch.value.id)
+    batch.value = data
+  } catch {
+    ElMessage.error('读取批量迁移状态失败')
   }
 }
 
@@ -211,6 +244,7 @@ onMounted(load)
       </div>
       <div class="toolbar-actions">
         <el-button type="success" plain :disabled="!selectedTenantIDs.length" :loading="batching" @click="runBatchMigrations">批量执行 Up（{{ selectedTenantIDs.length }}）</el-button>
+        <el-button v-if="batch" text type="primary" @click="batchDialogVisible = true">查看最近批次</el-button>
         <el-button text :loading="loading" @click="load">刷新</el-button>
       </div>
     </div>
@@ -247,6 +281,45 @@ onMounted(load)
       </el-table-column>
     </el-table>
   </el-card>
+
+  <el-dialog v-model="batchDialogVisible" title="批量迁移进度" width="760px">
+    <template v-if="batch">
+      <div class="batch-summary">
+        <span>批次：{{ batch.id }}</span>
+        <el-tag type="info">排队 {{ batch.queued }}</el-tag>
+        <el-tag type="primary">执行中 {{ batch.running }}</el-tag>
+        <el-tag type="success">成功 {{ batch.succeeded }}</el-tag>
+        <el-tag type="danger">失败 {{ batch.failed }}</el-tag>
+        <el-tag>取消 {{ batch.canceled }}</el-tag>
+        <el-tag type="warning">中断 {{ batch.interrupted }}</el-tag>
+      </div>
+      <el-table :data="batch.tasks" size="small" max-height="360">
+        <el-table-column prop="tenant_id" label="租户 ID" min-width="190" />
+        <el-table-column label="状态" width="110">
+          <template #default="{ row }">
+            <el-tag :type="row.status === 'succeeded' ? 'success' : row.status === 'failed' ? 'danger' : row.status === 'running' ? 'primary' : 'info'">{{ row.status }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="进度" width="100">
+          <template #default="{ row }">{{ row.completed_steps }}/{{ row.total_steps }}</template>
+        </el-table-column>
+        <el-table-column prop="message" label="结果摘要" min-width="220" />
+      </el-table>
+      <el-alert
+        v-if="batch.failures.length"
+        title="部分租户迁移未成功"
+        :description="batch.failures.map((item) => item.tenant_id + '：' + item.message).join('；')"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="batch-alert"
+      />
+    </template>
+    <template #footer>
+      <el-button @click="batchDialogVisible = false">关闭</el-button>
+      <el-button type="primary" :loading="batching" @click="refreshBatch">刷新状态</el-button>
+    </template>
+  </el-dialog>
 
   <el-dialog v-model="dialogVisible" :title="editingID ? '编辑租户' : '添加租户'" width="560px" destroy-on-close>
     <el-form :model="form" label-position="top">
@@ -286,6 +359,9 @@ onMounted(load)
 <style scoped>
 .tenant-card { border: 1px solid #e8edf4; border-radius: 12px; }
 .tenant-alert { margin-bottom: 20px; }
+.batch-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; font-size: 12px; }
+.batch-summary span { margin-right: 8px; color: #667085; }
+.batch-alert { margin-top: 14px; }
 .table-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
 .table-toolbar > div { display: flex; align-items: center; gap: 10px; }
 .toolbar-actions { display: flex; align-items: center; gap: 10px; }
