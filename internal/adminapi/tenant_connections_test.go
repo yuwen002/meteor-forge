@@ -27,7 +27,7 @@ func TestResolveTenantDBUsesSharedPoolAndBlocksSuspendedTenants(t *testing.T) {
 	})
 	if err != nil { t.Fatal(err) }
 
-	server := NewServerWithStore(store)
+	server := newTestServerWithStore(store)
 	t.Cleanup(func() { _ = server.Close() })
 
 	firstDB, resolvedFirst, err := server.ResolveTenantDB(tenant.WithTenantID(context.Background(), first.ID))
@@ -55,7 +55,7 @@ func TestResolveTenantDBRequiresTrustedTenantContext(t *testing.T) {
 	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
 	if err != nil { t.Fatal(err) }
 	defer store.Close()
-	server := NewServerWithStore(store)
+	server := newTestServerWithStore(store)
 	defer server.Close()
 
 	if _, _, err := server.ResolveTenantDB(context.Background()); !errors.Is(err, tenant.ErrTenantNotFound) {

@@ -28,7 +28,7 @@ func TestShardCloneTaskAPI(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	source, err := store.Create(context.Background(), adminstore.DataSourceInput{Name: "clone target", Driver: "sqlite", DSN: targetPath})
 	if err != nil { t.Fatal(err) }
-	server := NewServerWithStore(store)
+	server := newTestServerWithStore(store)
 	t.Cleanup(func() { _ = server.Close() })
 
 	request := func(method, path, body string) *httptest.ResponseRecorder {

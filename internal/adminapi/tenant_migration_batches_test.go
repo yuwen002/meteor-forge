@@ -42,7 +42,7 @@ func TestTenantMigrationBatchIsolatesFailuresAndPersistsSummary(t *testing.T) {
 		tenants = append(tenants, item)
 	}
 
-	server := NewServerWithMigrationDir(store, dir)
+	server := newTestServerWithMigrationDir(store, dir)
 	t.Cleanup(func() { _ = server.Close() })
 	ids := []string{tenants[0].ID, tenants[1].ID, tenants[2].ID}
 	body, _ := json.Marshal(map[string]any{"tenant_ids": ids})
@@ -100,7 +100,7 @@ func TestTenantMigrationBatchRejectsDuplicateAndSuspendedTenants(t *testing.T) {
 	})
 	if err != nil { t.Fatal(err) }
 
-	server := NewServerWithMigrationDir(store, dir)
+	server := newTestServerWithMigrationDir(store, dir)
 	t.Cleanup(func() { _ = server.Close() })
 	for _, tc := range []struct{ ids []string; wantCode string }{
 		{[]string{active.ID, active.ID}, "duplicate_tenant_id"},

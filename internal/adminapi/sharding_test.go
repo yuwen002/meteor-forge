@@ -21,7 +21,7 @@ func TestShardRuleManagementAndRoutePreviewAPI(t *testing.T) {
 		Name: "sharding api db", Driver: "sqlite", DSN: ":memory:",
 	})
 	if err != nil { t.Fatal(err) }
-	server := NewServerWithStore(store)
+	server := newTestServerWithStore(store)
 	t.Cleanup(func() { _ = server.Close() })
 
 	request := func(method, path, body string) *httptest.ResponseRecorder {
@@ -109,7 +109,7 @@ func TestPhysicalShardTableInspectionAPI(t *testing.T) {
 		Name: "physical table target", Driver: "sqlite", DSN: targetPath,
 	})
 	if err != nil { t.Fatal(err) }
-	server := NewServerWithStore(store)
+	server := newTestServerWithStore(store)
 	t.Cleanup(func() { _ = server.Close() })
 
 	request := func(method, path, body string) *httptest.ResponseRecorder {
