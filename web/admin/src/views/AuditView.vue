@@ -8,7 +8,7 @@ interface AuditEvent { id:number; task_id:string; kind:AuditKind; data_source_id
 interface AuditResponse { items:AuditEvent[]; total:number; limit:number; offset:number }
 const events=ref<AuditEvent[]>([]), loading=ref(false), kind=ref(''), status=ref(''), page=ref(1), total=ref(0)
 const taskId=ref(''), dataSourceId=ref(''), tenantId=ref(''), shardRuleId=ref('')
-const timeRange=ref<[string,string]|[]>([])
+const timeRange=ref<[string,string]|null>(null)
 const pageSize=20
 const statuses:AuditStatus[]=['queued','running','succeeded','failed','canceled','interrupted']
 function eventKey(item:AuditEvent){return item.kind+'-'+item.id}
@@ -17,7 +17,7 @@ function statusType(value:AuditStatus){if(value==='succeeded')return 'success';i
 function kindLabel(value:AuditKind){return value==='migration'?'数据库迁移':'分片 DDL'}
 function targetLabel(item:AuditEvent){if(item.kind==='shard_ddl')return (item.source_table||'—')+' → '+(item.target_table||'—');return item.tenant_id?'租户 '+item.tenant_id:'数据源 '+item.data_source_id}
 function actionLabel(item:AuditEvent){if(item.kind==='shard_ddl')return item.action==='clone'?'物理表结构克隆':item.action;const labels:Record<string,string>={up:'升级迁移',down:'回滚一步',down_steps:'按步数回滚',to_version:'迁移到指定版本'};return labels[item.action]??item.action}
-async function loadEvents(){loading.value=true;try{const params=new URLSearchParams({limit:String(pageSize),offset:String((page.value-1)*pageSize)});if(kind.value)params.set('kind',kind.value);if(status.value)params.set('status',status.value);if(taskId.value.trim())params.set('task_id',taskId.value.trim());if(dataSourceId.value.trim())params.set('data_source_id',dataSourceId.value.trim());if(tenantId.value.trim())params.set('tenant_id',tenantId.value.trim());if(shardRuleId.value.trim())params.set('shard_rule_id',shardRuleId.value.trim());if(timeRange.value.length===2){params.set('from',new Date(timeRange.value[0].replace(' ','T')).toISOString());params.set('to',new Date(timeRange.value[1].replace(' ','T')).toISOString())}const result=await api.get<AuditResponse>('/audit-events?'+params.toString());events.value=result.data.items;total.value=result.data.total}catch{ElMessage.error('操作审计加载失败')}finally{loading.value=false}}
+async function loadEvents(){loading.value=true;try{const params=new URLSearchParams({limit:String(pageSize),offset:String((page.value-1)*pageSize)});if(kind.value)params.set('kind',kind.value);if(status.value)params.set('status',status.value);if(taskId.value.trim())params.set('task_id',taskId.value.trim());if(dataSourceId.value.trim())params.set('data_source_id',dataSourceId.value.trim());if(tenantId.value.trim())params.set('tenant_id',tenantId.value.trim());if(shardRuleId.value.trim())params.set('shard_rule_id',shardRuleId.value.trim());if(timeRange.value){params.set('from',new Date(timeRange.value[0].replace(' ','T')).toISOString());params.set('to',new Date(timeRange.value[1].replace(' ','T')).toISOString())}const result=await api.get<AuditResponse>('/audit-events?'+params.toString());events.value=result.data.items;total.value=result.data.total}catch{ElMessage.error('操作审计加载失败')}finally{loading.value=false}}
 function applyFilters(){page.value=1;void loadEvents()}
 function changePage(next:number){page.value=next;void loadEvents()}
 onMounted(()=>void loadEvents())
