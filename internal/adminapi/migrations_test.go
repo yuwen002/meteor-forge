@@ -35,7 +35,7 @@ func TestMigrationStatusAndPreviewAreReadOnlyForTargetSchema(t *testing.T) {
 	})
 	if err != nil { t.Fatal(err) }
 
-	server := NewServerWithMigrationDir(store, migrationDir)
+	server := newTestServerWithMigrationDir(store, migrationDir)
 	t.Cleanup(func() { _ = server.Close() })
 
 	statusReq := httptest.NewRequest(http.MethodGet, "/api/v1/datasources/"+created.ID+"/migrations/status", nil)
@@ -88,7 +88,7 @@ func TestMigrationPreviewBlocksChangedAppliedScript(t *testing.T) {
 	})
 	if err != nil { t.Fatal(err) }
 
-	server := NewServerWithMigrationDir(store, migrationDir)
+	server := newTestServerWithMigrationDir(store, migrationDir)
 	t.Cleanup(func() { _ = server.Close() })
 
 	// The first preview initializes the migration history table without applying the SQL.

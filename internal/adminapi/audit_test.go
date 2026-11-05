@@ -46,7 +46,7 @@ func TestOperationAuditEndpointFiltersAndPaginates(t *testing.T) {
 	shardFinished := time.Now().UTC()
 	if err := store.UpdateShardDDLTask(ctx, shardTask.ID, "succeeded", "DDL completed", nil, &shardFinished); err != nil { t.Fatal(err) }
 
-	server := NewServerWithStore(store)
+	server := newTestServerWithStore(store)
 	defer server.Close()
 	request := func(path string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, path, nil)

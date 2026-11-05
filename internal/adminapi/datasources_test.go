@@ -18,7 +18,7 @@ func TestDataSourceAPIEncryptsAndRedactsDSN(t *testing.T) {
 	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
 	if err != nil { t.Fatal(err) }
 	t.Cleanup(func() { _ = store.Close() })
-	server := NewServerWithStore(store)
+	server := newTestServerWithStore(store)
 	t.Cleanup(func() { _ = server.Close() })
 
 	body := []byte(`{"name":"test-db","driver":"sqlite","dsn":":memory:"}`)
@@ -44,7 +44,7 @@ func TestDataSourceAPIRejectsUnknownFields(t *testing.T) {
 	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
 	if err != nil { t.Fatal(err) }
 	t.Cleanup(func() { _ = store.Close() })
-	server := NewServerWithStore(store)
+	server := newTestServerWithStore(store)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/datasources", strings.NewReader(`{"name":"x","driver":"sqlite","dsn":":memory:","unexpected":true}`))
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
@@ -60,7 +60,7 @@ func TestDataSourceConnectionTestEndpoint(t *testing.T) {
 	})
 	if err != nil { t.Fatal(err) }
 
-	server := NewServerWithStore(store)
+	server := newTestServerWithStore(store)
 	t.Cleanup(func() { _ = server.Close() })
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/datasources/"+created.ID+"/test", nil)
 	rec := httptest.NewRecorder()
@@ -80,7 +80,7 @@ func TestDataSourceMutationInvalidatesCachedPool(t *testing.T) {
 	})
 	if err != nil { t.Fatal(err) }
 
-	server := NewServerWithStore(store)
+	server := newTestServerWithStore(store)
 	t.Cleanup(func() { _ = server.Close() })
 	request := func(method, path, body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -125,7 +125,7 @@ func TestDataSourceAPIRejectsMutationDuringActiveMigration(t *testing.T) {
 
 	// Construct the server before creating the task. Server startup marks
 	// pre-existing queued/running tasks as interrupted after an unclean shutdown.
-	server := NewServerWithStore(store)
+	server := newTestServerWithStore(store)
 	t.Cleanup(func() { _ = server.Close() })
 
 	if _, err := store.CreateMigrationTask(context.Background(), adminstore.MigrationTask{

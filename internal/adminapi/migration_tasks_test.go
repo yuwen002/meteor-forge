@@ -31,7 +31,7 @@ func TestMigrationTaskUpAndConfirmedDown(t *testing.T) {
 		Name: "task target", Driver: "sqlite", DSN: target,
 	})
 	if err != nil { t.Fatal(err) }
-	server := NewServerWithMigrationDir(store, dir)
+	server := newTestServerWithMigrationDir(store, dir)
 	t.Cleanup(func() { _ = server.Close() })
 
 	up := httptest.NewRequest(http.MethodPost, "/api/v1/datasources/"+source.ID+"/migrations/tasks", strings.NewReader(`{"action":"up"}`))
