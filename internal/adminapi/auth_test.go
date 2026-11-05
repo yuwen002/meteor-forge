@@ -69,3 +69,12 @@ func TestRoleAuthorizationPolicy(t *testing.T) {
  }
  for _,tc:=range cases{if got:=authorizeAdminRole(tc.role,tc.method,tc.path);got!=tc.want{t.Errorf("authorizeAdminRole(%q,%q,%q)=%v, want %v",tc.role,tc.method,tc.path,got,tc.want)}}
 }
+
+func TestLoginRateLimiterIsBoundedAndAppliesCooldown(t *testing.T) {
+ limiter:=newLoginLimiter()
+ now:=time.Now()
+ for i:=0;i<5;i++{if !limiter.allow("127.0.0.1|admin",now){t.Fatalf("attempt %d unexpectedly blocked",i+1)}}
+ if limiter.allow("127.0.0.1|admin",now){t.Fatal("sixth attempt should be blocked")}
+ if limiter.allow("127.0.0.1|admin",now.Add(10*time.Second)){t.Fatal("cooldown should remain active")}
+ if !limiter.allow("127.0.0.1|admin",now.Add(61*time.Second)){t.Fatal("attempt should be allowed after the rate window")}
+}

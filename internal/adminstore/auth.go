@@ -27,17 +27,26 @@ const passwordIterations = 310000
 type Admin struct { ID, Username, Role string; CreatedAt time.Time }
 type AdminSession struct { Admin Admin; CreatedAt, ExpiresAt time.Time }
 
-func hashPassword(password string, salt []byte) []byte {
+func pbkdf2SHA256(password string, salt []byte, iterations int) []byte {
+ if iterations < 1 { return nil }
  var counter [4]byte
  counter[3] = 1
  mac := hmac.New(sha256.New, []byte(password))
- _, _ = mac.Write(salt); _, _ = mac.Write(counter[:])
- u := mac.Sum(nil); result := append([]byte(nil), u...)
- for i:=1; i<passwordIterations; i++ {
-  mac = hmac.New(sha256.New, []byte(password)); _, _ = mac.Write(u); u = mac.Sum(nil)
+ _, _ = mac.Write(salt)
+ _, _ = mac.Write(counter[:])
+ u := mac.Sum(nil)
+ result := append([]byte(nil), u...)
+ for i := 1; i < iterations; i++ {
+  mac = hmac.New(sha256.New, []byte(password))
+  _, _ = mac.Write(u)
+  u = mac.Sum(nil)
   for j := range result { result[j] ^= u[j] }
  }
  return result
+}
+
+func hashPassword(password string, salt []byte) []byte {
+ return pbkdf2SHA256(password, salt, passwordIterations)
 }
 
 func encodePassword(password string) (string,error) {
