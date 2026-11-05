@@ -362,14 +362,14 @@ onMounted(load)
     <div>
       <div class="eyebrow">SHARDING CONTROL PLANE</div>
       <h1>分库分表</h1>
-      <p>登记逻辑表的分片策略，并调用核心 sharding 规则预览单点或范围路由。当前预览不会访问或修改目标数据库。</p>
+      <p>登记逻辑表分片策略，预览路由并盘点物理表；可在检查 DDL 预览后提交受审计的结构克隆任务。</p>
     </div>
     <el-button type="primary" :disabled="!dataSources.length" @click="openCreate">新增分片规则</el-button>
   </div>
 
   <el-alert
-    title="当前阶段仅管理规则与路由预览"
-    description="规则保存在独立管理元数据库。创建、更新或删除规则不会自动建表、迁移数据或删除物理表；物理表盘点和 DDL 操作将在后续阶段实现。"
+    title="DDL 仅开放结构克隆，不复制数据"
+    description="克隆任务需先检查驱动对应的 DDL 预览并二次确认；任务有状态和审计记录。SQLite 仅复制列定义，不复制约束与索引。当前不提供覆盖已有表、数据复制或 DROP。"
     type="info"
     :closable="false"
     show-icon
