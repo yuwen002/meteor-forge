@@ -57,5 +57,5 @@ export async function updateAdminUserRole(id: string, role: AdminUser['role']): 
 }
 
 export async function deleteAdminUser(id: string): Promise<void> {
-  await api.delete(`/auth/users/${encodeURIComponent(id)}`)
+  await api.delete(`/auth/users/${encodeURIComponent(id)}`, { data: {} })
 }

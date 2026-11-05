@@ -78,3 +78,15 @@ func TestLoginRateLimiterIsBoundedAndAppliesCooldown(t *testing.T) {
  if limiter.allow("127.0.0.1|admin",now.Add(10*time.Second)){t.Fatal("cooldown should remain active")}
  if !limiter.allow("127.0.0.1|admin",now.Add(61*time.Second)){t.Fatal("attempt should be allowed after the rate window")}
 }
+
+func TestSameOriginChecksSchemeAndHost(t *testing.T) {
+ httpRequest:=httptest.NewRequest(http.MethodPost,"http://localhost/api/v1/auth/logout",nil)
+ httpRequest.Header.Set("Origin","https://localhost")
+ if sameOrigin(httpRequest){t.Fatal("HTTPS Origin must not match an HTTP request")}
+ httpsRequest:=httptest.NewRequest(http.MethodPost,"https://localhost/api/v1/auth/logout",nil)
+ httpsRequest.Header.Set("Origin","https://localhost")
+ if !sameOrigin(httpsRequest){t.Fatal("same HTTPS origin should be accepted")}
+ crossHost:=httptest.NewRequest(http.MethodPost,"http://localhost/api/v1/auth/logout",nil)
+ crossHost.Header.Set("Origin","http://attacker.example")
+ if sameOrigin(crossHost){t.Fatal("cross-host Origin must be rejected")}
+}

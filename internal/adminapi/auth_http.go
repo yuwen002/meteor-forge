@@ -122,6 +122,8 @@ func(s *Server) withAuthentication(next http.Handler)http.Handler{
 func sameOrigin(r *http.Request)bool{
  origin:=r.Header.Get("Origin");if origin==""{return false}
  parsed,err:=url.Parse(origin);if err!=nil||parsed.User!=nil||parsed.Path!=""||parsed.RawQuery!=""||parsed.Fragment!=""{return false}
- if parsed.Scheme!="http"&&parsed.Scheme!="https"{return false}
+ expectedScheme:="http"
+ if r.TLS!=nil { expectedScheme="https" }
+ if parsed.Scheme!=expectedScheme { return false }
  return strings.EqualFold(parsed.Host,r.Host)
 }
