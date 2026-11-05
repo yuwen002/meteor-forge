@@ -68,6 +68,13 @@ func TestRoleAuthorizationPolicy(t *testing.T) {
   {"shard_operator",http.MethodPost,"/api/v1/shard-rules/r1/clone-tasks",true},
   {"shard_operator",http.MethodPost,"/api/v1/datasources/d1/migrations/tasks",false},
   {"viewer",http.MethodPost,"/api/v1/auth/users",false},
+  {"viewer",http.MethodGet,"/api/v1/auth/security-events",false},
+  {"viewer",http.MethodPost,"/api/v1/auth/logout",true},
+  {"migration_operator",http.MethodPost,"/api/v1/tenant-migration-batches",true},
+  {"migration_operator",http.MethodPost,"/api/v1/migration-tasks/task-1/cancel",true},
+  {"migration_operator",http.MethodPost,"/api/v1/tenants/tenant-1/migrations/tasks",true},
+  {"shard_operator",http.MethodPost,"/api/v1/shard-rules/r1/tables/exists",true},
+  {"shard_operator",http.MethodPost,"/api/v1/shard-ddl-tasks/task-1/cancel",true},
   {"administrator",http.MethodDelete,"/api/v1/datasources/d1",true},
  }
  for _,tc:=range cases{if got:=authorizeAdminRole(tc.role,tc.method,tc.path);got!=tc.want{t.Errorf("authorizeAdminRole(%q,%q,%q)=%v, want %v",tc.role,tc.method,tc.path,got,tc.want)}}
