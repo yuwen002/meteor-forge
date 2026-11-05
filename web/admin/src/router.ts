@@ -6,8 +6,11 @@ import TenantsView from './views/TenantsView.vue'
 import ShardingView from './views/ShardingView.vue'
 import TaskCenterView from './views/TaskCenterView.vue'
 import AuditView from './views/AuditView.vue'
+import LoginView from './views/LoginView.vue'
+import { getAdminSession } from './api'
 
 const routes = [
+  { path: '/login', name: 'login', component: LoginView, meta: { title: '管理员登录', public: true } },
   { path: '/', name: 'dashboard', component: DashboardView, meta: { title: '总览', section: '工作台' } },
   { path: '/datasources', name: 'datasources', component: DataSourcesView, meta: { title: '数据源管理', section: '资源管理' } },
   { path: '/migrations', name: 'migrations', component: MigrationsView, meta: { title: '迁移管理', section: '数据库变更', description: '查看迁移版本、执行状态、Dry Run、升级和回滚。' } },
@@ -20,4 +23,14 @@ const routes = [
 export default createRouter({
   history: createWebHistory(),
   routes,
+})
+
+router.beforeEach(async (to) => {
+  if (to.meta.public) return true
+  try {
+    await getAdminSession()
+    return true
+  } catch {
+    return { name: 'login', query: { redirect: to.fullPath } }
+  }
 })

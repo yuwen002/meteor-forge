@@ -9,7 +9,7 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: process.env.METEOR_ADMIN_API ?? 'http://127.0.0.1:8081',
-        changeOrigin: true,
+        changeOrigin: false,
       },
     },
   },
