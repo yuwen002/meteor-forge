@@ -2,7 +2,7 @@
 
 Base URL：`/api/v1`
 
-当前接口为本地开发预览接口。管理服务默认绑定 `127.0.0.1:8081`，尚未提供用户认证和角色授权，不得暴露到公网。
+管理 API 默认绑定 `127.0.0.1:8081`，需要先完成管理员初始化并通过 HttpOnly 会话 Cookie 登录。后端强制执行 RBAC 和同源校验；服务当前只接受 loopback 监听地址，不得暴露到公网。
 
 ## 数据模型
 
@@ -106,7 +106,7 @@ DSN 仅在创建和更新请求中提交。服务端使用 AES-256-GCM 加密后
 - 多个租户可以引用同一数据源；此时它们共享该数据源的连接池。需要数据库级隔离时，应为每个租户登记独立数据源。
 - `Server.ResolveTenantDB(ctx)` 已将 `pkg/tenant.HeaderResolver`、租户注册表和数据源连接池打通：从可信上下文读取 tenant ID，校验租户存在且状态为 `active`，再返回该租户映射数据源的共享 `*sql.DB` 连接池。同一数据源下的多个租户复用同一连接池。
 - `ResolveTenantDB` 是供后续业务 Handler/服务集成的内部入口，不是 HTTP API。调用方必须由已认证、已授权的上游中间件将 tenant ID 写入 Context；禁止直接信任未经验证的 Header、Query 或 Body。缺少上下文、租户不存在或已停用时拒绝解析。
-- 当前尚未接入真实认证/授权中间件或业务数据访问路由；管理 API 仍未实现用户认证/授权，不得暴露公网。
+- 租户解析器本身不替代 API 认证/授权。管理 API 已接入会话认证和后端 RBAC；业务数据访问路由仍需由调用方在可信上下文中传入租户 ID。
 
 ## 管理元数据库配置
 
@@ -152,7 +152,7 @@ DSN 仅在创建和更新请求中提交。服务端使用 AES-256-GCM 加密后
 
 生成待执行 Up 计划，不会执行迁移脚本 SQL。响应包含版本、说明、动作、是否存在 Down 脚本及脚本 SHA-256 校验和。若已应用脚本与本地脚本校验和不一致，返回 HTTP 409 并阻止生成计划。
 
-**重要：** 当前迁移驱动的历史表初始化通过 `EnsureTable` 完成，因此首次读取状态或生成预览时，可能在目标数据库创建 `schema_migrations` 历史表；这两个接口不会执行用户迁移脚本中的 DDL/DML。执行 Up/Down/ToVersion 的异步任务 API 尚未开放。
+**重要：** 当前迁移驱动的历史表初始化通过 `EnsureTable` 完成，因此首次读取状态或生成预览时，可能在目标数据库创建 `schema_migrations` 历史表；这两个接口不会执行用户迁移脚本中的 DDL/DML。异步任务接口需要登录；Up 任务仅允许 migration_operator 或 administrator，Down/DownSteps/ToVersion 仅允许 administrator。
 
 
 ## Migration 后台执行任务
@@ -187,7 +187,7 @@ Up 请求：
 {"action":"to_version","target_version":"000010","confirm":true}
 ```
 
-Down、DownSteps 和 ToVersion 必须显式提交 `confirm: true`。前端还会显示二次确认对话框。提交前请备份目标数据库并检查迁移脚本。任务取消不等于数据库回滚：取消时已经完成的迁移步骤不会自动撤销。
+Down、DownSteps 和 ToVersion 必须显式提交 `confirm: true`，并且仅 administrator 角色可提交。前端还会显示二次确认对话框。提交前请备份目标数据库并检查迁移脚本。任务取消不等于数据库回滚：取消时已经完成的迁移步骤不会自动撤销。
 
 ### GET /migration-tasks
 
@@ -228,7 +228,7 @@ Down、DownSteps 和 ToVersion 必须显式提交 `confirm: true`。前端还会
 
 ### GET /migration-tasks/{id}/audit
 
-按时间顺序返回任务审计事件，包含数据源 ID、租户 ID（租户级任务）、动作、状态变更前后值、操作者标识、请求来源、事件摘要和时间戳。当前尚未实现用户认证，操作者固定标记为 `local-api`，不能视为真实登录用户；请求来源取管理 API 连接的远端地址。事件与任务创建/状态变更在同一 SQLite 事务内写入，避免任务状态更新成功但审计事件丢失。 服务启动时将遗留的 queued/running 任务标记为 interrupted 时，也会写入对应的恢复审计事件。
+按时间顺序返回任务审计事件，包含数据源 ID、租户 ID（租户级任务）、动作、状态变更前后值、操作者标识、请求来源、事件摘要和时间戳。当前任务审计事件记录已认证的管理员用户名；请求来源取管理 API 连接的远端地址，不信任转发头。认证登录、登出、密码变更和管理员账号生命周期另记入管理员专属安全审计流。事件与任务创建/状态变更在同一 SQLite 事务内写入，避免任务状态更新成功但审计事件丢失。 服务启动时将遗留的 queued/running 任务标记为 interrupted 时，也会写入对应的恢复审计事件。
 
 ### POST /migration-tasks/{id}/cancel
 

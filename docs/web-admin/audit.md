@@ -38,4 +38,4 @@
 
 ## 身份边界
 
-当前服务尚未接入认证与授权。操作者 `local-api` 是固定服务标记，不是真实用户身份；请求来源记录管理 API 看到的远端地址，可能是本机代理地址。管理 API 必须继续绑定 loopback，不得暴露公网。
+任务审计记录已保存真实登录用户名；请求来源取管理 API 看到的直接远端地址，不信任转发头。认证事件与管理员账号生命周期事件单独保存在 `admin_security_audit_events`，仅 administrator 可通过 `GET /api/v1/auth/security-events` 查询。管理 API 必须继续绑定 loopback，不得暴露公网。

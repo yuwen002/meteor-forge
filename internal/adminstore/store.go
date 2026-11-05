@@ -441,6 +441,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		VALUES (11, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("record metadata schema version: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
+		VALUES (12, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("record security audit schema version: %w", err)
+	}
 	return tx.Commit()
 }
 

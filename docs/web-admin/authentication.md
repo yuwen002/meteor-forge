@@ -1,6 +1,6 @@
 # Web Admin Authentication and Authorization
 
-> Status: administrator bootstrap, password verification, persistent sessions, login/logout/password-change endpoints, backend RBAC, administrator account management, frontend login/role guards, and authenticated task-audit attribution are implemented in code. Dedicated authentication/account-lifecycle audit events and CI/security-test execution remain outstanding. Startup enforces loopback-only binding; do not expose the service through a reverse proxy or public interface.
+> Status: administrator bootstrap, password verification, persistent sessions, login/logout/password-change endpoints, backend RBAC, administrator account management, frontend login/role guards, and authenticated task-audit attribution are implemented in code. Persistent security audit events now cover login success/failure, logout, password changes, and administrator account creation/role changes/deletion; a read-only administrator-only endpoint exposes these events. CI/security-test execution remains outstanding. Startup enforces loopback-only binding; do not expose the service through a reverse proxy or public interface.
 
 ## Goals
 
@@ -55,9 +55,14 @@ Logout revokes the server-side session and clears the cookie. Password change an
 | GET | `/api/v1/auth/session` | Required | Return current administrator identity and session expiry |
 | POST | `/api/v1/auth/logout` | Required + CSRF checks | Revoke current session and clear cookie |
 | POST | `/api/v1/auth/password` | Required + CSRF checks | Change password and revoke other sessions |
+| GET | `/api/v1/auth/users` | Administrator | List administrator accounts (password verifiers are never returned) |
+| POST | `/api/v1/auth/users` | Administrator + CSRF checks | Create an administrator account |
+| PUT | `/api/v1/auth/users/{id}/role` | Administrator + CSRF checks | Change role and revoke existing sessions |
+| DELETE | `/api/v1/auth/users/{id}` | Administrator + CSRF checks | Delete an account; last administrator cannot be removed |
+| GET | `/api/v1/auth/security-events` | Administrator | List authentication and administrator lifecycle audit events |
 | GET | `/api/v1/health` | Public | Minimal liveness response |
 
-All other `/api/v1/**` endpoints must require a valid session. Unknown API routes must not bypass authentication.
+All other `/api/v1/**` endpoints require a valid session. Unknown API routes are behind the same authentication middleware.
 
 Login accepts username/password in a JSON body and returns generic authentication errors so callers cannot enumerate usernames. Responses must never contain password hashes, session tokens, or bootstrap secrets.
 
@@ -74,7 +79,7 @@ Login accepts username/password in a JSON body and returns generic authenticatio
 
 A bounded in-memory limiter is implemented, keyed by the direct peer address and normalized username, allowing five attempts per minute followed by a 30-second cooldown. It caps tracked keys at 4,096 and prunes expired entries. It does not trust forwarded headers. A future multi-instance deployment must move throttling to shared storage.
 
-## RBAC model (second milestone)
+## Implemented RBAC model
 
 Start with explicit least-privilege roles:
 
@@ -83,7 +88,9 @@ Start with explicit least-privilege roles:
 - `shard_operator`: viewer permissions plus shard clone preview and shard DDL execution.
 - `administrator`: user/session management and role assignment, plus all operational permissions.
 
-Authorization must be enforced in backend handlers/services, not only by hiding frontend buttons. Destructive rollback and physical DDL retain explicit confirmation requirements. Audit records should store the authenticated actor and a stable permission/action identifier.
+The backend currently restricts migration execution and tenant migration batches to `migration_operator` (with rollback/version-changing actions separately restricted to `administrator`); shard clone operations to `shard_operator`; and administrator account/security-audit endpoints to `administrator`. All authenticated roles can read operational status and audit views.
+
+Authorization must be enforced in backend handlers/services, not only by hiding frontend buttons. Destructive rollback and physical DDL retain explicit confirmation requirements. Operational task audit records store the authenticated actor. Security audit records store actor/subject, action, outcome, direct peer address, a short static detail, and timestamp. Passwords, cookies, session tokens, DSNs, and raw database errors must never be written.
 
 ## Required security tests
 
@@ -98,8 +105,13 @@ Authorization must be enforced in backend handlers/services, not only by hiding 
 - Login throttling is bounded and does not trust spoofed forwarding headers.
 - Password change revokes previous sessions.
 - RBAC tests prove backend enforcement for every read/write/execute class.
-- Logs and audit messages never contain passwords, cookie values, or raw session tokens.
+- Security audit event persistence, administrator-only access, and absence of passwords, cookie values, and raw session tokens.
 
 ## Merge gate
 
 Do not mark the management-platform PR ready for review until authentication and authorization are enforced server-side, the security tests above pass, the local-only bind default is verified, and the latest Go, integration, lint, and frontend CI jobs pass on the exact PR head SHA.
+
+
+## Security audit events
+
+`GET /api/v1/auth/security-events` is administrator-only and supports `limit` (1–200, default 50) and `offset` (0–10,000,000, default 0). Events include login success/failure, logout, password changes, and administrator account creation, role changes, and deletion. Each event contains actor, subject, action, outcome, direct peer address, a short static detail, and UTC timestamp. The event stream never stores submitted passwords, session cookies, token values, DSNs, or raw driver errors. Failed credential checks are recorded without distinguishing unknown usernames from incorrect passwords.
