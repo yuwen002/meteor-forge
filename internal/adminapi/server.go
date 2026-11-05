@@ -45,8 +45,11 @@ func NewServerWithStore(store *adminstore.Store) *Server {
 func NewServerWithMigrationDir(store *adminstore.Store, migrationDir string) *Server {
 	if migrationDir == "" { migrationDir = "migrations" }
 	mux := http.NewServeMux()
-	server := &Server{store: store, tenants: store, shards: store, pools: NewPoolManager(), migrationDir: migrationDir}
+	server := &Server{pools: NewPoolManager(), migrationDir: migrationDir}
 	if store != nil {
+		server.store = store
+		server.tenants = store
+		server.shards = store
 		server.tenantConnections = newTenantConnectionResolver(tenant.HeaderResolver{}, store, store, server.pools)
 		server.shardDDL = newShardDDLTaskManager(store, func(ctx context.Context, task adminstore.ShardDDLTask) error {
 			rule, err := store.GetShardRule(ctx, task.ShardRuleID)
