@@ -33,6 +33,9 @@ func TestShardRuleCRUDAndValidation(t *testing.T) {
 	}); !errors.Is(err, ErrShardRuleConflict) {
 		t.Fatalf("duplicate rule error = %v, want ErrShardRuleConflict", err)
 	}
+	if _, err := store.Update(ctx, source.ID, DataSourceInput{Name: "changed", Driver: "sqlite", DSN: "file:other.db"}); !errors.Is(err, ErrDataSourceHasShardRules) {
+		t.Fatalf("changing a referenced data source DSN error = %v, want ErrDataSourceHasShardRules", err)
+	}
 	if _, err := store.Update(ctx, source.ID, DataSourceInput{Name: "changed", Driver: "postgres", DSN: "postgres://localhost/db"}); !errors.Is(err, ErrDataSourceHasShardRules) {
 		t.Fatalf("changing a referenced data source driver error = %v, want ErrDataSourceHasShardRules", err)
 	}
