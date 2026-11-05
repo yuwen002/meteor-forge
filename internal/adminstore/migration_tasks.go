@@ -14,6 +14,7 @@ var ErrInvalidTaskTransition = errors.New("invalid migration task state transiti
 
 type MigrationTask struct {
 	ID           string     `json:"id"`
+	TenantID     string     `json:"tenant_id,omitempty"`
 	DataSourceID string     `json:"data_source_id"`
 	Action       string     `json:"action"`
 	TargetVersion string    `json:"target_version,omitempty"`
@@ -68,6 +69,19 @@ func (s *Store) CreateMigrationTask(ctx context.Context, task MigrationTask) (Mi
 		task.ID, task.DataSourceID, task.Action, task.TargetVersion, task.Steps,
 		task.Status, "", now.Format(time.RFC3339Nano))
 	if err != nil { return MigrationTask{}, fmt.Errorf("create migration task: %w", err) }
+	if task.TenantID != "" {
+		var mappedDataSourceID, tenantStatus string
+		if err := tx.QueryRowContext(ctx, `SELECT data_source_id, status FROM admin_tenants WHERE id = ?`, task.TenantID).Scan(&mappedDataSourceID, &tenantStatus); err != nil {
+			if errors.Is(err, sql.ErrNoRows) { return MigrationTask{}, ErrTenantNotFound }
+			return MigrationTask{}, fmt.Errorf("verify migration tenant: %w", err)
+		}
+		if mappedDataSourceID != task.DataSourceID || tenantStatus != "active" {
+			return MigrationTask{}, ErrTenantMigrationUnavailable
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO admin_migration_task_tenants(task_id, tenant_id) VALUES (?, ?)`, task.ID, task.TenantID); err != nil {
+			return MigrationTask{}, fmt.Errorf("associate migration task with tenant: %w", err)
+		}
+	}
 	if err := insertMigrationAuditEvent(ctx, tx, task, "", "queued", "task submitted", now); err != nil {
 		return MigrationTask{}, err
 	}
@@ -84,13 +98,15 @@ func (s *Store) GetMigrationTask(ctx context.Context, id string) (MigrationTask,
 	err := s.db.QueryRowContext(ctx, `SELECT t.id, t.data_source_id, t.action, t.target_version,
 		t.steps, t.status, t.message, t.created_at, t.started_at, t.finished_at,
 		COALESCE(p.current_version, ''), COALESCE(p.completed_steps, 0),
-		COALESCE(p.total_steps, 0), COALESCE(p.current_action, ''), p.updated_at
+		COALESCE(p.total_steps, 0), COALESCE(p.current_action, ''), p.updated_at,
+		COALESCE(tt.tenant_id, '')
 		FROM admin_migration_tasks t
 		LEFT JOIN admin_migration_task_progress p ON p.task_id = t.id
+		LEFT JOIN admin_migration_task_tenants tt ON tt.task_id = t.id
 		WHERE t.id = ?`, id).Scan(
 		&task.ID, &task.DataSourceID, &task.Action, &task.TargetVersion,
 		&task.Steps, &task.Status, &task.Message, &created, &started, &finished,
-		&task.CurrentVersion, &task.CompletedSteps, &task.TotalSteps, &task.CurrentAction, &progressUpdated)
+		&task.CurrentVersion, &task.CompletedSteps, &task.TotalSteps, &task.CurrentAction, &progressUpdated, &task.TenantID)
 	if errors.Is(err, sql.ErrNoRows) { return MigrationTask{}, ErrNotFound }
 	if err != nil { return MigrationTask{}, fmt.Errorf("get migration task: %w", err) }
 	task.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
