@@ -17,7 +17,7 @@ import (
 func main() {
 	addr := os.Getenv("METEOR_ADMIN_ADDR")
 	if addr == "" {
-		// Keep the first-run service local-only until authentication is configured.
+		// Keep the service local-only even after administrator authentication is enabled.
 		addr = "127.0.0.1:8081"
 	}
 

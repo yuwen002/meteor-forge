@@ -379,10 +379,14 @@ cd examples/demo && go run main.go
 
 ```bash
 export METEOR_ADMIN_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+# 首次启动时设置初始管理员密码（至少 12 个字符）；后续启动会忽略此变量，不会重置密码。
+read -s -p "Initial admin password: " METEOR_ADMIN_BOOTSTRAP_PASSWORD
+echo
+export METEOR_ADMIN_BOOTSTRAP_PASSWORD
 go run ./cmd/server
 ```
 
-管理元数据库默认保存在操作系统用户配置目录的 `meteor-forge/admin.db`，可通过 `METEOR_ADMIN_DB` 修改。请妥善备份密钥；丢失密钥将无法解密已登记数据源的 DSN。密钥不得提交到 Git。
+初次启动必须提供 `METEOR_ADMIN_BOOTSTRAP_PASSWORD`，服务会创建默认用户名 `admin`（可通过 `METEOR_ADMIN_USERNAME` 修改）的管理员。管理员创建后，后续启动不再读取该密码变量，也不会覆盖已有密码。登录入口由 Web 管理后台提供。\n\n管理元数据库默认保存在操作系统用户配置目录的 `meteor-forge/admin.db`，可通过 `METEOR_ADMIN_DB` 修改。请妥善备份密钥；丢失密钥将无法解密已登记数据源的 DSN。密钥不得提交到 Git。
 
 健康检查：
 
