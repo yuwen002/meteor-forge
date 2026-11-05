@@ -1,5 +1,5 @@
 package adminstore
-import("context";"errors";"testing";"time")
+import("context";"encoding/hex";"errors";"testing";"time")
 const authTestKey="abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 func TestBootstrapAdminIsOneTimeAndPasswordIsHashed(t *testing.T){
  s,e:=Open(context.Background(),":memory:",authTestKey);if e!=nil{t.Fatal(e)};defer s.Close()
