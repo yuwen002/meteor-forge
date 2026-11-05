@@ -37,6 +37,7 @@ type MigrationTaskManager struct {
 	wg        sync.WaitGroup
 	closeOnce sync.Once
 	done      chan struct{}
+	runSlots  chan struct{}
 }
 
 func NewMigrationTaskManager(store migrationTaskStore, run func(context.Context, adminstore.MigrationTask) error) *MigrationTaskManager {
@@ -45,6 +46,7 @@ func NewMigrationTaskManager(store migrationTaskStore, run func(context.Context,
 		cancels: make(map[string]context.CancelFunc),
 		locks:   make(map[string]*dataSourceTaskLock),
 		done:    make(chan struct{}),
+		runSlots: make(chan struct{}, 4),
 	}
 }
 
@@ -98,6 +100,17 @@ func (m *MigrationTaskManager) execute(ctx context.Context, cancel context.Cance
 	}()
 	lock.mu.Lock()
 	defer lock.mu.Unlock()
+
+	// Bound concurrent migrations across different data sources. Tasks sharing
+	// one data source still serialize on its dedicated lock above.
+	select {
+	case m.runSlots <- struct{}{}:
+		defer func() { <-m.runSlots }()
+	case <-ctx.Done():
+		finished := time.Now().UTC()
+		_ = m.store.UpdateMigrationTask(context.Background(), task.ID, "canceled", "task canceled while waiting for an execution slot", nil, &finished)
+		return
+	}
 
 	now := time.Now().UTC()
 	if err := ctx.Err(); err != nil {
