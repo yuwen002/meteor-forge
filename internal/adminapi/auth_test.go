@@ -183,3 +183,30 @@ func TestViewerRoleIsEnforcedByHTTPMiddleware(t *testing.T) {
  usersRec:=httptest.NewRecorder();server.Handler().ServeHTTP(usersRec,users)
  if usersRec.Code!=http.StatusForbidden{t.Fatalf("viewer administrator-list status=%d body=%s",usersRec.Code,usersRec.Body.String())}
 }
+
+func TestSecurityAuditRecordsLoginAndAdministratorActions(t *testing.T) {
+ store,err:=adminstore.Open(context.Background(),":memory:",apiTestKey);if err!=nil{t.Fatal(err)};defer store.Close()
+ if _,err:=store.BootstrapAdmin(context.Background(),"security-root","a-strong-password-123");err!=nil{t.Fatal(err)}
+ server:=NewServerWithStore(store);defer server.Close()
+ login:=httptest.NewRequest(http.MethodPost,"http://localhost/api/v1/auth/login",bytes.NewBufferString(`{"username":"security-root","password":"a-strong-password-123"}`))
+ login.Header.Set("Content-Type","application/json")
+ loginRec:=httptest.NewRecorder();server.Handler().ServeHTTP(loginRec,login)
+ if loginRec.Code!=http.StatusOK{t.Fatalf("login status=%d body=%s",loginRec.Code,loginRec.Body.String())}
+ cookie:=loginRec.Result().Cookies()[0]
+ create:=httptest.NewRequest(http.MethodPost,"http://localhost/api/v1/auth/users",bytes.NewBufferString(`{"username":"audited-viewer","password":"a-viewer-password-123","role":"viewer"}`))
+ create.Header.Set("Content-Type","application/json");create.Header.Set("Origin","http://localhost");create.AddCookie(cookie)
+ createRec:=httptest.NewRecorder();server.Handler().ServeHTTP(createRec,create)
+ if createRec.Code!=http.StatusCreated{t.Fatalf("create status=%d body=%s",createRec.Code,createRec.Body.String())}
+ list:=httptest.NewRequest(http.MethodGet,"http://localhost/api/v1/auth/security-events",nil);list.AddCookie(cookie)
+ listRec:=httptest.NewRecorder();server.Handler().ServeHTTP(listRec,list)
+ if listRec.Code!=http.StatusOK{t.Fatalf("audit list status=%d body=%s",listRec.Code,listRec.Body.String())}
+ if !strings.Contains(listRec.Body.String(),`"action":"login"`)||!strings.Contains(listRec.Body.String(),`"action":"admin_create"`){t.Fatalf("missing security events: %s",listRec.Body.String())}
+ if strings.Contains(listRec.Body.String(),"a-strong-password-123")||strings.Contains(listRec.Body.String(),"a-viewer-password-123"){t.Fatal("security audit leaked password material")}
+ if _,err:=store.CreateAdminUser(context.Background(),"audited-viewer-2","a-viewer-password-456","viewer");err!=nil{t.Fatal(err)}
+ viewerLogin:=httptest.NewRequest(http.MethodPost,"http://localhost/api/v1/auth/login",bytes.NewBufferString(`{"username":"audited-viewer-2","password":"a-viewer-password-456"}`));viewerLogin.Header.Set("Content-Type","application/json")
+ viewerRec:=httptest.NewRecorder();server.Handler().ServeHTTP(viewerRec,viewerLogin)
+ if viewerRec.Code!=http.StatusOK{t.Fatalf("viewer login status=%d",viewerRec.Code)}
+ denied:=httptest.NewRequest(http.MethodGet,"http://localhost/api/v1/auth/security-events",nil);denied.AddCookie(viewerRec.Result().Cookies()[0])
+ deniedRec:=httptest.NewRecorder();server.Handler().ServeHTTP(deniedRec,denied)
+ if deniedRec.Code!=http.StatusForbidden{t.Fatalf("viewer security audit status=%d body=%s",deniedRec.Code,deniedRec.Body.String())}
+}

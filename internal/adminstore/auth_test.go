@@ -53,3 +53,19 @@ func TestRoleChangeRevokesExistingSessions(t *testing.T) {
  if _,err:=s.GetAdminSession(context.Background(),token);!errors.Is(err,ErrSessionNotFound){t.Fatalf("role change left session valid: %v",err)}
  if err:=s.DeleteAdminUser(context.Background(),root.ID);!errors.Is(err,ErrLastAdministrator){t.Fatalf("last administrator deletion error=%v",err)}
 }
+
+func TestSecurityAuditPersistsSafeAuthenticationEvents(t *testing.T) {
+ store,err:=Open(context.Background(),":memory:",authTestKey);if err!=nil{t.Fatal(err)};defer store.Close()
+ now:=time.Now().UTC()
+ for _,event:=range []SecurityAuditEvent{
+  {Actor:"root",Subject:"root",Action:"login",Outcome:"succeeded",RequestSource:"127.0.0.1",Details:"administrator authenticated",OccurredAt:now},
+  {Subject:"unknown",Action:"login",Outcome:"failed",RequestSource:"127.0.0.1",Details:"invalid credentials",OccurredAt:now.Add(time.Second)},
+ } {
+  if err:=store.RecordSecurityAuditEvent(context.Background(),event);err!=nil{t.Fatal(err)}
+ }
+ items,total,err:=store.ListSecurityAuditEvents(context.Background(),50,0);if err!=nil{t.Fatal(err)}
+ if total!=2||len(items)!=2{t.Fatalf("total=%d items=%d, want 2",total,len(items))}
+ if items[0].Subject!="unknown"||items[0].Outcome!="failed"{t.Fatalf("unexpected newest event: %+v",items[0])}
+ if err:=store.RecordSecurityAuditEvent(context.Background(),SecurityAuditEvent{Action:"invalid",Outcome:"succeeded"});err==nil{t.Fatal("expected unsupported action to be rejected")}
+ if err:=store.RecordSecurityAuditEvent(context.Background(),SecurityAuditEvent{Action:"login",Outcome:"failed",Details:"password=secret"});err!=nil{t.Fatal(err)}
+}
