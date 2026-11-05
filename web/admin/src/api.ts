@@ -34,3 +34,28 @@ export async function getAdminSession(): Promise<AdminSession> {
 export async function logoutAdmin(): Promise<void> {
   await api.post('/auth/logout', {})
 }
+
+export interface AdminUser {
+  id: string
+  username: string
+  role: 'administrator' | 'viewer' | 'migration_operator' | 'shard_operator'
+  created_at: string
+}
+
+export async function listAdminUsers(): Promise<AdminUser[]> {
+  const { data } = await api.get<{ items: AdminUser[] }>('/auth/users')
+  return data.items
+}
+
+export async function createAdminUser(input: { username: string; password: string; role: AdminUser['role'] }): Promise<AdminUser> {
+  const { data } = await api.post<AdminUser>('/auth/users', input)
+  return data
+}
+
+export async function updateAdminUserRole(id: string, role: AdminUser['role']): Promise<void> {
+  await api.put(`/auth/users/${encodeURIComponent(id)}/role`, { role })
+}
+
+export async function deleteAdminUser(id: string): Promise<void> {
+  await api.delete(`/auth/users/${encodeURIComponent(id)}`)
+}

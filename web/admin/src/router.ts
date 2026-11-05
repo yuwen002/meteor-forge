@@ -8,9 +8,11 @@ import TaskCenterView from './views/TaskCenterView.vue'
 import AuditView from './views/AuditView.vue'
 import LoginView from './views/LoginView.vue'
 import { getAdminSession } from './api'
+import UsersView from './views/UsersView.vue'
 
 const routes = [
   { path: '/login', name: 'login', component: LoginView, meta: { title: '管理员登录', public: true } },
+  { path: '/users', name: 'users', component: UsersView, meta: { title: '管理员管理', section: '系统管理', roles: ['administrator'] } },
   { path: '/', name: 'dashboard', component: DashboardView, meta: { title: '总览', section: '工作台' } },
   { path: '/datasources', name: 'datasources', component: DataSourcesView, meta: { title: '数据源管理', section: '资源管理' } },
   { path: '/migrations', name: 'migrations', component: MigrationsView, meta: { title: '迁移管理', section: '数据库变更', description: '查看迁移版本、执行状态、Dry Run、升级和回滚。' } },
@@ -28,7 +30,9 @@ export default createRouter({
 router.beforeEach(async (to) => {
   if (to.meta.public) return true
   try {
-    await getAdminSession()
+    const session = await getAdminSession()
+    const roles = to.meta.roles
+    if (Array.isArray(roles) && !roles.includes(session.role)) return { name: 'dashboard' }
     return true
   } catch {
     return { name: 'login', query: { redirect: to.fullPath } }
