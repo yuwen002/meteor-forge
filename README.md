@@ -369,7 +369,7 @@ cd examples/demo && go run main.go
 
 本项目基于 [MIT License](LICENSE) 开源，你可以自由地将其用于商业或个人项目。
 
-## 🖥️ Web 管理后台（开发中）
+## 🖥️ Web 管理后台
 
 项目正在建设独立的 Web 管理后台，用于统一管理数据源、Schema Migration、多租户和分库分表。管理后台通过 Go HTTP API 调用现有核心包，不会把 Web 依赖引入 `pkg/`。
 
@@ -402,13 +402,13 @@ npm install
 npm run dev
 ```
 
-打开 Vite 提示的本地地址（默认 `http://127.0.0.1:5173`）。前端通过开发代理访问 Go API。
+可通过 `METEOR_ADMIN_ADDR` 修改 API 监听地址，但当前只接受 `localhost`、`127.0.0.1` 或 `::1`；非 loopback 地址会导致启动失败。打开 Vite 提示的本地地址（默认 `http://127.0.0.1:5173`）。前端通过保留 Host 的开发代理访问 Go API。
 
 详细架构、阶段计划和安全边界见 [Web 管理后台架构文档](docs/web-admin/architecture.md)，[管理 API 文档](docs/web-admin/api.md)，前端开发说明见 [web/admin/README.md](web/admin/README.md)。
 
-> 当前仅完成工程骨架、服务健康检查和管理后台导航。数据源、迁移、租户及分片页面将在后续阶段接入真实 API；尚未接入的统计不会使用虚构数据。请勿将当前开发版 API 暴露到公网。
+> 当前已接入数据源管理、Migration、租户、分片规则、执行任务中心和操作审计，并加入管理员登录、会话校验及 RBAC。管理 API 启动时会强制要求首次管理员初始化，并拒绝非 loopback 监听地址。认证/授权安全审计和 CI 验收仍在进行中；请继续保持本机访问，不要通过公网或未受信任的反向代理暴露服务。
 
 
 ### 数据源管理进度
 
-管理元数据库现使用 SQLite 独立存储，数据源 DSN 使用 AES-256-GCM 加密后持久化。管理 API 已提供数据源新增、列表、详情、更新、删除和连接测试接口；列表与详情响应不会返回 DSN。连接测试支持 MySQL、PostgreSQL、SQLite 和 ClickHouse，并设置 5 秒超时。当前 API 尚未提供用户认证和角色授权，必须保持本机监听。
+管理元数据库现使用 SQLite 独立存储，数据源 DSN 使用 AES-256-GCM 加密后持久化。管理 API 已提供数据源新增、列表、详情、更新、删除和连接测试接口；列表与详情响应不会返回 DSN。连接测试支持 MySQL、PostgreSQL、SQLite 和 ClickHouse，并设置 5 秒超时。管理 API 已由服务端会话中间件保护，支持管理员、只读查看者、迁移操作员和分片操作员角色；具体权限由后端强制执行。首次启动必须设置初始管理员密码，已有管理员不会被环境变量重置。

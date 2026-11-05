@@ -1,6 +1,6 @@
 # Web Admin Authentication and Authorization
 
-> Status: administrator bootstrap, password verification, session persistence, login/logout/password-change endpoints, session middleware, and frontend login guard are implemented. RBAC is not yet enforced. Keep the service bound to loopback; do not expose it through a reverse proxy or public interface until RBAC and security validation are complete.
+> Status: administrator bootstrap, password verification, persistent sessions, login/logout/password-change endpoints, backend RBAC, administrator account management, frontend login/role guards, and authenticated task-audit attribution are implemented in code. Dedicated authentication/account-lifecycle audit events and CI/security-test execution remain outstanding. Startup enforces loopback-only binding; do not expose the service through a reverse proxy or public interface.
 
 ## Goals
 
@@ -16,7 +16,7 @@
 
 The management API can create and execute database migrations, roll back schema changes, alter tenant mappings, and create physical shard tables. A local-only listener is a defense-in-depth boundary, not an authentication mechanism.
 
-The production command must continue to default to `127.0.0.1:8081`. A non-loopback bind must require an explicit deployment decision and must not be treated as safe merely because a password is configured. Deployments that need remote access should place the service behind TLS and a trusted access layer.
+The command defaults to `127.0.0.1:8081` and currently rejects any `METEOR_ADMIN_ADDR` that is not `localhost`, `127.0.0.1`, or `::1`. A future remote-deployment milestone must separately define TLS termination, trusted proxy handling, secure cookies, access policy, and security audit before relaxing this restriction.
 
 Do not trust `X-Forwarded-For` or similar headers for authentication, audit identity, or login throttling unless a future explicit trusted-proxy configuration is implemented.
 
