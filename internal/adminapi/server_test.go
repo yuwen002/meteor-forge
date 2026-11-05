@@ -66,4 +66,8 @@ func TestManagementAPIRequiresAuthenticationBeforeBootstrap(t *testing.T) {
  rec:=httptest.NewRecorder()
  server.Handler().ServeHTTP(rec,request)
  if rec.Code!=http.StatusUnauthorized{t.Fatalf("unbootstrapped management API status=%d body=%s",rec.Code,rec.Body.String())}
+ unknown:=httptest.NewRequest(http.MethodGet,"http://localhost/api/v1/not-registered",nil)
+ unknownRec:=httptest.NewRecorder()
+ server.Handler().ServeHTTP(unknownRec,unknown)
+ if unknownRec.Code!=http.StatusUnauthorized{t.Fatalf("unknown API route bypassed authentication: status=%d body=%s",unknownRec.Code,unknownRec.Body.String())}
 }
