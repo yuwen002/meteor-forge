@@ -211,6 +211,14 @@ func physicalTableNames(ctx context.Context, db *sql.DB, driver string) ([]strin
 	return names, nil
 }
 
+func isDecimalDigits(value string) bool {
+	if value == "" { return false }
+	for _, digit := range value {
+		if digit < '0' || digit > '9' { return false }
+	}
+	return true
+}
+
 func isShardTableName(rule adminstore.ShardRule, table string) bool {
 	if table == rule.BaseTable { return true }
 	prefix := rule.BaseTable + "_"
@@ -218,34 +226,28 @@ func isShardTableName(rule adminstore.ShardRule, table string) bool {
 	suffix := strings.TrimPrefix(table, prefix)
 	switch rule.ShardType {
 	case "year":
-		if len(suffix) != 4 { return false }
-		_, err := strconv.Atoi(suffix)
-		return err == nil
+		return len(suffix) == 4 && isDecimalDigits(suffix)
 	case "quarter":
-		if len(suffix) != 6 || suffix[4] != 'Q' || suffix[5] < '1' || suffix[5] > '4' { return false }
-		_, err := strconv.Atoi(suffix[:4])
-		return err == nil
+		return len(suffix) == 6 && isDecimalDigits(suffix[:4]) && suffix[4] == 'Q' && suffix[5] >= '1' && suffix[5] <= '4'
 	case "month":
 		if len(suffix) != 6 { return false }
-		year, yearErr := strconv.Atoi(suffix[:4])
 		month, monthErr := strconv.Atoi(suffix[4:])
-		return yearErr == nil && monthErr == nil && month >= 1 && month <= 12
+		return isDecimalDigits(suffix[:4]) && isDecimalDigits(suffix[4:]) && monthErr == nil && month >= 1 && month <= 12
 	case "week":
 		if len(suffix) != 7 || suffix[4] != 'W' { return false }
-		year, yearErr := strconv.Atoi(suffix[:4])
 		week, weekErr := strconv.Atoi(suffix[5:])
-		return yearErr == nil && weekErr == nil && week >= 1 && week <= 53
+		return isDecimalDigits(suffix[:4]) && isDecimalDigits(suffix[5:]) && weekErr == nil && week >= 1 && week <= 53
 	case "ten_day":
 		if len(suffix) != 8 || suffix[6] != '_' { return false }
 		yearMonth, yearMonthErr := strconv.Atoi(suffix[:6])
 		segment, segmentErr := strconv.Atoi(suffix[7:])
-		return yearMonthErr == nil && yearMonth >= 100001 && segmentErr == nil && segment >= 1 && segment <= 3
+		return isDecimalDigits(suffix[:6]) && yearMonthErr == nil && yearMonth >= 100001 && segmentErr == nil && isDecimalDigits(suffix[7:]) && segment >= 1 && segment <= 3
 	case "id_hash":
 		value, err := strconv.Atoi(suffix)
-		return err == nil && value >= 0 && value < rule.HashShards
+		return isDecimalDigits(suffix) && err == nil && value >= 0 && value < rule.HashShards
 	case "id_range":
 		value, err := strconv.ParseInt(suffix, 10, 64)
-		return err == nil && value >= 0
+		return isDecimalDigits(suffix) && err == nil && value >= 0
 	default:
 		return false
 	}
