@@ -320,3 +320,39 @@ func TestMigrationTaskManagerCapsConcurrentWorkersAcrossDataSources(t *testing.T
 	if err := manager.Close(); err != nil { t.Fatal(err) }
 	if got := maxActive.Load(); got > 4 { t.Fatalf("maximum concurrent workers = %d, want <= 4", got) }
 }
+
+
+func TestMigrationTaskPersistsSafeFailureDiagnostic(t *testing.T) {
+	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+
+	manager := NewMigrationTaskManager(store, func(context.Context, adminstore.MigrationTask) error {
+		return errors.New("pq: password authentication failed for user admin password=secret host=10.20.30.40")
+	})
+	task, err := manager.Submit(context.Background(), adminstore.MigrationTask{
+		DataSourceID: "diagnostic-source", Action: "up",
+	})
+	if err != nil { t.Fatal(err) }
+	waitForTaskStatus(t, store, task.ID, "failed")
+	if err := manager.Close(); err != nil { t.Fatal(err) }
+
+	got, err := store.GetMigrationTask(context.Background(), task.ID)
+	if err != nil { t.Fatal(err) }
+	if !strings.Contains(got.Message, "[DATABASE_AUTH_FAILED]") {
+		t.Fatalf("failure message lacks diagnostic code: %q", got.Message)
+	}
+	for _, secret := range []string{"secret", "10.20.30.40", "password authentication failed"} {
+		if strings.Contains(got.Message, secret) {
+			t.Fatalf("persisted task message leaked %q: %q", secret, got.Message)
+		}
+	}
+	audit, err := store.ListMigrationAuditEvents(context.Background(), task.ID)
+	if err != nil { t.Fatal(err) }
+	if len(audit) == 0 { t.Fatal("expected persisted migration task audit events") }
+	for _, event := range audit {
+		if strings.Contains(event.Message, "secret") || strings.Contains(event.Message, "10.20.30.40") {
+			t.Fatalf("migration audit leaked raw error: %+v", event)
+		}
+	}
+}

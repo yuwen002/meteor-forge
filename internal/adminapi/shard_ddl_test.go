@@ -1,7 +1,7 @@
 package adminapi
 
 import (
-	"context"
+	"context"\n\t"errors"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -116,5 +116,54 @@ func TestShardCloneSQLByDriver(t *testing.T) {
 	}
 	if _, _, err := shardCloneSQL("unknown", "orders_202611", "orders"); err == nil {
 		t.Fatal("unsupported driver should be rejected")
+	}
+}
+
+
+func TestShardDDLTaskPersistsSafeFailureDiagnostic(t *testing.T) {
+	ctx := context.Background()
+	store, err := adminstore.Open(ctx, ":memory:", apiTestKey)
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+
+	source, err := store.Create(ctx, adminstore.DataSourceInput{Name: "diagnostic target", Driver: "sqlite", DSN: ":memory:"})
+	if err != nil { t.Fatal(err) }
+	rule, err := store.CreateShardRule(ctx, adminstore.ShardRuleInput{DataSourceID: source.ID, BaseTable: "orders", ShardType: "month"})
+	if err != nil { t.Fatal(err) }
+
+	manager := newShardDDLTaskManager(store, func(context.Context, adminstore.ShardDDLTask) error {
+		return errors.New("pq: permission denied for relation orders; dsn=secret; host=10.20.30.40")
+	})
+	task, err := manager.Submit(ctx, adminstore.ShardDDLTask{
+		ShardRuleID: rule.ID, DataSourceID: source.ID, Action: "clone",
+		SourceTable: "orders", TargetTable: "orders_202611",
+	})
+	if err != nil { t.Fatal(err) }
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		got, getErr := store.GetShardDDLTask(ctx, task.ID)
+		if getErr == nil && got.Status == "failed" { task = got; break }
+		time.Sleep(10 * time.Millisecond)
+	}
+	if task.Status != "failed" { t.Fatalf("shard DDL task did not fail: %+v", task) }
+	if err := manager.Close(); err != nil { t.Fatal(err) }
+
+	got, err := store.GetShardDDLTask(ctx, task.ID)
+	if err != nil { t.Fatal(err) }
+	if !strings.Contains(got.Message, "[DATABASE_PERMISSION_DENIED]") {
+		t.Fatalf("failure message lacks diagnostic code: %q", got.Message)
+	}
+	for _, secret := range []string{"secret", "10.20.30.40", "permission denied for relation"} {
+		if strings.Contains(got.Message, secret) {
+			t.Fatalf("persisted task message leaked %q: %q", secret, got.Message)
+		}
+	}
+	audit, err := store.ListShardDDLAuditEvents(ctx, task.ID)
+	if err != nil { t.Fatal(err) }
+	if len(audit) < 2 || audit[len(audit)-1].ToStatus != "failed" {
+		t.Fatalf("expected failed audit transition, got %+v", audit)
+	}
+	if strings.Contains(audit[len(audit)-1].Message, "secret") || strings.Contains(audit[len(audit)-1].Message, "10.20.30.40") {
+		t.Fatalf("shard DDL audit leaked raw error: %+v", audit[len(audit)-1])
 	}
 }
