@@ -27,6 +27,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("initialize management metadata store: %v", err)
 	}
+	bootstrapCtx, bootstrapCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := initializeAdministrator(bootstrapCtx, store); err != nil {
+		bootstrapCancel()
+		_ = store.Close()
+		log.Fatalf("initialize management administrator: %v", err)
+	}
+	bootstrapCancel()
 	defer func() {
 		if err := store.Close(); err != nil {
 			log.Printf("close management metadata store: %v", err)

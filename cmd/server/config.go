@@ -22,3 +22,20 @@ func openMetadataStore(ctx context.Context) (*adminstore.Store, error) {
 	}
 	return adminstore.Open(ctx, path, key)
 }
+
+// initializeAdministrator creates the first account exactly once. Existing credentials
+// are never reset from environment variables on restart.
+func initializeAdministrator(ctx context.Context, store *adminstore.Store) error {
+	exists, err := store.HasAdmin(ctx)
+	if err != nil { return err }
+	if exists { return nil }
+	username := os.Getenv("METEOR_ADMIN_USERNAME")
+	if username == "" { username = "admin" }
+	password := os.Getenv("METEOR_ADMIN_BOOTSTRAP_PASSWORD")
+	if password == "" {
+		return errors.New("METEOR_ADMIN_BOOTSTRAP_PASSWORD is required for first startup; set a password of at least 12 characters")
+	}
+	_, err = store.BootstrapAdmin(ctx, username, password)
+	if errors.Is(err, adminstore.ErrAdminAlreadyExists) { return nil }
+	return err
+}

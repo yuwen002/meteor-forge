@@ -22,6 +22,8 @@ const apiPrefix = "/api/v1"
 type Server struct {
 	handler http.Handler
 	store   dataSourceStore
+	authStore *adminstore.Store
+	loginLimiter *loginLimiter
 	tenants tenantStore
 	tenantConnections *tenantConnectionResolver
 	shards shardRuleStore
@@ -45,7 +47,7 @@ func NewServerWithStore(store *adminstore.Store) *Server {
 func NewServerWithMigrationDir(store *adminstore.Store, migrationDir string) *Server {
 	if migrationDir == "" { migrationDir = "migrations" }
 	mux := http.NewServeMux()
-	server := &Server{pools: NewPoolManager(), migrationDir: migrationDir}
+	server := &Server{pools: NewPoolManager(), migrationDir: migrationDir, authStore: store, loginLimiter: newLoginLimiter()}
 	if store != nil {
 		server.store = store
 		server.tenants = store
@@ -96,7 +98,16 @@ func NewServerWithMigrationDir(store *adminstore.Store, migrationDir string) *Se
 	server.registerShardingRoutes(mux)
 	server.registerShardDDLRoutes(mux)
 	server.registerAuditRoutes(mux)
-	server.handler = withCommonHeaders(mux)
+	server.registerAuthRoutes(mux)
+	var protected bool
+	if store != nil {
+		checkCtx, checkCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		protected, _ = store.HasAdmin(checkCtx)
+		checkCancel()
+	}
+	var handler http.Handler = mux
+	if protected { handler = server.withAuthentication(handler) }
+	server.handler = withCommonHeaders(handler)
 	return server
 }
 

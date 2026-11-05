@@ -82,7 +82,7 @@ func(s *Store) CreateAdminSession(ctx context.Context,adminID string,lifetime ti
 func(s *Store) GetAdminSession(ctx context.Context,token string)(AdminSession,error){
  if token=="" || len(token)>128{return AdminSession{},ErrSessionNotFound};sum:=sha256.Sum256([]byte(token))
  var v AdminSession;var adminCreated,sessionCreated,expires string
- err:=s.db.QueryRowContext(ctx,`SELECT u.id,u.username,u.role,u.created_at,s.created_at,s.expires_at FROM admin_sessions s JOIN admin_users u ON u.id=s.admin_id WHERE s.token_hash=? AND s.revoked_at IS NULL AND s.expires_at>?`,sum[:],time.Now().UTC().Format(time.RFC3339Nano)).Scan(&v.Admin.ID,&v.Admin.Username,&v.Admin.Role,&adminCreated,&sessionCreated,&expires)
+ err:=s.db.QueryRowContext(ctx,`SELECT u.id,u.username,u.role,u.created_at,s.created_at,s.expires_at FROM admin_sessions s JOIN admin_users u ON u.id=s.admin_id WHERE s.token_hash=? AND s.revoked_at IS NULL AND julianday(s.expires_at)>julianday(?)`,sum[:],time.Now().UTC().Format(time.RFC3339Nano)).Scan(&v.Admin.ID,&v.Admin.Username,&v.Admin.Role,&adminCreated,&sessionCreated,&expires)
  if errors.Is(err,sql.ErrNoRows){return AdminSession{},ErrSessionNotFound};if err!=nil{return AdminSession{},fmt.Errorf("load administrator session: %w",err)}
  v.Admin.CreatedAt,err=time.Parse(time.RFC3339Nano,adminCreated);if err!=nil{return AdminSession{},fmt.Errorf("parse administrator creation time: %w",err)}
  v.CreatedAt,err=time.Parse(time.RFC3339Nano,sessionCreated);if err!=nil{return AdminSession{},fmt.Errorf("parse session creation time: %w",err)}
