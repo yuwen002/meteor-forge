@@ -19,6 +19,12 @@ func TestShardDDLTaskPersistenceAndAudit(t *testing.T) {
 	task, err := store.CreateShardDDLTask(ctx, ShardDDLTask{ShardRuleID:rule.ID, DataSourceID:source.ID, Action:"clone", SourceTable:"orders", TargetTable:"orders_202611", RequestSource:"127.0.0.1"})
 	if err != nil { t.Fatal(err) }
 	if task.Status != "queued" || task.ID == "" { t.Fatalf("unexpected task: %+v", task) }
+	if _, err := store.UpdateShardRule(ctx, rule.ID, ShardRuleInput{DataSourceID: source.ID, BaseTable: "orders", ShardType: "year"}); !errors.Is(err, ErrShardRuleHasActiveDDLTasks) {
+		t.Fatalf("updating rule with active DDL task error=%v, want ErrShardRuleHasActiveDDLTasks", err)
+	}
+	if err := store.DeleteShardRule(ctx, rule.ID); !errors.Is(err, ErrShardRuleHasActiveDDLTasks) {
+		t.Fatalf("deleting rule with active DDL task error=%v, want ErrShardRuleHasActiveDDLTasks", err)
+	}
 	finishedBeforeRun := time.Now().UTC()
 	if err := store.UpdateShardDDLTask(ctx, task.ID, "succeeded", "completed", nil, &finishedBeforeRun); !errors.Is(err, ErrInvalidTaskTransition) {
 		t.Fatalf("queued to succeeded error=%v, want ErrInvalidTaskTransition", err)
@@ -27,6 +33,9 @@ func TestShardDDLTaskPersistenceAndAudit(t *testing.T) {
 	if err := store.UpdateShardDDLTask(ctx, task.ID, "running", "running", &started, nil); err != nil { t.Fatal(err) }
 	finished := time.Now().UTC()
 	if err := store.UpdateShardDDLTask(ctx, task.ID, "succeeded", "completed", nil, &finished); err != nil { t.Fatal(err) }
+	if err := store.DeleteShardRule(ctx, rule.ID); err != nil {
+		t.Fatalf("delete shard rule after DDL task is terminal: %v", err)
+	}
 	if err := store.UpdateShardDDLTask(ctx, task.ID, "failed", "rewrite terminal state", nil, &finished); !errors.Is(err, ErrInvalidTaskTransition) {
 		t.Fatalf("terminal state rewrite error=%v, want ErrInvalidTaskTransition", err)
 	}
