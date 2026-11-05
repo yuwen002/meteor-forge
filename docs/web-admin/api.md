@@ -245,3 +245,100 @@ Down、DownSteps 和 ToVersion 必须显式提交 `confirm: true`。前端还会
 ```
 
 任务进入 `succeeded`、`failed`、`canceled` 或 `interrupted` 等终态后，数据源才可更新或删除。该约束由管理元数据库触发器在写入时原子检查，不依赖 HTTP Handler 的先查后改，因此并发请求也不能绕过保护。删除数据源仍只删除管理端登记，不会删除目标数据库。
+
+
+## 分库分表规则与路由预览
+
+分片规则保存在独立管理元数据库中，只保存逻辑表、目标数据源和分片算法参数，不保存 DSN。规则 CRUD 不会自动创建、修改或删除目标数据库中的物理表。
+
+支持的策略：
+
+| shard_type | 说明 | 参数 |
+|---|---|---|
+| year | 按年 | 无 |
+| quarter | 按季度 | 无 |
+| month | 按月 | 无 |
+| week | 按 ISO 周 | 无 |
+| ten_day | 按旬（1–10、11–20、21–月底） | 无 |
+| id_hash | CRC32 哈希取模 | hash_shards，默认 16，范围 1–4096 |
+| id_range | ID 整数范围分片 | range_size，默认 1,000,000，必须为正数 |
+
+逻辑表名只允许字母、数字和下划线，必须以字母或下划线开头，长度不超过 40 个字符，以便为生成的分片后缀预留空间。相同数据源下的基础表名唯一。
+
+### GET /shard-rules
+
+返回 `{"items": ShardRule[]}`。每条规则包含 ID、数据源安全元信息、基础表名、策略类型和参数，不包含 DSN。
+
+### POST /shard-rules
+
+创建分片规则，成功返回 HTTP 201。请求示例：
+
+```json
+{
+  "data_source_id": "registered-data-source-id",
+  "base_table": "orders",
+  "shard_type": "month"
+}
+```
+
+哈希分片示例：
+
+```json
+{
+  "data_source_id": "registered-data-source-id",
+  "base_table": "users",
+  "shard_type": "id_hash",
+  "hash_shards": 32
+}
+```
+
+ID 范围分片示例：
+
+```json
+{
+  "data_source_id": "registered-data-source-id",
+  "base_table": "events",
+  "shard_type": "id_range",
+  "range_size": 500000
+}
+```
+
+### GET /shard-rules/{id}
+
+读取规则详情。
+
+### PUT /shard-rules/{id}
+
+使用与创建接口相同的请求结构替换规则配置。目标数据源必须已登记。
+
+### DELETE /shard-rules/{id}
+
+只删除管理元数据库中的规则配置，返回 HTTP 204。不会删除任何目标物理表或数据。
+
+### POST /shard-rules/{id}/preview
+
+调用 `pkg/sharding.ShardRule` 计算目标表名，不连接目标数据库、不检查物理表是否存在，也不执行 SQL。
+
+时间策略支持单点或闭区间预览：
+
+```json
+{"timestamp":"2026-11-05T09:00:00+08:00"}
+```
+
+```json
+{"start_time":"2026-10-01T00:00:00Z","end_time":"2026-11-30T23:59:59Z"}
+```
+
+ID 策略支持单点或闭区间预览：
+
+```json
+{"id":123456}
+```
+
+```json
+{"start_id":100000,"end_id":299999}
+```
+
+响应包含 `shard_rule_id`、`data_source_id`、`base_table`、`shard_type`、`tables` 和 `table_count`。时间范围最多 10 年，ID 范围策略最多预览 1000 张表，所有预览最多返回 4096 张表；超限返回 HTTP 400。ID 必须为非负整数，时间必须为 RFC3339。
+
+**当前边界：** 物理表列表/存在性检查、DDL 建表/克隆/删除、DDL 异步任务和分片操作审计尚未开放。管理 API 当前没有认证/授权，仍只允许 loopback 监听，不得暴露公网。
