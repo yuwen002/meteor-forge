@@ -36,6 +36,13 @@ const rules = ref<ShardRule[]>([])
 const dataSources = ref<DataSource[]>([])
 const dialogVisible = ref(false)
 const previewVisible = ref(false)
+const tableDialogVisible = ref(false)
+const tableLoading = ref(false)
+const tableChecking = ref(false)
+const physicalTables = ref<string[]>([])
+const tableRule = ref<ShardRule | null>(null)
+const tableCheckName = ref("")
+const tableCheckResult = ref<boolean | null>(null)
 const editingID = ref('')
 const previewRule = ref<ShardRule | null>(null)
 const previewResult = ref<RoutePreview | null>(null)
@@ -125,6 +132,45 @@ async function save() {
     ElMessage.error(response?.data?.message ?? '保存分片规则失败')
   } finally {
     saving.value = false
+  }
+}
+
+async function openTables(rule: ShardRule) {
+  tableRule.value = rule
+  physicalTables.value = []
+  tableCheckName.value = ''
+  tableCheckResult.value = null
+  tableDialogVisible.value = true
+  tableLoading.value = true
+  try {
+    const { data } = await api.get<{ items: string[] }>(`/shard-rules/${rule.id}/tables`)
+    physicalTables.value = data.items
+  } catch (error: unknown) {
+    const response = (error as { response?: { data?: { message?: string } } })?.response
+    ElMessage.error(response?.data?.message ?? '读取物理分片表失败')
+  } finally {
+    tableLoading.value = false
+  }
+}
+
+async function checkTableExists() {
+  if (!tableRule.value || !tableCheckName.value.trim()) {
+    ElMessage.warning('请填写要检查的物理表名')
+    return
+  }
+  tableChecking.value = true
+  tableCheckResult.value = null
+  try {
+    const { data } = await api.post<{ exists: boolean }>(
+      `/shard-rules/${tableRule.value.id}/tables/exists`,
+      { table_name: tableCheckName.value.trim() },
+    )
+    tableCheckResult.value = data.exists
+  } catch (error: unknown) {
+    const response = (error as { response?: { data?: { message?: string } } })?.response
+    ElMessage.error(response?.data?.message ?? '检查物理表失败')
+  } finally {
+    tableChecking.value = false
   }
 }
 
@@ -253,6 +299,7 @@ onMounted(load)
       <el-table-column label="操作" fixed="right" width="210">
         <template #default="{ row }">
           <el-button link type="primary" @click="openPreview(row)">路由预览</el-button>
+          <el-button link type="success" @click="openTables(row)">物理表</el-button>
           <el-button link @click="openEdit(row)">编辑</el-button>
           <el-button link type="danger" @click="remove(row)">删除</el-button>
         </template>
@@ -287,6 +334,26 @@ onMounted(load)
       <el-button @click="dialogVisible = false">取消</el-button>
       <el-button type="primary" :loading="saving" @click="save">保存规则</el-button>
     </template>
+  </el-dialog>
+
+  <el-dialog v-model="tableDialogVisible" title="物理分片表" width="620px" destroy-on-close>
+    <template v-if="tableRule">
+      <div class="table-inventory-heading">
+        <div><strong>{{ tableRule.base_table }}</strong><span>{{ tableRule.data_source_name }} · {{ shardTypeLabel(tableRule.shard_type) }}</span></div>
+        <el-tag effect="plain">{{ physicalTables.length }} 张匹配表</el-tag>
+      </div>
+      <el-table :data="physicalTables.map((name) => ({ name }))" v-loading="tableLoading" max-height="280" empty-text="目标数据库中没有符合当前策略命名规则的物理表">
+        <el-table-column prop="name" label="物理表名" />
+      </el-table>
+      <el-divider />
+      <div class="table-check-row">
+        <el-input v-model="tableCheckName" placeholder="输入物理表名，例如 orders_202611" />
+        <el-button type="primary" :loading="tableChecking" @click="checkTableExists">检查存在性</el-button>
+      </div>
+      <el-alert v-if="tableCheckResult !== null" :title="tableCheckResult ? '物理表存在' : '物理表不存在'" :type="tableCheckResult ? 'success' : 'warning'" :closable="false" show-icon class="table-check-result" />
+      <p class="table-inventory-note">此页面仅查询数据库元数据，不会创建、修改或删除物理表。</p>
+    </template>
+    <template #footer><el-button @click="tableDialogVisible = false">关闭</el-button></template>
   </el-dialog>
 
   <el-dialog v-model="previewVisible" title="分片路由预览" width="650px" destroy-on-close>
@@ -336,6 +403,12 @@ onMounted(load)
 .source-cell span { color: #98a2b3; font-size: 11px; }
 .field-hint { margin-top: 5px; color: #98a2b3; font-size: 11px; line-height: 1.5; }
 .preview-meta { margin-bottom: 18px; }
+.table-inventory-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.table-inventory-heading > div { display: flex; flex-direction: column; gap: 5px; }
+.table-inventory-heading strong { color: #344054; font-size: 13px; }
+.table-inventory-heading span, .table-inventory-note { color: #98a2b3; font-size: 11px; }
+.table-check-row { display: flex; gap: 10px; }
+.table-check-result { margin-top: 12px; }
 .preview-form { margin-top: 18px; }
 .range-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .preview-result { margin-top: 22px; padding-top: 16px; border-top: 1px solid #edf0f5; }
