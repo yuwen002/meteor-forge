@@ -41,6 +41,10 @@ func TestShardRuleManagementAndRoutePreviewAPI(t *testing.T) {
 	if strings.Contains(strings.ToLower(created.Body.String()), "dsn") {
 		t.Fatalf("shard rule response must not contain DSN: %s", created.Body.String())
 	}
+	protectedSource := request(http.MethodDelete, "/api/v1/datasources/"+source.ID, "")
+	if protectedSource.Code != http.StatusConflict || !strings.Contains(protectedSource.Body.String(), "data_source_has_shard_rules") {
+		t.Fatalf("delete referenced data source status=%d body=%s", protectedSource.Code, protectedSource.Body.String())
+	}
 
 	preview := request(http.MethodPost, "/api/v1/shard-rules/"+rule.ID+"/preview",
 		`{"timestamp":"2026-11-05T09:00:00+08:00"}`)
