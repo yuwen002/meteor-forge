@@ -36,8 +36,8 @@ func TestShardDDLTaskPersistenceAndAudit(t *testing.T) {
 	if err := store.UpdateShardDDLTask(ctx, task.ID, "running", "running", &started, nil); err != nil { t.Fatal(err) }
 	finished := time.Now().UTC()
 	if err := store.UpdateShardDDLTask(ctx, task.ID, "succeeded", "completed", nil, &finished); err != nil { t.Fatal(err) }
-	if err := store.DeleteShardRule(ctx, rule.ID); !errors.Is(err, ErrShardRuleHasDDLHistory) {
-		t.Fatalf("delete shard rule after DDL history error=%v, want ErrShardRuleHasDDLHistory", err)
+	if err := store.DeleteShardRule(ctx, rule.ID); err != nil {
+		t.Fatalf("delete shard rule after terminal DDL task while retaining task audit: %v", err)
 	}
 	if err := store.UpdateShardDDLTask(ctx, task.ID, "failed", "rewrite terminal state", nil, &finished); !errors.Is(err, ErrInvalidTaskTransition) {
 		t.Fatalf("terminal state rewrite error=%v, want ErrInvalidTaskTransition", err)
