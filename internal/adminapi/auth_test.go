@@ -142,3 +142,23 @@ func TestAdministratorUserManagementEndpoints(t *testing.T) {
  if got:=request(http.MethodDelete,"/api/v1/auth/users/"+root.ID,`{}`);got.Code!=http.StatusConflict{t.Fatalf("self-delete status=%d body=%s",got.Code,got.Body.String())}
  if got:=request(http.MethodPut,"/api/v1/auth/users/"+root.ID+"/role",`{"role":"viewer"}`);got.Code!=http.StatusConflict{t.Fatalf("self-role-change status=%d body=%s",got.Code,got.Body.String())}
 }
+
+func TestMigrationAuditRecordsAuthenticatedActor(t *testing.T) {
+ store,err:=adminstore.Open(context.Background(),":memory:",apiTestKey);if err!=nil{t.Fatal(err)};defer store.Close()
+ if _,err:=store.BootstrapAdmin(context.Background(),"audit-operator","a-strong-password-123");err!=nil{t.Fatal(err)}
+ source,err:=store.Create(context.Background(),adminstore.DataSourceInput{Name:"audit actor source",Driver:"sqlite",DSN:":memory:"});if err!=nil{t.Fatal(err)}
+ server:=NewServerWithMigrationDir(store,t.TempDir());defer server.Close()
+ login:=httptest.NewRequest(http.MethodPost,"http://localhost/api/v1/auth/login",bytes.NewBufferString(`{"username":"audit-operator","password":"a-strong-password-123"}`))
+ login.Header.Set("Content-Type","application/json")
+ loginRec:=httptest.NewRecorder();server.Handler().ServeHTTP(loginRec,login)
+ if loginRec.Code!=http.StatusOK{t.Fatalf("login status=%d body=%s",loginRec.Code,loginRec.Body.String())}
+ req:=httptest.NewRequest(http.MethodPost,"http://localhost/api/v1/datasources/"+source.ID+"/migrations/tasks",bytes.NewBufferString(`{"action":"up"}`))
+ req.Header.Set("Content-Type","application/json");req.Header.Set("Origin","http://localhost");req.AddCookie(loginRec.Result().Cookies()[0])
+ rec:=httptest.NewRecorder();server.Handler().ServeHTTP(rec,req)
+ if rec.Code!=http.StatusAccepted{t.Fatalf("submit migration status=%d body=%s",rec.Code,rec.Body.String())}
+ var task adminstore.MigrationTask
+ if err:=json.Unmarshal(rec.Body.Bytes(),&task);err!=nil{t.Fatal(err)}
+ events,err:=store.ListMigrationAuditEvents(context.Background(),task.ID);if err!=nil{t.Fatal(err)}
+ if len(events)==0{t.Fatal("expected audit events")}
+ for _,event:=range events{if event.Actor!="audit-operator"{t.Errorf("audit actor=%q, want authenticated username",event.Actor)}}
+}

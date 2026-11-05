@@ -208,3 +208,9 @@ func (s *Server) deleteAdminUserHandler(w http.ResponseWriter, r *http.Request) 
  }
  w.WriteHeader(http.StatusNoContent)
 }
+
+func authenticatedActor(r *http.Request) string {
+ session,ok:=adminSessionFromRequest(r)
+ if ok && strings.TrimSpace(session.Admin.Username)!="" { return session.Admin.Username }
+ return "local-api"
+}
