@@ -214,6 +214,18 @@ func (s *Store) migrate(ctx context.Context) error {
 		ON admin_tenants(data_source_id)`); err != nil {
 		return fmt.Errorf("index tenant data source mapping: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admin_migration_task_tenants (
+		task_id TEXT PRIMARY KEY,
+		tenant_id TEXT NOT NULL,
+		FOREIGN KEY(task_id) REFERENCES admin_migration_tasks(id) ON DELETE CASCADE,
+		FOREIGN KEY(tenant_id) REFERENCES admin_tenants(id)
+	)`); err != nil {
+		return fmt.Errorf("create tenant migration task mapping: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_admin_migration_task_tenants_tenant
+		ON admin_migration_task_tenants(tenant_id)`); err != nil {
+		return fmt.Errorf("index tenant migration task mapping: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER IF NOT EXISTS prevent_datasource_update_with_tenants
 		BEFORE UPDATE OF driver, dsn_ciphertext ON admin_data_sources
 		WHEN EXISTS (SELECT 1 FROM admin_tenants WHERE data_source_id = OLD.id)
@@ -259,7 +271,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("protect tenant deletion during migration: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
-		VALUES (6, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		VALUES (7, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("record metadata schema version: %w", err)
 	}
 	return tx.Commit()
