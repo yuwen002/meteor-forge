@@ -250,13 +250,16 @@ func (s *Server) requireMigrationDirectory(w http.ResponseWriter) bool {
 }
 
 func (s *Server) migrationDriver(ctx context.Context, id string) (migration.Driver, error) {
-	var configuredDriver string
+	// Read the driver from metadata independently of the pool factory. The
+	// factory is skipped on a pool-cache hit, so assigning configuredDriver
+	// only inside it breaks subsequent migrations for the same data source.
+	source, err := s.store.Get(ctx, id)
+	if err != nil { return nil, err }
+	configuredDriver := source.Driver
+
 	db, err := s.pools.Get(ctx, id, func(ctx context.Context, id string) (string, string, error) {
 		driver, dsn, err := s.store.ConnectionConfig(ctx, id)
-		if err != nil {
-			return "", "", err
-		}
-		configuredDriver = driver
+		if err != nil { return "", "", err }
 		sqlDriver := map[string]string{
 			"mysql": "mysql", "postgres": "pgx", "sqlite": "sqlite", "clickhouse": "clickhouse",
 		}[driver]
@@ -265,9 +268,7 @@ func (s *Server) migrationDriver(ctx context.Context, id string) (migration.Driv
 		}
 		return sqlDriver, dsn, nil
 	})
-	if err != nil {
-		return nil, err
-	}
+	if err != nil { return nil, err }
 
 	switch configuredDriver {
 	case "mysql":
