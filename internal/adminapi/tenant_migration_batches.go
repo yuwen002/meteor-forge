@@ -1,6 +1,7 @@
 package adminapi
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"strings"
@@ -24,7 +25,11 @@ type tenantMigrationBatchResponse struct {
 	ID          string                         `json:"id"`
 	Total       int                            `json:"total"`
 	Queued      int                            `json:"queued"`
+	Running     int                            `json:"running"`
+	Succeeded   int                            `json:"succeeded"`
 	Failed      int                            `json:"failed"`
+	Canceled    int                            `json:"canceled"`
+	Interrupted int                            `json:"interrupted"`
 	Failures    []tenantMigrationBatchFailure   `json:"failures"`
 	Tasks       []adminstore.MigrationTask      `json:"tasks"`
 }
@@ -143,8 +148,12 @@ func (s *Server) getTenantMigrationBatch(w http.ResponseWriter, r *http.Request)
 	}
 	for _, item := range items {
 		switch item.Status {
-		case "queued", "running": response.Queued++
-		case "failed", "interrupted": response.Failed++
+		case "queued": response.Queued++
+		case "running": response.Running++
+		case "succeeded": response.Succeeded++
+		case "failed": response.Failed++
+		case "canceled": response.Canceled++
+		case "interrupted": response.Interrupted++
 		}
 	}
 	writeJSON(w, http.StatusOK, response)
