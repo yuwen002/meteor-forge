@@ -89,7 +89,7 @@
 - [x] 分片规则持久化 CRUD：按数据源和逻辑基础表唯一登记，校验表名与策略参数。
 - [x] 路由预览：复用 `pkg/sharding.ShardRule`，支持时间/ID 单点和范围计算，并限制预览规模。
 - [x] 物理表列表与存在性检查：按 MySQL、PostgreSQL、SQLite、ClickHouse 元数据查询适配，按策略校验表名后缀，5 秒超时，只读不执行 DDL。
-- [x] 分片表结构克隆：DDL 预览、源/目标存在性预检、显式 confirm、异步任务、超时/取消、重启后 interrupted 恢复和事务审计；MySQL/PostgreSQL/ClickHouse 复制结构不复制数据，SQLite CTAS 仅复制列定义。
+- [x] 分片表结构克隆：DDL 预览、源/目标存在性预检、显式 confirm、异步任务、超时/取消、重启后 interrupted 恢复和事务审计；同一数据源与迁移任务互斥；MySQL/PostgreSQL/ClickHouse 复制结构不复制数据，SQLite CTAS 仅复制列定义。
 - [x] 分片 DDL 任务列表、详情和审计查询 API/Web 交互；当前只开放结构克隆，不开放数据复制、覆盖已有表或自动 DROP。
 
 ### 阶段 6：任务、审计与权限
