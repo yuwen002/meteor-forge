@@ -176,11 +176,14 @@ func (s *Store) RecoverInterruptedShardDDLTasks(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil { return err }
 	defer tx.Rollback() //nolint:errcheck
-	rows, err := tx.QueryContext(ctx, "SELECT t.id, t.shard_rule_id, t.data_source_id, t.action, t.status, COALESCE((SELECT request_source FROM admin_shard_ddl_audit_events WHERE task_id = t.id ORDER BY id ASC LIMIT 1), '') FROM admin_shard_ddl_tasks t WHERE t.status IN ('queued','running')")
+	rows, err := tx.QueryContext(ctx, "SELECT t.id, t.shard_rule_id, t.data_source_id, t.action, t.status,
+		COALESCE((SELECT request_source FROM admin_shard_ddl_audit_events WHERE task_id = t.id ORDER BY id ASC LIMIT 1), ''),
+		COALESCE((SELECT actor FROM admin_shard_ddl_audit_events WHERE task_id = t.id ORDER BY id ASC LIMIT 1), 'local-api')
+		FROM admin_shard_ddl_tasks t WHERE t.status IN ('queued','running')")
 	if err != nil { return err }
-	type pending struct { id, ruleID, sourceID, action, status, requestSource string }
+	type pending struct { id, ruleID, sourceID, action, status, requestSource, actor string }
 	items := make([]pending, 0)
-	for rows.Next() { var item pending; if err := rows.Scan(&item.id, &item.ruleID, &item.sourceID, &item.action, &item.status, &item.requestSource); err != nil { rows.Close(); return err }; items = append(items, item) }
+	for rows.Next() { var item pending; if err := rows.Scan(&item.id, &item.ruleID, &item.sourceID, &item.action, &item.status, &item.requestSource, &item.actor); err != nil { rows.Close(); return err }; items = append(items, item) }
 	if err := rows.Err(); err != nil { rows.Close(); return err }
 	if err := rows.Close(); err != nil { return err }
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -188,8 +191,8 @@ func (s *Store) RecoverInterruptedShardDDLTasks(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx, "UPDATE admin_shard_ddl_tasks SET status = 'interrupted', message = 'service restarted; inspect target schema before retrying', finished_at = ? WHERE id = ? AND status = ?", now, item.id, item.status); err != nil { return err }
 		if _, err := tx.ExecContext(ctx, `INSERT INTO admin_shard_ddl_audit_events
 			(task_id, shard_rule_id, data_source_id, action, from_status, to_status, actor, request_source, message, occurred_at)
-			VALUES (?, ?, ?, ?, ?, 'interrupted', 'local-api', ?, 'service restarted; inspect target schema before retrying', ?)`,
-			item.id, item.ruleID, item.sourceID, item.action, item.status, item.requestSource, now); err != nil { return err }
+			VALUES (?, ?, ?, ?, ?, 'interrupted', ?, ?, 'service restarted; inspect target schema before retrying', ?)`,
+			item.id, item.ruleID, item.sourceID, item.action, item.status, item.actor, item.requestSource, now); err != nil { return err }
 	}
 	return tx.Commit()
 }

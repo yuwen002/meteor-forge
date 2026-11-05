@@ -289,13 +289,15 @@ func (s *Store) RecoverInterruptedTasks(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil { return fmt.Errorf("begin migration task recovery: %w", err) }
 	defer tx.Rollback() //nolint:errcheck
-	rows, err := tx.QueryContext(ctx, `SELECT id, data_source_id, action, status FROM admin_migration_tasks
-		WHERE status IN ('queued', 'running')`)
+	rows, err := tx.QueryContext(ctx, `SELECT id, data_source_id, action, status,
+		COALESCE((SELECT request_source FROM admin_migration_audit_events WHERE task_id = admin_migration_tasks.id ORDER BY id ASC LIMIT 1), ''),
+		COALESCE((SELECT actor FROM admin_migration_audit_events WHERE task_id = admin_migration_tasks.id ORDER BY id ASC LIMIT 1), 'local-api')
+		FROM admin_migration_tasks WHERE status IN ('queued', 'running')`)
 	if err != nil { return fmt.Errorf("find interrupted migration tasks: %w", err) }
 	var tasks []MigrationTask
 	for rows.Next() {
 		var task MigrationTask
-		if err := rows.Scan(&task.ID, &task.DataSourceID, &task.Action, &task.Status); err != nil {
+		if err := rows.Scan(&task.ID, &task.DataSourceID, &task.Action, &task.Status, &task.RequestSource, &task.Actor); err != nil {
 			_ = rows.Close()
 			return fmt.Errorf("scan interrupted migration task: %w", err)
 		}

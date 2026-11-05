@@ -185,3 +185,14 @@ func TestMigrationTaskProgressRejectsInvalidCounters(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalidInput) { t.Fatalf("invalid progress error = %v, want ErrInvalidInput", err) }
 }
+
+func TestMigrationRecoveryPreservesAuditActor(t *testing.T) {
+ ctx:=context.Background()
+ store,err:=Open(ctx,":memory:",testKey);if err!=nil{t.Fatal(err)};defer store.Close()
+ source,err:=store.Create(ctx,DataSourceInput{Name:"recovery actor",Driver:"sqlite",DSN:":memory:"});if err!=nil{t.Fatal(err)}
+ task,err:=store.CreateMigrationTask(ctx,MigrationTask{ID:"actor-recovery",DataSourceID:source.ID,Action:"up",Actor:"migration-operator",RequestSource:"127.0.0.9"});if err!=nil{t.Fatal(err)}
+ if err:=store.RecoverInterruptedTasks(ctx);err!=nil{t.Fatal(err)}
+ events,err:=store.ListMigrationAuditEvents(ctx,task.ID);if err!=nil{t.Fatal(err)}
+ if len(events)!=2{t.Fatalf("events=%d, want queued and interrupted",len(events))}
+ for _,event:=range events{if event.Actor!="migration-operator"{t.Errorf("actor=%q",event.Actor)}}
+}
