@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -260,4 +261,62 @@ func TestMigrationTaskManagerCloseContextHasBoundedWait(t *testing.T) {
 	close(release)
 	if err := manager.Close(); err != nil { t.Fatalf("wait for released worker: %v", err) }
 	waitForTaskStatus(t, store, task.ID, "canceled")
+}
+
+
+func TestMigrationTaskManagerCapsConcurrentWorkersAcrossDataSources(t *testing.T) {
+	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+
+	started := make(chan struct{}, 6)
+	release := make(chan struct{})
+	var active atomic.Int32
+	var maxActive atomic.Int32
+	manager := NewMigrationTaskManager(store, func(ctx context.Context, _ adminstore.MigrationTask) error {
+		current := active.Add(1)
+		for {
+			previous := maxActive.Load()
+			if current <= previous || maxActive.CompareAndSwap(previous, current) { break }
+		}
+		started <- struct{}{}
+		select {
+		case <-release:
+			active.Add(-1)
+			return nil
+		case <-ctx.Done():
+			active.Add(-1)
+			return ctx.Err()
+		}
+	})
+
+	tasks := make([]adminstore.MigrationTask, 0, 6)
+	for i := 0; i < 6; i++ {
+		task, submitErr := manager.Submit(context.Background(), adminstore.MigrationTask{
+			DataSourceID: fmt.Sprintf("parallel-source-%d", i), Action: "up",
+		})
+		if submitErr != nil { t.Fatal(submitErr) }
+		tasks = append(tasks, task)
+	}
+	for i := 0; i < 4; i++ {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second): t.Fatalf("only %d workers started; want 4", i)
+		}
+	}
+	select {
+	case <-started:
+		t.Fatal("more than four migration workers ran concurrently")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	for i := 4; i < 6; i++ {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second): t.Fatalf("worker %d did not start after a slot was released", i+1)
+		}
+	}
+	for _, task := range tasks { waitForTaskStatus(t, store, task.ID, "succeeded") }
+	if err := manager.Close(); err != nil { t.Fatal(err) }
+	if got := maxActive.Load(); got > 4 { t.Fatalf("maximum concurrent workers = %d, want <= 4", got) }
 }
