@@ -9,14 +9,14 @@
 - Support a first-run local administrator bootstrap without a public registration endpoint.
 - Store password verifiers and opaque session-token hashes, never plaintext passwords or session tokens.
 - Make session expiry, logout, and server-side revocation effective immediately.
-- Add role-based authorization only after authentication is stable.
+- Enforce role-based authorization in the backend and expose administrator-only account/security controls.
 - Preserve the existing separation between the management metadata database and target databases.
 
 ## Threat model and deployment boundary
 
 The management API can create and execute database migrations, roll back schema changes, alter tenant mappings, and create physical shard tables. A local-only listener is a defense-in-depth boundary, not an authentication mechanism.
 
-The command defaults to `127.0.0.1:8081` and currently rejects any `METEOR_ADMIN_ADDR` that is not `localhost`, `127.0.0.1`, or `::1`. A future remote-deployment milestone must separately define TLS termination, trusted proxy handling, secure cookies, access policy, and security audit before relaxing this restriction.
+The command defaults to `127.0.0.1:8081` and currently rejects any `METEOR_ADMIN_ADDR` that is not `localhost`, `127.0.0.1`, or `::1`. A future remote-deployment milestone must separately define TLS termination, trusted proxy handling, secure cookies, access policy, audit retention/integrity, and deployment hardening before relaxing this restriction.
 
 Do not trust `X-Forwarded-For` or similar headers for authentication, audit identity, or login throttling unless a future explicit trusted-proxy configuration is implemented.
 
@@ -113,5 +113,7 @@ Do not mark the management-platform PR ready for review until authentication and
 
 
 ## Security audit events
+
+The Web Admin exposes these events on the administrator-only **系统管理 → 安全审计** page.
 
 `GET /api/v1/auth/security-events` is administrator-only and supports `limit` (1–200, default 50) and `offset` (0–10,000,000, default 0). Events include login success/failure, logout, password changes, and administrator account creation, role changes, and deletion. Each event contains actor, subject, action, outcome, direct peer address, a short static detail, and UTC timestamp. The event stream never stores submitted passwords, session cookies, token values, DSNs, or raw driver errors. Failed credential checks are recorded without distinguishing unknown usernames from incorrect passwords.
