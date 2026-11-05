@@ -370,6 +370,22 @@ func (s *Store) migrate(ctx context.Context) error {
 		ON admin_shard_ddl_audit_events(task_id, occurred_at)`); err != nil {
 		return fmt.Errorf("index shard DDL audit events: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER IF NOT EXISTS prevent_shard_ddl_with_active_migrations
+		BEFORE INSERT ON admin_shard_ddl_tasks
+		WHEN EXISTS (SELECT 1 FROM admin_migration_tasks WHERE data_source_id = NEW.data_source_id AND status IN ('queued','running'))
+		BEGIN
+			SELECT RAISE(ABORT, 'data source has active migration tasks');
+		END`); err != nil {
+		return fmt.Errorf("serialize shard DDL with migrations: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER IF NOT EXISTS prevent_migration_with_active_shard_ddl
+		BEFORE INSERT ON admin_migration_tasks
+		WHEN EXISTS (SELECT 1 FROM admin_shard_ddl_tasks WHERE data_source_id = NEW.data_source_id AND status IN ('queued','running'))
+		BEGIN
+			SELECT RAISE(ABORT, 'data source has active shard DDL tasks');
+		END`); err != nil {
+		return fmt.Errorf("serialize migrations with shard DDL: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER IF NOT EXISTS prevent_shard_rule_update_with_active_ddl
 		BEFORE UPDATE ON admin_shard_rules
 		WHEN EXISTS (SELECT 1 FROM admin_shard_ddl_tasks WHERE shard_rule_id = OLD.id AND status IN ('queued','running'))
