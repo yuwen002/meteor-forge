@@ -1,5 +1,5 @@
 package adminstore
-import("context";"encoding/hex";"errors";"testing";"time")
+import("context";"encoding/hex";"errors";"testing";"time";"strings")
 const authTestKey="abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 func TestBootstrapAdminIsOneTimeAndPasswordIsHashed(t *testing.T){
  s,e:=Open(context.Background(),":memory:",authTestKey);if e!=nil{t.Fatal(e)};defer s.Close()
@@ -67,5 +67,5 @@ func TestSecurityAuditPersistsSafeAuthenticationEvents(t *testing.T) {
  if total!=2||len(items)!=2{t.Fatalf("total=%d items=%d, want 2",total,len(items))}
  if items[0].Subject!="unknown"||items[0].Outcome!="failed"{t.Fatalf("unexpected newest event: %+v",items[0])}
  if err:=store.RecordSecurityAuditEvent(context.Background(),SecurityAuditEvent{Action:"invalid",Outcome:"succeeded"});err==nil{t.Fatal("expected unsupported action to be rejected")}
- if err:=store.RecordSecurityAuditEvent(context.Background(),SecurityAuditEvent{Action:"login",Outcome:"failed",Details:"password=secret"});err!=nil{t.Fatal(err)}
+ if err:=store.RecordSecurityAuditEvent(context.Background(),SecurityAuditEvent{Action:"login",Outcome:"failed",Details:strings.Repeat("x",257)});err==nil{t.Fatal("expected oversized details to be rejected")}
 }
