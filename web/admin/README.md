@@ -51,7 +51,7 @@ npm run dev
 - `DELETE /api/v1/datasources/{id}`：删除管理端登记，不会删除目标数据库。
 - `POST /api/v1/datasources/{id}/test`：测试目标数据库连接，5 秒超时，错误信息不会回显连接凭据。
 
-支持驱动：MySQL、PostgreSQL、SQLite、ClickHouse。DSN 使用 AES-256-GCM 加密保存。迁移管理当前支持版本状态查询和 Up Dry Run 预览；状态/预览会确保目标库存在 `schema_migrations` 历史表，但不会执行用户迁移 SQL。Up/Down/ToVersion 执行任务仍在开发中。当前管理 API 尚未实现用户认证和角色授权，因此保持 loopback 监听，不要暴露到公网。
+支持驱动：MySQL、PostgreSQL、SQLite、ClickHouse。DSN 使用 AES-256-GCM 加密保存。迁移管理支持版本状态、Up Dry Run、Up/Down/ToVersion 异步任务；分片管理支持规则预览、物理表盘点和受确认的结构克隆。执行任务页面统一汇总迁移与分片 DDL 任务，并展示任务详情、状态进度和审计记录。状态/预览可能确保目标库存在 `schema_migrations` 历史表，但不会执行用户迁移 SQL。当前管理 API 尚未实现用户认证和角色授权，因此必须保持 loopback 监听，不要暴露到公网。
 
 ## 构建检查
 
@@ -60,4 +60,4 @@ npm run typecheck
 npm run build
 ```
 
-租户和分片页面仍在后续开发计划中；尚未接入的模块不会显示虚构的业务数据。
+租户、分片和执行任务页面已接入真实管理 API。操作审计独立页面及用户/角色权限仍在后续开发计划中。
