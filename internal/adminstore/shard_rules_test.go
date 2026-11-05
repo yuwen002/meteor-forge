@@ -33,6 +33,10 @@ func TestShardRuleCRUDAndValidation(t *testing.T) {
 	}); !errors.Is(err, ErrShardRuleConflict) {
 		t.Fatalf("duplicate rule error = %v, want ErrShardRuleConflict", err)
 	}
+	renamed, err := store.Update(ctx, source.ID, DataSourceInput{Name: "renamed target", Driver: "sqlite", DSN: ":memory:"})
+	if err != nil || renamed.Name != "renamed target" {
+		t.Fatalf("renaming a referenced data source without changing connection settings = %+v, %v", renamed, err)
+	}
 	if _, err := store.Update(ctx, source.ID, DataSourceInput{Name: "changed", Driver: "sqlite", DSN: "file:other.db"}); !errors.Is(err, ErrDataSourceHasShardRules) {
 		t.Fatalf("changing a referenced data source DSN error = %v, want ErrDataSourceHasShardRules", err)
 	}
