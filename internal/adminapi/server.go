@@ -12,6 +12,7 @@ import (
 
 	"github.com/yuwen002/meteor-forge/internal/adminstore"
 	"github.com/yuwen002/meteor-forge/pkg/migration"
+	"github.com/yuwen002/meteor-forge/pkg/tenant"
 )
 
 const apiPrefix = "/api/v1"
@@ -21,6 +22,7 @@ type Server struct {
 	handler http.Handler
 	store   dataSourceStore
 	tenants tenantStore
+	tenantConnections *tenantConnectionResolver
 	pools        *PoolManager
 	tasks        *MigrationTaskManager
 	migrationDir string
@@ -42,6 +44,7 @@ func NewServerWithMigrationDir(store *adminstore.Store, migrationDir string) *Se
 	mux := http.NewServeMux()
 	server := &Server{store: store, tenants: store, pools: NewPoolManager(), migrationDir: migrationDir}
 	if store != nil {
+		server.tenantConnections = newTenantConnectionResolver(tenant.HeaderResolver{}, store, store, server.pools)
 		server.tasks = NewMigrationTaskManager(store, func(ctx context.Context, task adminstore.MigrationTask) error {
 			driver, err := server.migrationDriver(ctx, task.DataSourceID)
 			if err != nil { return err }
