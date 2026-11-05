@@ -203,6 +203,10 @@ func (s *Server) createMigrationTask(w http.ResponseWriter, r *http.Request) {
 		RequestSource: requestSource,
 	})
 	if err != nil {
+		if errors.Is(err, adminstore.ErrActiveShardDDLTasks) {
+			writeAPIError(w, http.StatusConflict, "data_source_has_active_shard_ddl_tasks", "migration tasks cannot be queued while shard DDL tasks are active")
+			return
+		}
 		writeAPIError(w, http.StatusInternalServerError, "task_submission_failed", "unable to create migration task")
 		return
 	}
