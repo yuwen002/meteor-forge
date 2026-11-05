@@ -20,11 +20,21 @@ var (
  ErrInvalidCredentials = errors.New("invalid administrator credentials")
  ErrInvalidPassword = errors.New("password must contain 12 to 1024 characters")
  ErrSessionNotFound = errors.New("administrator session not found")
+ ErrAdminNotFound = errors.New("administrator not found")
+ ErrAdminConflict = errors.New("administrator username already exists")
+ ErrInvalidRole = errors.New("invalid administrator role")
+ ErrInvalidAdminInput = errors.New("invalid administrator input")
+ ErrLastAdministrator = errors.New("cannot remove or demote the last administrator")
 )
 
 const passwordIterations = 310000
 
-type Admin struct { ID, Username, Role string; CreatedAt time.Time }
+type Admin struct {
+ ID string `json:"id"`
+ Username string `json:"username"`
+ Role string `json:"role"`
+ CreatedAt time.Time `json:"created_at"`
+}
 type AdminSession struct { Admin Admin; CreatedAt, ExpiresAt time.Time }
 
 func pbkdf2SHA256(password string, salt []byte, iterations int) []byte {
@@ -112,4 +122,84 @@ func(s *Store) ChangeAdminPassword(ctx context.Context,adminID,currentPassword,n
  if _,err:=tx.ExecContext(ctx,"UPDATE admin_users SET password_hash=?,updated_at=? WHERE id=?",newHash,now,adminID);err!=nil{return fmt.Errorf("update administrator password: %w",err)}
  if _,err:=tx.ExecContext(ctx,"UPDATE admin_sessions SET revoked_at=? WHERE admin_id=? AND revoked_at IS NULL",now,adminID);err!=nil{return fmt.Errorf("revoke sessions after password change: %w",err)}
  if err:=tx.Commit();err!=nil{return fmt.Errorf("commit password change: %w",err)};return nil
+}
+
+func validAdminRole(role string) bool {
+ switch role { case "administrator", "viewer", "migration_operator", "shard_operator": return true; default: return false }
+}
+
+func (s *Store) CreateAdminUser(ctx context.Context, username, password, role string) (Admin, error) {
+ username = strings.TrimSpace(username)
+ if username == "" || len(username) > 128 { return Admin{}, ErrInvalidAdminInput }
+ if !validAdminRole(role) { return Admin{}, ErrInvalidRole }
+ encoded, err := encodePassword(password)
+ if err != nil { return Admin{}, err }
+ id, err := newID()
+ if err != nil { return Admin{}, err }
+ now := time.Now().UTC()
+ stamp := now.Format(time.RFC3339Nano)
+ _, err = s.db.ExecContext(ctx, `INSERT INTO admin_users(id, username, password_hash, role, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)`, id, username, encoded, role, stamp, stamp)
+ if err != nil {
+  if strings.Contains(strings.ToLower(err.Error()), "unique") { return Admin{}, ErrAdminConflict }
+  return Admin{}, fmt.Errorf("create administrator account: %w", err)
+ }
+ return Admin{ID:id, Username:username, Role:role, CreatedAt:now}, nil
+}
+
+func (s *Store) ListAdminUsers(ctx context.Context) ([]Admin, error) {
+ rows, err := s.db.QueryContext(ctx, "SELECT id, username, role, created_at FROM admin_users ORDER BY username COLLATE NOCASE")
+ if err != nil { return nil, fmt.Errorf("list administrator accounts: %w", err) }
+ defer rows.Close()
+ result := make([]Admin, 0)
+ for rows.Next() {
+  var item Admin
+  var created string
+  if err := rows.Scan(&item.ID, &item.Username, &item.Role, &created); err != nil { return nil, fmt.Errorf("scan administrator account: %w", err) }
+  item.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+  if err != nil { return nil, fmt.Errorf("parse administrator creation time: %w", err) }
+  result = append(result, item)
+ }
+ return result, rows.Err()
+}
+
+func (s *Store) UpdateAdminRole(ctx context.Context, id, role string) error {
+ if !validAdminRole(role) { return ErrInvalidRole }
+ tx, err := s.db.BeginTx(ctx, nil)
+ if err != nil { return fmt.Errorf("begin administrator role update: %w", err) }
+ defer tx.Rollback() //nolint:errcheck
+ var current string
+ if err := tx.QueryRowContext(ctx, "SELECT role FROM admin_users WHERE id = ?", id).Scan(&current); err != nil {
+  if errors.Is(err, sql.ErrNoRows) { return ErrAdminNotFound }
+  return fmt.Errorf("load administrator role: %w", err)
+ }
+ if current == "administrator" && role != "administrator" {
+  var count int
+  if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM admin_users WHERE role = 'administrator'").Scan(&count); err != nil { return err }
+  if count <= 1 { return ErrLastAdministrator }
+ }
+ now := time.Now().UTC().Format(time.RFC3339Nano)
+ if _, err := tx.ExecContext(ctx, "UPDATE admin_users SET role = ?, updated_at = ? WHERE id = ?", role, now, id); err != nil { return fmt.Errorf("update administrator role: %w", err) }
+ if _, err := tx.ExecContext(ctx, "UPDATE admin_sessions SET revoked_at = ? WHERE admin_id = ? AND revoked_at IS NULL", now, id); err != nil { return fmt.Errorf("revoke sessions after role change: %w", err) }
+ if err := tx.Commit(); err != nil { return fmt.Errorf("commit administrator role update: %w", err) }
+ return nil
+}
+
+func (s *Store) DeleteAdminUser(ctx context.Context, id string) error {
+ tx, err := s.db.BeginTx(ctx, nil)
+ if err != nil { return fmt.Errorf("begin administrator deletion: %w", err) }
+ defer tx.Rollback() //nolint:errcheck
+ var role string
+ if err := tx.QueryRowContext(ctx, "SELECT role FROM admin_users WHERE id = ?", id).Scan(&role); err != nil {
+  if errors.Is(err, sql.ErrNoRows) { return ErrAdminNotFound }
+  return fmt.Errorf("load administrator account: %w", err)
+ }
+ if role == "administrator" {
+  var count int
+  if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM admin_users WHERE role = 'administrator'").Scan(&count); err != nil { return err }
+  if count <= 1 { return ErrLastAdministrator }
+ }
+ if _, err := tx.ExecContext(ctx, "DELETE FROM admin_sessions WHERE admin_id = ?", id); err != nil { return fmt.Errorf("delete administrator sessions: %w", err) }
+ if _, err := tx.ExecContext(ctx, "DELETE FROM admin_users WHERE id = ?", id); err != nil { return fmt.Errorf("delete administrator account: %w", err) }
+ if err := tx.Commit(); err != nil { return fmt.Errorf("commit administrator deletion: %w", err) }
+ return nil
 }

@@ -41,6 +41,10 @@ func(s *Server) registerAuthRoutes(mux *http.ServeMux){
  mux.HandleFunc("GET "+apiPrefix+"/auth/session",s.sessionHandler)
  mux.HandleFunc("POST "+apiPrefix+"/auth/logout",s.logoutHandler)
  mux.HandleFunc("POST "+apiPrefix+"/auth/password",s.passwordHandler)
+ mux.HandleFunc("GET "+apiPrefix+"/auth/users",s.listAdminUsersHandler)
+ mux.HandleFunc("POST "+apiPrefix+"/auth/users",s.createAdminUserHandler)
+ mux.HandleFunc("PUT "+apiPrefix+"/auth/users/{id}/role",s.updateAdminRoleHandler)
+ mux.HandleFunc("DELETE "+apiPrefix+"/auth/users/{id}",s.deleteAdminUserHandler)
 }
 func loginKey(r *http.Request,username string)string{
  host:=r.RemoteAddr
@@ -115,6 +119,7 @@ func(s *Server) withAuthentication(next http.Handler)http.Handler{
    if !sameOrigin(r){writeJSON(w,http.StatusForbidden,map[string]string{"error":"same-origin request required"});return}
    if strings.HasPrefix(r.URL.Path,apiPrefix+"/auth/")&&!requireAuthJSON(w,r){return}
   }
+  if !authorizeAdminRole(session.Admin.Role,r.Method,r.URL.Path) { writeJSON(w,http.StatusForbidden,map[string]string{"error":"permission denied"});return }
   ctx:=context.WithValue(r.Context(),adminContextKey{},session)
   next.ServeHTTP(w,r.WithContext(ctx))
  })
@@ -126,4 +131,80 @@ func sameOrigin(r *http.Request)bool{
  if r.TLS!=nil { expectedScheme="https" }
  if parsed.Scheme!=expectedScheme { return false }
  return strings.EqualFold(parsed.Host,r.Host)
+}
+
+func authorizeAdminRole(role, method, path string) bool {
+ if role == "administrator" { return true }
+ if path == apiPrefix+"/auth/logout" || path == apiPrefix+"/auth/password" { return method == http.MethodPost }
+ if path == apiPrefix+"/auth/users" || strings.HasPrefix(path, apiPrefix+"/auth/users/") { return false }
+ if method == http.MethodGet || method == http.MethodHead { return true }
+ parts := strings.Split(strings.Trim(path, "/"), "/")
+ if method == http.MethodPost {
+  if path == apiPrefix+"/tenant-migration-batches" { return role == "migration_operator" }
+  if len(parts)==6 && parts[0]=="api" && parts[1]=="v1" && parts[2]=="datasources" && parts[4]=="migrations" && (parts[5]=="preview" || parts[5]=="tasks") { return role=="migration_operator" }
+  if len(parts)==6 && parts[0]=="api" && parts[1]=="v1" && parts[2]=="tenants" && parts[4]=="migrations" && parts[5]=="tasks" { return role=="migration_operator" }
+  if len(parts)==5 && parts[0]=="api" && parts[1]=="v1" && parts[2]=="migration-tasks" && parts[4]=="cancel" { return role=="migration_operator" }
+  if len(parts)==5 && parts[0]=="api" && parts[1]=="v1" && parts[2]=="shard-rules" && parts[4]=="preview" { return role=="viewer" || role=="shard_operator" }
+  if len(parts)==6 && parts[0]=="api" && parts[1]=="v1" && parts[2]=="shard-rules" && parts[4]=="tables" && parts[5]=="exists" { return role=="viewer" || role=="shard_operator" }
+  if len(parts)==5 && parts[0]=="api" && parts[1]=="v1" && parts[2]=="shard-rules" && parts[4]=="clone-preview" { return role=="shard_operator" }
+  if len(parts)==5 && parts[0]=="api" && parts[1]=="v1" && parts[2]=="shard-rules" && parts[4]=="clone-tasks" { return role=="shard_operator" }
+  if len(parts)==5 && parts[0]=="api" && parts[1]=="v1" && parts[2]=="shard-ddl-tasks" && parts[4]=="cancel" { return role=="shard_operator" }
+ }
+ return false
+}
+
+func (s *Server) listAdminUsersHandler(w http.ResponseWriter, r *http.Request) {
+ items, err := s.authStore.ListAdminUsers(r.Context())
+ if err != nil { writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to list administrators"});return }
+ writeJSON(w,http.StatusOK,map[string]any{"items":items})
+}
+func (s *Server) createAdminUserHandler(w http.ResponseWriter, r *http.Request) {
+ var input struct { Username string `json:"username"`; Password string `json:"password"`; Role string `json:"role"` }
+ if !decodeAuthJSON(w,r,&input) { return }
+ item,err:=s.authStore.CreateAdminUser(r.Context(),input.Username,input.Password,input.Role)
+ if err!=nil {
+  switch {
+  case errors.Is(err,adminstore.ErrInvalidPassword),errors.Is(err,adminstore.ErrInvalidRole),errors.Is(err,adminstore.ErrInvalidAdminInput):
+   writeJSON(w,http.StatusBadRequest,map[string]string{"error":"invalid administrator input"})
+  case errors.Is(err,adminstore.ErrAdminConflict):
+   writeJSON(w,http.StatusConflict,map[string]string{"error":"administrator username already exists"})
+  default:
+   writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to create administrator"})
+  }
+  return
+ }
+ writeJSON(w,http.StatusCreated,item)
+}
+func (s *Server) updateAdminRoleHandler(w http.ResponseWriter, r *http.Request) {
+ current,_:=adminSessionFromRequest(r)
+ id:=r.PathValue("id")
+ if id==current.Admin.ID { writeJSON(w,http.StatusConflict,map[string]string{"error":"cannot change your own role"});return }
+ var input struct { Role string `json:"role"` }
+ if !decodeAuthJSON(w,r,&input) { return }
+ err:=s.authStore.UpdateAdminRole(r.Context(),id,input.Role)
+ if err!=nil {
+  switch {
+  case errors.Is(err,adminstore.ErrAdminNotFound):writeJSON(w,http.StatusNotFound,map[string]string{"error":"administrator not found"})
+  case errors.Is(err,adminstore.ErrInvalidRole):writeJSON(w,http.StatusBadRequest,map[string]string{"error":"invalid role"})
+  case errors.Is(err,adminstore.ErrLastAdministrator):writeJSON(w,http.StatusConflict,map[string]string{"error":"cannot demote the last administrator"})
+  default:writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to update administrator role"})
+  }
+  return
+ }
+ w.WriteHeader(http.StatusNoContent)
+}
+func (s *Server) deleteAdminUserHandler(w http.ResponseWriter, r *http.Request) {
+ current,_:=adminSessionFromRequest(r)
+ id:=r.PathValue("id")
+ if id==current.Admin.ID { writeJSON(w,http.StatusConflict,map[string]string{"error":"cannot delete your own account"});return }
+ err:=s.authStore.DeleteAdminUser(r.Context(),id)
+ if err!=nil {
+  switch {
+  case errors.Is(err,adminstore.ErrAdminNotFound):writeJSON(w,http.StatusNotFound,map[string]string{"error":"administrator not found"})
+  case errors.Is(err,adminstore.ErrLastAdministrator):writeJSON(w,http.StatusConflict,map[string]string{"error":"cannot delete the last administrator"})
+  default:writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to delete administrator"})
+  }
+  return
+ }
+ w.WriteHeader(http.StatusNoContent)
 }
