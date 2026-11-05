@@ -88,7 +88,7 @@
 ### 阶段 5：分库分表管理
 - [x] 分片规则持久化 CRUD：按数据源和逻辑基础表唯一登记，校验表名与策略参数。
 - [x] 路由预览：复用 `pkg/sharding.ShardRule`，支持时间/ID 单点和范围计算，并限制预览规模。
-- [ ] 物理表列表与存在性检查（按 MySQL、PostgreSQL、SQLite、ClickHouse 驱动适配）。
+- [x] 物理表列表与存在性检查：按 MySQL、PostgreSQL、SQLite、ClickHouse 元数据查询适配，按策略校验表名后缀，5 秒超时，只读不执行 DDL。
 - [ ] 建表/克隆等 DDL 后台任务、危险操作确认与操作审计；当前不开放自动 DROP。
 
 ### 阶段 6：任务、审计与权限
