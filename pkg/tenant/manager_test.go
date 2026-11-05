@@ -83,8 +83,8 @@ func TestMemoryManagerClose(t *testing.T) {
 		t.Fatalf("Close failed: %v", err)
 	}
 	// Close 后映射清空
-	if _, err := m.GetDB("t1"); !errors.Is(err, ErrDBNotFound) {
-		t.Errorf("expected ErrDBNotFound after Close, got %v", err)
+	if _, err := m.GetDB("t1"); !errors.Is(err, ErrManagerClosed) {
+		t.Errorf("expected ErrManagerClosed after Close, got %v", err)
 	}
 }
 
@@ -148,13 +148,23 @@ func TestMemoryManagerValidatesRegistrationAndClosedState(t *testing.T) {
 	}
 }
 
+func TestMemoryManagerNormalizesTenantIdentifiers(t *testing.T) {
+	manager := NewMemoryManager()
+	db := newTestDB(t)
+	if err := manager.Register("  tenant-x  ", db); err != nil { t.Fatal(err) }
+	got, err := manager.GetDB("tenant-x")
+	if err != nil { t.Fatalf("GetDB with normalized tenant id: %v", err) }
+	if got != db { t.Fatal("GetDB returned a different connection handle") }
+	if err := manager.Close(); err != nil { t.Fatal(err) }
+}
+
 func TestMemoryManagerRegisterSameHandleDoesNotCloseIt(t *testing.T) {
 	manager := NewMemoryManager()
 	db := newTestDB(t)
 	if err := manager.Register("tenant", db); err != nil { t.Fatal(err) }
 	if err := manager.Register("tenant", db); err != nil { t.Fatal(err) }
-	if err := db.Ping(); err != nil && err.Error() == "sql: database is closed" {
-		t.Fatal("registering the same handle must not close it")
-	}
+	got, err := manager.GetDB("tenant")
+	if err != nil { t.Fatal(err) }
+	if got != db { t.Fatal("registering the same handle must preserve it") }
 	if err := manager.Close(); err != nil { t.Fatal(err) }
 }
