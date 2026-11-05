@@ -116,3 +116,20 @@ func TestMigrationTaskBlocksShardDDLTask(t *testing.T) {
 	if !errors.Is(err, ErrActiveTasks) { t.Fatalf("shard DDL submission during migration error=%v, want ErrActiveTasks", err) }
 }
 
+
+func TestShardDDLAuditPreservesAuthenticatedActor(t *testing.T) {
+ ctx:=context.Background()
+ store,err:=Open(ctx,":memory:",testKey);if err!=nil{t.Fatal(err)}
+ defer store.Close()
+ source,err:=store.Create(ctx,DataSourceInput{Name:"actor ddl target",Driver:"sqlite",DSN:":memory:"});if err!=nil{t.Fatal(err)}
+ rule,err:=store.CreateShardRule(ctx,ShardRuleInput{DataSourceID:source.ID,BaseTable:"orders",ShardType:"month"});if err!=nil{t.Fatal(err)}
+ task,err:=store.CreateShardDDLTask(ctx,ShardDDLTask{ShardRuleID:rule.ID,DataSourceID:source.ID,Action:"clone",SourceTable:"orders",TargetTable:"orders_202612",RequestSource:"127.0.0.1",Actor:"shard-operator"})
+ if err!=nil{t.Fatal(err)}
+ started:=time.Now().UTC()
+ if err:=store.UpdateShardDDLTask(ctx,task.ID,"running","started",&started,nil);err!=nil{t.Fatal(err)}
+ finished:=time.Now().UTC()
+ if err:=store.UpdateShardDDLTask(ctx,task.ID,"succeeded","done",nil,&finished);err!=nil{t.Fatal(err)}
+ events,err:=store.ListShardDDLAuditEvents(ctx,task.ID);if err!=nil{t.Fatal(err)}
+ if len(events)!=3{t.Fatalf("audit event count=%d, want 3",len(events))}
+ for _,event:=range events{if event.Actor!="shard-operator"{t.Errorf("actor=%q, want shard-operator",event.Actor)}}
+}
