@@ -355,4 +355,47 @@ ID 策略支持单点或闭区间预览：
 
 表名必须符合该规则对应的后缀格式（例如 month 策略为 `{base}_{YYYY}{MM}`，id_hash 策略的序号必须位于配置范围内）。无效表名返回 HTTP 400；有效但不存在的表返回 HTTP 200 和 `{"exists":false}`。
 
-**当前边界：** DDL 建表/克隆/删除、DDL 异步任务和分片操作审计尚未开放。管理 API 当前没有认证/授权，仍只允许 loopback 监听，不得暴露公网。
+### POST /shard-rules/{id}/clone-preview
+
+检查克隆参数、源表是否存在、目标表是否已存在，并返回按数据库驱动生成的 DDL。请求：
+
+```json
+{"source_table":"orders","target_table":"orders_202611"}
+```
+
+源表可以是逻辑基础表或符合当前规则命名约定的物理分片表；目标表必须是符合该策略的物理分片表，且不能与源表相同。源表不存在或目标表已存在返回 HTTP 409。预览只读，不执行 DDL。
+
+### POST /shard-rules/{id}/clone-tasks
+
+提交异步结构克隆任务，必须显式提供 `confirm: true`：
+
+```json
+{"source_table":"orders","target_table":"orders_202611","confirm":true}
+```
+
+成功返回 HTTP 202 和任务记录。执行前会再次检查源表存在、目标表不存在，避免预览与执行之间的状态变化导致覆盖。任务超时 10 分钟，跨数据源最多同时执行 2 个 DDL Worker；同一数据源的克隆任务串行执行。服务重启后遗留的 queued/running 任务标记为 interrupted，不会自动重放。失败、取消或中断后必须检查目标库实际结构再决定是否重新提交。
+
+### GET /shard-ddl-tasks
+
+返回最近 50 条分片 DDL 任务。
+
+### GET /shard-ddl-tasks/{id}
+
+读取单条分片 DDL 任务状态。状态包括 queued、running、succeeded、failed、canceled、interrupted。
+
+### GET /shard-ddl-tasks/{id}/audit
+
+按时间顺序读取该任务的状态审计事件。任务入队、执行状态变更和重启恢复会在同一管理元数据库事务中记录。当前无用户认证，操作者标记为 `local-api`；入队事件的请求来源来自管理 API 连接的远端地址，不能视为真实登录用户身份。
+
+### POST /shard-ddl-tasks/{id}/cancel
+
+请求取消当前服务实例中的活动任务，返回 HTTP 202。取消不保证底层数据库立即中断 DDL；必须重新盘点目标表确认最终状态。
+
+**克隆语义与限制：**
+- MySQL 使用 `CREATE TABLE ... LIKE ...`，复制结构、索引和约束，不复制数据。
+- PostgreSQL 使用 `LIKE ... INCLUDING ALL`，复制列、默认值、约束、索引和存储属性，不复制数据。
+- ClickHouse 使用 `CREATE TABLE ... AS ...`，复制表结构/引擎定义，不复制数据。
+- SQLite 使用 CTAS（`CREATE TABLE ... AS SELECT ... WHERE 0`），仅复制列结构，不复制主键、约束、索引和触发器。生产环境需要这些对象时，应在克隆后通过独立、受审计的迁移补齐。
+- 当前只开放结构克隆，不提供数据复制、覆盖已有表、DROP 或自动清理。
+
+管理 API 当前没有认证/授权，仍只允许 loopback 监听，不得暴露公网。
