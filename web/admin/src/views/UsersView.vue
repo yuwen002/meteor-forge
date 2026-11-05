@@ -39,6 +39,9 @@ async function create() {
   } catch { ElMessage.error('创建失败，请检查用户名是否重复及密码长度') }
   finally { saving.value = false }
 }
+async function handleRoleChange(user: AdminUser, role: string) {
+  await changeRole(user, role as AdminUser['role'])
+}
 async function changeRole(user: AdminUser, role: AdminUser['role']) {
   if (user.role === role) return
   try {
@@ -89,7 +92,7 @@ onMounted(refresh)
         <el-table-column prop="username" label="用户名" min-width="180" />
         <el-table-column label="角色" min-width="210">
           <template #default="{ row }">
-            <el-select :model-value="row.role" @change="(role: AdminUser['role']) => changeRole(row, role)">
+            <el-select :model-value="row.role" @change="handleRoleChange(row, $event)">
               <el-option v-for="item in roleOptions" :key="item.value" :label="item.label" :value="item.value" />
             </el-select>
           </template>
