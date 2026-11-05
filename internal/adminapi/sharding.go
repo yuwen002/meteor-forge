@@ -271,7 +271,7 @@ func (s *Server) listPhysicalShardTables(w http.ResponseWriter, r *http.Request)
 		writeAPIError(w, http.StatusBadGateway, "table_inspection_failed", "unable to inspect tables in the target database")
 		return
 	}
-	items := make([]string, 0)
+	items := make([]string, 0, len(names))
 	for _, name := range names {
 		if isShardTableName(rule, name) { items = append(items, name) }
 	}
