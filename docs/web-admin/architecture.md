@@ -76,7 +76,8 @@
 - [x] 管理元数据库租户注册表：名称、唯一 code、active/suspended 状态和数据源映射。
 - [x] 租户 CRUD API、连接测试 API 和 Web 管理页面。
 - [x] 租户引用的数据源禁止修改连接配置或删除；迁移任务执行期间禁止创建/修改/删除相关租户。
-- [ ] 将 pkg/tenant Resolver、Manager 与管理端数据源连接池打通，提供受控的租户连接解析。
+- [x] 将 pkg/tenant HeaderResolver 与管理端租户注册表、数据源连接池打通；从可信 Context 解析 active tenant，并按 data_source_id 复用连接池。
+- [ ] 将租户 Manager 纳入统一连接池生命周期（当前由数据源 PoolManager 按 data_source_id 管理，避免同一数据源重复建池）。
 - [ ] 动态租户发现与租户连接状态巡检。
 - [ ] 单租户/批量迁移、并发上限、失败汇总和安全重试。
 - [ ] 租户级审计、停用租户访问阻断和权限控制。
