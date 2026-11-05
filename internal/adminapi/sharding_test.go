@@ -2,9 +2,11 @@ package adminapi
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -83,4 +85,61 @@ func TestShardRuleManagementAndRoutePreviewAPI(t *testing.T) {
 	}
 	removed := request(http.MethodDelete, "/api/v1/shard-rules/"+rule.ID, "")
 	if removed.Code != http.StatusNoContent { t.Fatalf("delete status=%d body=%s", removed.Code, removed.Body.String()) }
+}
+
+
+func TestPhysicalShardTableInspectionAPI(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "target.db")
+	targetDB, err := sql.Open("sqlite", targetPath)
+	if err != nil { t.Fatal(err) }
+	for _, statement := range []string{
+		"CREATE TABLE orders_202610 (id INTEGER PRIMARY KEY)",
+		"CREATE TABLE orders_202611 (id INTEGER PRIMARY KEY)",
+		"CREATE TABLE orders_archive (id INTEGER PRIMARY KEY)",
+		"CREATE TABLE users_202611 (id INTEGER PRIMARY KEY)",
+	} {
+		if _, err := targetDB.Exec(statement); err != nil { t.Fatal(err) }
+	}
+	if err := targetDB.Close(); err != nil { t.Fatal(err) }
+
+	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
+	if err != nil { t.Fatal(err) }
+	t.Cleanup(func() { _ = store.Close() })
+	source, err := store.Create(context.Background(), adminstore.DataSourceInput{
+		Name: "physical table target", Driver: "sqlite", DSN: targetPath,
+	})
+	if err != nil { t.Fatal(err) }
+	server := NewServerWithStore(store)
+	t.Cleanup(func() { _ = server.Close() })
+
+	request := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	created := request(http.MethodPost, "/api/v1/shard-rules",
+		`{"data_source_id":"`+source.ID+`","base_table":"orders","shard_type":"month"}`)
+	if created.Code != http.StatusCreated { t.Fatalf("create rule status=%d body=%s", created.Code, created.Body.String()) }
+	var rule adminstore.ShardRule
+	if err := json.Unmarshal(created.Body.Bytes(), &rule); err != nil { t.Fatal(err) }
+
+	listed := request(http.MethodGet, "/api/v1/shard-rules/"+rule.ID+"/tables", "")
+	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), "orders_202610") ||
+		!strings.Contains(listed.Body.String(), "orders_202611") || strings.Contains(listed.Body.String(), "orders_archive") {
+		t.Fatalf("physical table list status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	exists := request(http.MethodPost, "/api/v1/shard-rules/"+rule.ID+"/tables/exists", `{"table_name":"orders_202611"}`)
+	if exists.Code != http.StatusOK || !strings.Contains(exists.Body.String(), `"exists":true`) {
+		t.Fatalf("existing table check status=%d body=%s", exists.Code, exists.Body.String())
+	}
+	missing := request(http.MethodPost, "/api/v1/shard-rules/"+rule.ID+"/tables/exists", `{"table_name":"orders_202612"}`)
+	if missing.Code != http.StatusOK || !strings.Contains(missing.Body.String(), `"exists":false`) {
+		t.Fatalf("missing table check status=%d body=%s", missing.Code, missing.Body.String())
+	}
+	invalid := request(http.MethodPost, "/api/v1/shard-rules/"+rule.ID+"/tables/exists", `{"table_name":"orders_archive"}`)
+	if invalid.Code != http.StatusBadRequest || !strings.Contains(invalid.Body.String(), "invalid_table_name") {
+		t.Fatalf("invalid table check status=%d body=%s", invalid.Code, invalid.Body.String())
+	}
 }
