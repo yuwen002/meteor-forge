@@ -295,8 +295,26 @@ func (s *Store) migrate(ctx context.Context) error {
 		END`); err != nil {
 		return fmt.Errorf("protect tenant deletion during migration: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admin_shard_rules (
+		id TEXT PRIMARY KEY,
+		data_source_id TEXT NOT NULL,
+		base_table TEXT NOT NULL,
+		shard_type TEXT NOT NULL,
+		hash_shards INTEGER NOT NULL DEFAULT 16,
+		range_size INTEGER NOT NULL DEFAULT 1000000,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		UNIQUE(data_source_id, base_table),
+		FOREIGN KEY(data_source_id) REFERENCES admin_data_sources(id)
+	)`); err != nil {
+		return fmt.Errorf("create shard rule table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_admin_shard_rules_datasource
+		ON admin_shard_rules(data_source_id)`); err != nil {
+		return fmt.Errorf("index shard rules: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
-		VALUES (8, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		VALUES (9, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("record metadata schema version: %w", err)
 	}
 	return tx.Commit()
