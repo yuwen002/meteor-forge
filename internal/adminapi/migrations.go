@@ -47,6 +47,7 @@ func (s *Server) registerMigrationRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+apiPrefix+"/datasources/{id}/migrations/status", s.migrationStatus)
 	mux.HandleFunc("POST "+apiPrefix+"/datasources/{id}/migrations/preview", s.previewMigrations)
 	mux.HandleFunc("POST "+apiPrefix+"/datasources/{id}/migrations/tasks", s.createMigrationTask)
+	mux.HandleFunc("POST "+apiPrefix+"/tenants/{id}/migrations/tasks", s.createTenantMigrationTask)
 	mux.HandleFunc("GET "+apiPrefix+"/migration-tasks", s.listMigrationTasks)
 	mux.HandleFunc("GET "+apiPrefix+"/migration-tasks/{id}", s.getMigrationTask)
 	mux.HandleFunc("POST "+apiPrefix+"/migration-tasks/{id}/cancel", s.cancelMigrationTask)
