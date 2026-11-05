@@ -162,3 +162,24 @@ func TestMigrationAuditRecordsAuthenticatedActor(t *testing.T) {
  if len(events)==0{t.Fatal("expected audit events")}
  for _,event:=range events{if event.Actor!="audit-operator"{t.Errorf("audit actor=%q, want authenticated username",event.Actor)}}
 }
+
+func TestViewerRoleIsEnforcedByHTTPMiddleware(t *testing.T) {
+ store,err:=adminstore.Open(context.Background(),":memory:",apiTestKey);if err!=nil{t.Fatal(err)};defer store.Close()
+ if _,err:=store.BootstrapAdmin(context.Background(),"root","a-strong-password-123");err!=nil{t.Fatal(err)}
+ if _,err:=store.CreateAdminUser(context.Background(),"reader","a-reader-password-123","viewer");err!=nil{t.Fatal(err)}
+ server:=NewServerWithStore(store);defer server.Close()
+ login:=httptest.NewRequest(http.MethodPost,"http://localhost/api/v1/auth/login",bytes.NewBufferString(`{"username":"reader","password":"a-reader-password-123"}`));login.Header.Set("Content-Type","application/json")
+ loginRec:=httptest.NewRecorder();server.Handler().ServeHTTP(loginRec,login)
+ if loginRec.Code!=http.StatusOK{t.Fatalf("viewer login status=%d body=%s",loginRec.Code,loginRec.Body.String())}
+ cookie:=loginRec.Result().Cookies()[0]
+ read:=httptest.NewRequest(http.MethodGet,"http://localhost/api/v1/datasources",nil);read.AddCookie(cookie)
+ readRec:=httptest.NewRecorder();server.Handler().ServeHTTP(readRec,read)
+ if readRec.Code!=http.StatusOK{t.Fatalf("viewer read status=%d body=%s",readRec.Code,readRec.Body.String())}
+ write:=httptest.NewRequest(http.MethodPost,"http://localhost/api/v1/datasources",bytes.NewBufferString(`{"name":"blocked","driver":"sqlite","dsn":":memory:"}`))
+ write.Header.Set("Content-Type","application/json");write.Header.Set("Origin","http://localhost");write.AddCookie(cookie)
+ writeRec:=httptest.NewRecorder();server.Handler().ServeHTTP(writeRec,write)
+ if writeRec.Code!=http.StatusForbidden{t.Fatalf("viewer write status=%d body=%s",writeRec.Code,writeRec.Body.String())}
+ users:=httptest.NewRequest(http.MethodGet,"http://localhost/api/v1/auth/users",nil);users.AddCookie(cookie)
+ usersRec:=httptest.NewRecorder();server.Handler().ServeHTTP(usersRec,users)
+ if usersRec.Code!=http.StatusForbidden{t.Fatalf("viewer administrator-list status=%d body=%s",usersRec.Code,usersRec.Body.String())}
+}
