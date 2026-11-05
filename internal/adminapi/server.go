@@ -23,6 +23,7 @@ type Server struct {
 	store   dataSourceStore
 	tenants tenantStore
 	tenantConnections *tenantConnectionResolver
+	shards shardRuleStore
 	pools        *PoolManager
 	tasks        *MigrationTaskManager
 	migrationDir string
@@ -42,7 +43,7 @@ func NewServerWithStore(store *adminstore.Store) *Server {
 func NewServerWithMigrationDir(store *adminstore.Store, migrationDir string) *Server {
 	if migrationDir == "" { migrationDir = "migrations" }
 	mux := http.NewServeMux()
-	server := &Server{store: store, tenants: store, pools: NewPoolManager(), migrationDir: migrationDir}
+	server := &Server{store: store, tenants: store, shards: store, pools: NewPoolManager(), migrationDir: migrationDir}
 	if store != nil {
 		server.tenantConnections = newTenantConnectionResolver(tenant.HeaderResolver{}, store, store, server.pools)
 		server.tasks = NewMigrationTaskManager(store, func(ctx context.Context, task adminstore.MigrationTask) error {
@@ -68,6 +69,7 @@ func NewServerWithMigrationDir(store *adminstore.Store, migrationDir string) *Se
 	server.registerDataSourceRoutes(mux)
 	server.registerTenantRoutes(mux)
 	server.registerMigrationRoutes(mux)
+	server.registerShardingRoutes(mux)
 	server.handler = withCommonHeaders(mux)
 	return server
 }
