@@ -34,6 +34,8 @@ const dialogVisible = ref(false)
 const editingID = ref('')
 const testingID = ref('')
 const migratingID = ref('')
+const selectedTenantIDs = ref<string[]>([])
+const batching = ref(false)
 const form = reactive<TenantInput>({
   name: '', code: '', data_source_id: '', status: 'active',
 })
@@ -110,6 +112,39 @@ async function runMigrations(item: Tenant) {
   }
 }
 
+
+function updateSelection(rows: Tenant[]) {
+  selectedTenantIDs.value = rows.filter((row) => row.status === 'active').map((row) => row.id)
+}
+
+async function runBatchMigrations() {
+  if (!selectedTenantIDs.value.length) {
+    ElMessage.warning('请先选择至少一个运行中的租户')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将为所选 ${selectedTenantIDs.value.length} 个租户提交 Up 迁移任务。共用同一数据源的租户会串行执行，并共享迁移版本记录；某个租户失败不会阻止其他租户。`,
+      '确认批量执行迁移',
+      { type: 'warning', confirmButtonText: '提交批量任务', cancelButtonText: '取消' },
+    )
+    batching.value = true
+    const { data } = await api.post<{
+      id: string; total: number; queued: number; failed: number
+      failures: Array<{ tenant_id: string; message: string }>
+    }>('/tenant-migration-batches', { tenant_ids: selectedTenantIDs.value })
+    ElMessage.success(`批次 ${data.id}：已提交 ${data.queued}/${data.total} 个任务，提交失败 ${data.failed} 个`)
+    selectedTenantIDs.value = []
+  } catch (error: unknown) {
+    if (error !== 'cancel' && error !== 'close') {
+      const response = (error as { response?: { data?: { message?: string } } })?.response
+      ElMessage.error(response?.data?.message ?? '提交批量迁移失败')
+    }
+  } finally {
+    batching.value = false
+  }
+}
+
 async function testConnection(item: Tenant) {
   testingID.value = item.id
   try {
@@ -169,10 +204,14 @@ onMounted(load)
         <strong>租户列表</strong>
         <span>{{ items.length }} 个租户</span>
       </div>
-      <el-button text :loading="loading" @click="load">刷新</el-button>
+      <div class="toolbar-actions">
+        <el-button type="success" plain :disabled="!selectedTenantIDs.length" :loading="batching" @click="runBatchMigrations">批量执行 Up（{{ selectedTenantIDs.length }}）</el-button>
+        <el-button text :loading="loading" @click="load">刷新</el-button>
+      </div>
     </div>
     <el-empty v-if="!dataSources.length && !loading" description="请先在数据源管理中添加目标数据库" />
-    <el-table v-else :data="items" v-loading="loading" empty-text="尚未创建租户" style="width: 100%">
+    <el-table v-else :data="items" v-loading="loading" empty-text="尚未创建租户" style="width: 100%" @selection-change="updateSelection">
+      <el-table-column type="selection" width="48" :selectable="(row: Tenant) => row.status === 'active'" />
       <el-table-column prop="name" label="租户名称" min-width="170" />
       <el-table-column prop="code" label="租户标识" min-width="150" />
       <el-table-column label="目标数据源" min-width="200">
@@ -244,6 +283,7 @@ onMounted(load)
 .tenant-alert { margin-bottom: 20px; }
 .table-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
 .table-toolbar > div { display: flex; align-items: center; gap: 10px; }
+.toolbar-actions { display: flex; align-items: center; gap: 10px; }
 .table-toolbar strong { color: #26354d; font-size: 13px; }
 .table-toolbar span, .field-hint { color: #98a2b3; font-size: 11px; }
 .source-cell { display: flex; flex-direction: column; gap: 4px; }
