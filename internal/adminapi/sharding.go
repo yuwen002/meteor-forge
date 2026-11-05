@@ -188,13 +188,13 @@ func physicalTableNames(ctx context.Context, db *sql.DB, driver string) ([]strin
 	var query string
 	switch driver {
 	case "mysql":
-		query = "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name"
+		query = "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' ORDER BY table_name"
 	case "postgres":
-		query = "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() ORDER BY table_name"
+		query = "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' ORDER BY table_name"
 	case "sqlite":
 		query = "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
 	case "clickhouse":
-		query = "SELECT name FROM system.tables WHERE database = currentDatabase() ORDER BY name"
+		query = "SELECT name FROM system.tables WHERE database = currentDatabase() AND engine NOT IN ('View', 'MaterializedView', 'LiveView', 'WindowView') ORDER BY name"
 	default:
 		return nil, errors.New("unsupported database driver")
 	}
