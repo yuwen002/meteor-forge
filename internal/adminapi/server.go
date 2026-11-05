@@ -45,6 +45,12 @@ func NewServerWithStore(store *adminstore.Store) *Server {
 
 // NewServerWithMigrationDir builds an API server using the supplied migration script directory.
 func NewServerWithMigrationDir(store *adminstore.Store, migrationDir string) *Server {
+	return newServerWithMigrationDir(store, migrationDir, true)
+}
+
+// newServerWithMigrationDir allows package tests to exercise handlers without
+// authentication. Production constructors always enable authentication when a store is present.
+func newServerWithMigrationDir(store *adminstore.Store, migrationDir string, enforceAuthentication bool) *Server {
 	if migrationDir == "" { migrationDir = "migrations" }
 	mux := http.NewServeMux()
 	server := &Server{pools: NewPoolManager(), migrationDir: migrationDir, authStore: store, loginLimiter: newLoginLimiter()}
@@ -99,16 +105,10 @@ func NewServerWithMigrationDir(store *adminstore.Store, migrationDir string) *Se
 	server.registerShardDDLRoutes(mux)
 	server.registerAuditRoutes(mux)
 	if store != nil { server.registerAuthRoutes(mux) }
-	var protected bool
-	if store != nil {
-		checkCtx, checkCancel := context.WithTimeout(context.Background(), 2*time.Second)
-		var checkErr error
-		protected, checkErr = store.HasAdmin(checkCtx)
-		if checkErr != nil { protected = true }
-		checkCancel()
-	}
 	var handler http.Handler = mux
-	if protected { handler = server.withAuthentication(handler) }
+	if store != nil && enforceAuthentication {
+		handler = server.withAuthentication(handler)
+	}
 	server.handler = withCommonHeaders(handler)
 	return server
 }

@@ -48,3 +48,19 @@ func TestUnknownRouteReturnsNotFound(t *testing.T) {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
 	}
 }
+
+func TestManagementAPIRequiresAuthenticationBeforeBootstrap(t *testing.T) {
+ store,err:=adminstore.Open(context.Background(),":memory:",apiTestKey)
+ if err!=nil{t.Fatal(err)}
+ defer store.Close()
+ server:=NewServerWithStore(store)
+ defer server.Close()
+ health:=httptest.NewRequest(http.MethodGet,"http://localhost/api/v1/health",nil)
+ healthRec:=httptest.NewRecorder()
+ server.Handler().ServeHTTP(healthRec,health)
+ if healthRec.Code!=http.StatusOK{t.Fatalf("health status=%d body=%s",healthRec.Code,healthRec.Body.String())}
+ request:=httptest.NewRequest(http.MethodGet,"http://localhost/api/v1/datasources",nil)
+ rec:=httptest.NewRecorder()
+ server.Handler().ServeHTTP(rec,request)
+ if rec.Code!=http.StatusUnauthorized{t.Fatalf("unbootstrapped management API status=%d body=%s",rec.Code,rec.Body.String())}
+}
