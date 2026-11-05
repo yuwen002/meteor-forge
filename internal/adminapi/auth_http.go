@@ -146,11 +146,43 @@ func sameOrigin(r *http.Request)bool{
  return strings.EqualFold(parsed.Host,r.Host)
 }
 
+func isReadOnlyAdminRoute(path string) bool {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) < 3 || parts[0] != "api" || parts[1] != "v1" {
+		return false
+	}
+	switch parts[2] {
+	case "auth":
+		return len(parts) == 4 && parts[3] == "session"
+	case "datasources":
+		return len(parts) == 3 ||
+			(len(parts) == 4) ||
+			(len(parts) == 6 && parts[4] == "migrations" && parts[5] == "status")
+	case "tenants":
+		return len(parts) == 3 || len(parts) == 4
+	case "tenant-migration-batches":
+		return len(parts) == 4
+	case "migration-tasks":
+		return len(parts) == 3 || len(parts) == 4 ||
+			(len(parts) == 5 && parts[4] == "audit")
+	case "shard-rules":
+		return len(parts) == 3 || len(parts) == 4 ||
+			(len(parts) == 5 && parts[4] == "tables")
+	case "shard-ddl-tasks":
+		return len(parts) == 3 || len(parts) == 4 ||
+			(len(parts) == 5 && parts[4] == "audit")
+	case "audit-events":
+		return len(parts) == 3
+	default:
+		return false
+	}
+}
+
 func authorizeAdminRole(role, method, path string) bool {
  if role == "administrator" { return true }
  if path == apiPrefix+"/auth/logout" || path == apiPrefix+"/auth/password" { return method == http.MethodPost }
  if path == apiPrefix+"/auth/users" || strings.HasPrefix(path, apiPrefix+"/auth/users/") || path == apiPrefix+"/auth/security-events" { return false }
- if method == http.MethodGet || method == http.MethodHead { return true }
+ if method == http.MethodGet || method == http.MethodHead { return isReadOnlyAdminRoute(path) }
  parts := strings.Split(strings.Trim(path, "/"), "/")
  if method == http.MethodPost {
   if path == apiPrefix+"/tenant-migration-batches" { return role == "migration_operator" }
