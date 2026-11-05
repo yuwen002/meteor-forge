@@ -49,6 +49,11 @@ func TestShardDDLTaskPersistenceAndAudit(t *testing.T) {
 	if len(audit) != 3 || audit[0].ToStatus != "queued" || audit[1].ToStatus != "running" || audit[2].ToStatus != "succeeded" {
 		t.Fatalf("unexpected DDL audit sequence: %+v", audit)
 	}
+	for _, event := range audit {
+		if event.RequestSource != "127.0.0.1" {
+			t.Errorf("audit event %q request source = %q, want original source 127.0.0.1", event.ToStatus, event.RequestSource)
+		}
+	}
 	listed, err := store.ListShardDDLTasks(ctx, 20)
 	if err != nil || len(listed) != 1 || listed[0].ID != task.ID { t.Fatalf("ListShardDDLTasks() = %+v, %v", listed, err) }
 }
