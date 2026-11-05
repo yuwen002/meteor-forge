@@ -421,6 +421,22 @@ func (s *Store) migrate(ctx context.Context) error {
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_admin_sessions_admin ON admin_sessions(admin_id, expires_at)`); err != nil {
 		return fmt.Errorf("index administrator sessions: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admin_security_audit_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		actor TEXT NOT NULL DEFAULT '',
+		subject TEXT NOT NULL DEFAULT '',
+		action TEXT NOT NULL,
+		outcome TEXT NOT NULL,
+		request_source TEXT NOT NULL DEFAULT '',
+		details TEXT NOT NULL DEFAULT '',
+		occurred_at TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("create security audit event table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_admin_security_audit_time
+		ON admin_security_audit_events(occurred_at DESC, id DESC)`); err != nil {
+		return fmt.Errorf("index security audit events: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
 		VALUES (11, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("record metadata schema version: %w", err)

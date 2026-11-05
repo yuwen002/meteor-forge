@@ -7,6 +7,7 @@ import (
  "io"
  "net"
  "net/http"
+ "strconv"
  "net/url"
  "strings"
  "sync"
@@ -42,6 +43,7 @@ func(s *Server) registerAuthRoutes(mux *http.ServeMux){
  mux.HandleFunc("POST "+apiPrefix+"/auth/logout",s.logoutHandler)
  mux.HandleFunc("POST "+apiPrefix+"/auth/password",s.passwordHandler)
  mux.HandleFunc("GET "+apiPrefix+"/auth/users",s.listAdminUsersHandler)
+ mux.HandleFunc("GET "+apiPrefix+"/auth/security-events",s.listSecurityAuditEventsHandler)
  mux.HandleFunc("POST "+apiPrefix+"/auth/users",s.createAdminUserHandler)
  mux.HandleFunc("PUT "+apiPrefix+"/auth/users/{id}/role",s.updateAdminRoleHandler)
  mux.HandleFunc("DELETE "+apiPrefix+"/auth/users/{id}",s.deleteAdminUserHandler)
@@ -70,10 +72,15 @@ func(s *Server) loginHandler(w http.ResponseWriter,r *http.Request){
  admin,err:=s.authStore.AuthenticateAdmin(r.Context(),input.Username,input.Password)
  if err!=nil{
   if !errors.Is(err,adminstore.ErrInvalidCredentials){writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"authentication failed"});return}
+  _ = s.authStore.RecordSecurityAuditEvent(r.Context(),adminstore.SecurityAuditEvent{Subject:strings.TrimSpace(input.Username),Action:"login",Outcome:"failed",RequestSource:requestSourceForAudit(r),Details:"invalid credentials"})
   writeJSON(w,http.StatusUnauthorized,map[string]string{"error":"invalid username or password"});return
  }
  token,expires,err:=s.authStore.CreateAdminSession(r.Context(),admin.ID,adminSessionLifetime)
  if err!=nil{writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to create session"});return}
+ if auditErr:=s.authStore.RecordSecurityAuditEvent(r.Context(),adminstore.SecurityAuditEvent{Actor:admin.Username,Subject:admin.Username,Action:"login",Outcome:"succeeded",RequestSource:requestSourceForAudit(r),Details:"administrator authenticated"});auditErr!=nil{
+  _ = s.authStore.RevokeAdminSession(r.Context(),token)
+  writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to record authentication event"});return
+ }
  s.loginLimiter.success(key)
  http.SetCookie(w,&http.Cookie{Name:adminSessionCookie,Value:token,Path:apiPrefix,HttpOnly:true,Secure:r.TLS!=nil,SameSite:http.SameSiteStrictMode,Expires:expires,MaxAge:int(adminSessionLifetime.Seconds())})
  writeJSON(w,http.StatusOK,map[string]any{"username":admin.Username,"role":admin.Role,"expires_at":expires.Format(time.RFC3339)})
@@ -86,6 +93,8 @@ func(s *Server) logoutHandler(w http.ResponseWriter,r *http.Request){
  if !requireAuthJSON(w,r){return}
  cookie,_:=r.Cookie(adminSessionCookie)
  if cookie!=nil{if err:=s.authStore.RevokeAdminSession(r.Context(),cookie.Value);err!=nil{writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to revoke session"});return}}
+ session,_:=adminSessionFromRequest(r)
+ if err:=s.authStore.RecordSecurityAuditEvent(r.Context(),adminstore.SecurityAuditEvent{Actor:session.Admin.Username,Subject:session.Admin.Username,Action:"logout",Outcome:"succeeded",RequestSource:requestSourceForAudit(r),Details:"administrator logged out"});err!=nil{writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to record logout event"});return}
  clearAdminCookie(w,r);w.WriteHeader(http.StatusNoContent)
 }
 func(s *Server) passwordHandler(w http.ResponseWriter,r *http.Request){
@@ -94,10 +103,14 @@ func(s *Server) passwordHandler(w http.ResponseWriter,r *http.Request){
  var input struct{CurrentPassword string `json:"current_password"`;NewPassword string `json:"new_password"`}
  if !decodeAuthJSON(w,r,&input){return}
  if err:=s.authStore.ChangeAdminPassword(r.Context(),session.Admin.ID,input.CurrentPassword,input.NewPassword);err!=nil{
-  if errors.Is(err,adminstore.ErrInvalidCredentials){writeJSON(w,http.StatusUnauthorized,map[string]string{"error":"current password is incorrect"});return}
+  if errors.Is(err,adminstore.ErrInvalidCredentials){
+   _ = s.authStore.RecordSecurityAuditEvent(r.Context(),adminstore.SecurityAuditEvent{Actor:session.Admin.Username,Subject:session.Admin.Username,Action:"password_change",Outcome:"failed",RequestSource:requestSourceForAudit(r),Details:"current password verification failed"})
+   writeJSON(w,http.StatusUnauthorized,map[string]string{"error":"current password is incorrect"});return
+  }
   if errors.Is(err,adminstore.ErrInvalidPassword){writeJSON(w,http.StatusBadRequest,map[string]string{"error":"new password must contain 12 to 1024 characters"});return}
   writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to change password"});return
  }
+ if err:=s.authStore.RecordSecurityAuditEvent(r.Context(),adminstore.SecurityAuditEvent{Actor:session.Admin.Username,Subject:session.Admin.Username,Action:"password_change",Outcome:"succeeded",RequestSource:requestSourceForAudit(r),Details:"administrator password changed"});err!=nil{writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to record password change event"});return}
  clearAdminCookie(w,r);w.WriteHeader(http.StatusNoContent)
 }
 func requireAuthJSON(w http.ResponseWriter,r *http.Request)bool{
@@ -136,7 +149,7 @@ func sameOrigin(r *http.Request)bool{
 func authorizeAdminRole(role, method, path string) bool {
  if role == "administrator" { return true }
  if path == apiPrefix+"/auth/logout" || path == apiPrefix+"/auth/password" { return method == http.MethodPost }
- if path == apiPrefix+"/auth/users" || strings.HasPrefix(path, apiPrefix+"/auth/users/") { return false }
+ if path == apiPrefix+"/auth/users" || strings.HasPrefix(path, apiPrefix+"/auth/users/") || path == apiPrefix+"/auth/security-events" { return false }
  if method == http.MethodGet || method == http.MethodHead { return true }
  parts := strings.Split(strings.Trim(path, "/"), "/")
  if method == http.MethodPost {
@@ -213,4 +226,21 @@ func authenticatedActor(r *http.Request) string {
  session,ok:=adminSessionFromRequest(r)
  if ok && strings.TrimSpace(session.Admin.Username)!="" { return session.Admin.Username }
  return "local-api"
+}
+
+func requestSourceForAudit(r *http.Request) string {
+ host:=r.RemoteAddr
+ if parsed,_,err:=net.SplitHostPort(host);err==nil{host=parsed}
+ if len(host)>128{return host[:128]}
+ return host
+}
+
+func (s *Server) listSecurityAuditEventsHandler(w http.ResponseWriter,r *http.Request) {
+ limit:=50
+ if raw:=r.URL.Query().Get("limit");raw!="" { value,err:=strconv.Atoi(raw);if err!=nil||value<1||value>200{writeJSON(w,http.StatusBadRequest,map[string]string{"error":"limit must be between 1 and 200"});return};limit=value }
+ offset:=0
+ if raw:=r.URL.Query().Get("offset");raw!="" { value,err:=strconv.Atoi(raw);if err!=nil||value<0||value>10000000{writeJSON(w,http.StatusBadRequest,map[string]string{"error":"offset must be between 0 and 10000000"});return};offset=value }
+ items,total,err:=s.authStore.ListSecurityAuditEvents(r.Context(),limit,offset)
+ if err!=nil{writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to list security audit events"});return}
+ writeJSON(w,http.StatusOK,map[string]any{"items":items,"total":total,"limit":limit,"offset":offset})
 }
