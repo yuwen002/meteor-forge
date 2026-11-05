@@ -14,6 +14,7 @@ var (
 	ErrShardRuleConflict = errors.New("shard rule already exists for this data source and base table")
 	ErrShardRuleInvalidInput = errors.New("invalid shard rule input")
 	ErrShardRuleDataSourceNotFound = errors.New("shard rule data source not found")
+	ErrShardRuleHasActiveDDLTasks = errors.New("shard rule has active DDL tasks")
 )
 
 // ShardRule stores a validated logical-table sharding strategy.
@@ -173,6 +174,7 @@ func (s *Store) UpdateShardRule(ctx context.Context, id string, raw ShardRuleInp
 		time.Now().UTC().Format(time.RFC3339Nano), id)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") { return ShardRule{}, ErrShardRuleConflict }
+		if strings.Contains(strings.ToLower(err.Error()), ErrShardRuleHasActiveDDLTasks.Error()) { return ShardRule{}, ErrShardRuleHasActiveDDLTasks }
 		return ShardRule{}, fmt.Errorf("update shard rule: %w", err)
 	}
 	count, err := result.RowsAffected()
@@ -185,7 +187,10 @@ func (s *Store) UpdateShardRule(ctx context.Context, id string, raw ShardRuleInp
 // DeleteShardRule removes only the management rule; it never drops physical tables.
 func (s *Store) DeleteShardRule(ctx context.Context, id string) error {
 	result, err := s.db.ExecContext(ctx, "DELETE FROM admin_shard_rules WHERE id = ?", id)
-	if err != nil { return fmt.Errorf("delete shard rule: %w", err) }
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), ErrShardRuleHasActiveDDLTasks.Error()) { return ErrShardRuleHasActiveDDLTasks }
+		return fmt.Errorf("delete shard rule: %w", err)
+	}
 	count, err := result.RowsAffected()
 	if err != nil { return err }
 	if count == 0 { return ErrShardRuleNotFound }
