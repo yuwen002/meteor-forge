@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const tenantActiveMigrationConstraint = "tenant is used by an active migration task"
+
 var (
 	ErrTenantNotFound = errors.New("tenant not found")
 	ErrTenantConflict = errors.New("tenant code already exists")
@@ -93,7 +95,7 @@ func (s *Store) CreateTenant(ctx context.Context, raw TenantInput) (Tenant, erro
 	if err != nil {
 		message := strings.ToLower(err.Error())
 		if strings.Contains(message, "unique") { return Tenant{}, ErrTenantConflict }
-		if strings.Contains(message, ErrTenantActiveMigration.Error()) { return Tenant{}, ErrTenantActiveMigration }
+		if strings.Contains(message, tenantActiveMigrationConstraint) { return Tenant{}, ErrTenantActiveMigration }
 		return Tenant{}, fmt.Errorf("create tenant: %w", err)
 	}
 	if err := tx.Commit(); err != nil { return Tenant{}, fmt.Errorf("commit tenant creation: %w", err) }
@@ -167,7 +169,7 @@ func (s *Store) UpdateTenant(ctx context.Context, id string, raw TenantInput) (T
 	if err != nil {
 		message := strings.ToLower(err.Error())
 		if strings.Contains(message, "unique") { return Tenant{}, ErrTenantConflict }
-		if strings.Contains(message, ErrTenantActiveMigration.Error()) { return Tenant{}, ErrTenantActiveMigration }
+		if strings.Contains(message, tenantActiveMigrationConstraint) { return Tenant{}, ErrTenantActiveMigration }
 		return Tenant{}, fmt.Errorf("update tenant: %w", err)
 	}
 	affected, err := result.RowsAffected()
@@ -181,7 +183,7 @@ func (s *Store) UpdateTenant(ctx context.Context, id string, raw TenantInput) (T
 func (s *Store) DeleteTenant(ctx context.Context, id string) error {
 	result, err := s.db.ExecContext(ctx, "DELETE FROM admin_tenants WHERE id = ?", id)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), ErrTenantActiveMigration.Error()) { return ErrTenantActiveMigration }
+		if strings.Contains(strings.ToLower(err.Error()), tenantActiveMigrationConstraint) { return ErrTenantActiveMigration }
 		return fmt.Errorf("delete tenant: %w", err)
 	}
 	affected, err := result.RowsAffected()
