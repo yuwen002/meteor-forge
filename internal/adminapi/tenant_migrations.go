@@ -68,6 +68,10 @@ func (s *Server) createTenantMigrationTask(w http.ResponseWriter, r *http.Reques
 		Steps: request.Steps, RequestSource: requestSource,
 	})
 	if err != nil {
+		if errors.Is(err, adminstore.ErrActiveShardDDLTasks) {
+			writeAPIError(w, http.StatusConflict, "data_source_has_active_shard_ddl_tasks", "migration tasks cannot be queued while shard DDL tasks are active")
+			return
+		}
 		if errors.Is(err, adminstore.ErrTenantNotFound) || errors.Is(err, adminstore.ErrTenantMigrationUnavailable) {
 			writeAPIError(w, http.StatusConflict, "tenant_migration_unavailable", "tenant mapping or status changed before the migration task was queued")
 			return
