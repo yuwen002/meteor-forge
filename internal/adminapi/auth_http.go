@@ -186,6 +186,8 @@ func (s *Server) createAdminUserHandler(w http.ResponseWriter, r *http.Request) 
   }
   return
  }
+ current,_:=adminSessionFromRequest(r)
+ _ = s.authStore.RecordSecurityAuditEvent(r.Context(),adminstore.SecurityAuditEvent{Actor:current.Admin.Username,Subject:item.Username,Action:"admin_create",Outcome:"succeeded",RequestSource:requestSourceForAudit(r),Details:"administrator account created"})
  writeJSON(w,http.StatusCreated,item)
 }
 func (s *Server) updateAdminRoleHandler(w http.ResponseWriter, r *http.Request) {
@@ -204,6 +206,8 @@ func (s *Server) updateAdminRoleHandler(w http.ResponseWriter, r *http.Request) 
   }
   return
  }
+ current,_:=adminSessionFromRequest(r)
+ _ = s.authStore.RecordSecurityAuditEvent(r.Context(),adminstore.SecurityAuditEvent{Actor:current.Admin.Username,Subject:id,Action:"admin_role_update",Outcome:"succeeded",RequestSource:requestSourceForAudit(r),Details:"administrator role changed to "+input.Role})
  w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) deleteAdminUserHandler(w http.ResponseWriter, r *http.Request) {
@@ -219,6 +223,8 @@ func (s *Server) deleteAdminUserHandler(w http.ResponseWriter, r *http.Request) 
   }
   return
  }
+ current,_:=adminSessionFromRequest(r)
+ _ = s.authStore.RecordSecurityAuditEvent(r.Context(),adminstore.SecurityAuditEvent{Actor:current.Admin.Username,Subject:id,Action:"admin_delete",Outcome:"succeeded",RequestSource:requestSourceForAudit(r),Details:"administrator account deleted"})
  w.WriteHeader(http.StatusNoContent)
 }
 
