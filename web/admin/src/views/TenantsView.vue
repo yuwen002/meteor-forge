@@ -174,7 +174,7 @@ async function runBatchMigrations() {
 }
 
 async function refreshBatch() {
-  if (!batch.value) return
+  if (!batch.value || batch.value.tasks.length === 0) return
   try {
     const { data } = await api.get<MigrationBatch>('/tenant-migration-batches/' + batch.value.id)
     batch.value = data
