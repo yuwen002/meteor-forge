@@ -148,6 +148,31 @@ func (s *Store) migrate(ctx context.Context) error {
 		ON admin_migration_tasks(created_at DESC)`); err != nil {
 		return fmt.Errorf("index migration tasks: %w", err)
 	}
+
+	// Add batch_id without rebuilding existing metadata databases.
+	columns, err := tx.QueryContext(ctx, "PRAGMA table_info(admin_migration_tasks)")
+	if err != nil { return fmt.Errorf("inspect migration task schema: %w", err) }
+	hasBatchID := false
+	for columns.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue sql.NullString
+		if err := columns.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			columns.Close()
+			return fmt.Errorf("read migration task schema: %w", err)
+		}
+		if name == "batch_id" { hasBatchID = true }
+	}
+	if err := columns.Err(); err != nil { columns.Close(); return err }
+	if err := columns.Close(); err != nil { return err }
+	if !hasBatchID {
+		if _, err := tx.ExecContext(ctx, "ALTER TABLE admin_migration_tasks ADD COLUMN batch_id TEXT NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("add migration task batch ID: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_admin_migration_tasks_batch ON admin_migration_tasks(batch_id, created_at)"); err != nil {
+		return fmt.Errorf("index migration task batches: %w", err)
+	}
 	// Keep data source configuration stable while queued or running migrations
 	// still depend on its connection settings. Triggers make the check atomic
 	// with the mutation, including requests from concurrent HTTP handlers.
@@ -271,7 +296,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("protect tenant deletion during migration: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
-		VALUES (7, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		VALUES (8, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("record metadata schema version: %w", err)
 	}
 	return tx.Commit()
