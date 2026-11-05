@@ -91,7 +91,7 @@ func (m *MigrationTaskManager) execute(ctx context.Context, cancel context.Cance
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			finished := time.Now().UTC()
-			_ = m.store.UpdateMigrationTask(context.Background(), task.ID, "failed", "migration worker stopped unexpectedly; inspect target schema before retrying", nil, &finished)
+			_ = m.store.UpdateMigrationTask(context.Background(), task.ID, "failed", "[WORKER_PANIC] Migration worker stopped unexpectedly. Next step: inspect the target schema and task audit before retrying.", nil, &finished)
 		}
 		m.remove(task.ID)
 		m.releaseDataSourceLock(task.DataSourceID, lock)
@@ -131,9 +131,9 @@ func (m *MigrationTaskManager) execute(ctx context.Context, cancel context.Cance
 		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
 			status, message = "canceled", "migration task was canceled; some earlier migration steps may already have completed"
 		} else if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			status, message = "failed", "migration task timed out; inspect target schema before retrying"
+			status, message = "failed", safeTaskFailure("migration", context.DeadlineExceeded)
 		} else {
-			status, message = "failed", "migration operation failed; inspect target schema before retrying"
+			status, message = "failed", safeTaskFailure("migration", err)
 		}
 	}
 	_ = m.store.UpdateMigrationTask(context.Background(), task.ID, status, message, nil, &finished)

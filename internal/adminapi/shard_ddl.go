@@ -58,7 +58,7 @@ func (m *shardDDLTaskManager) execute(ctx context.Context, cancel context.Cancel
 	defer func() {
 		if recover() != nil {
 			finished := time.Now().UTC()
-			_ = m.store.UpdateShardDDLTask(context.Background(), task.ID, "failed", "DDL worker stopped unexpectedly; inspect target schema before retrying", nil, &finished)
+			_ = m.store.UpdateShardDDLTask(context.Background(), task.ID, "failed", "[WORKER_PANIC] Shard DDL worker stopped unexpectedly. Next step: inspect the target table and task audit before retrying.", nil, &finished)
 		}
 		m.mu.Lock()
 		delete(m.cancels, task.ID)
@@ -90,9 +90,9 @@ func (m *shardDDLTaskManager) execute(ctx context.Context, cancel context.Cancel
 		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
 			status, message = "canceled", "DDL task canceled; inspect target table before retrying"
 		} else if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			status, message = "failed", "DDL task timed out; inspect target table before retrying"
+			status, message = "failed", safeTaskFailure("shard_ddl", context.DeadlineExceeded)
 		} else {
-			status, message = "failed", "DDL operation failed; inspect target schema before retrying"
+			status, message = "failed", safeTaskFailure("shard_ddl", err)
 		}
 	}
 	_ = m.store.UpdateShardDDLTask(context.Background(), task.ID, status, message, nil, &finished)
