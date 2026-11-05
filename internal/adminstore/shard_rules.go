@@ -106,26 +106,28 @@ func scanShardRule(row shardRuleScanner) (ShardRule, error) {
 func (s *Store) CreateShardRule(ctx context.Context, raw ShardRuleInput) (ShardRule, error) {
 	input, err := validateShardRuleInput(raw)
 	if err != nil { return ShardRule{}, err }
+	id, err := newID()
+	if err != nil { return ShardRule{}, err }
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil { return ShardRule{}, fmt.Errorf("begin shard rule creation: %w", err) }
+	defer tx.Rollback() //nolint:errcheck
 	var sourceExists int
-	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM admin_data_sources WHERE id = ?", input.DataSourceID).Scan(&sourceExists); errors.Is(err, sql.ErrNoRows) {
+	if err := tx.QueryRowContext(ctx, "SELECT 1 FROM admin_data_sources WHERE id = ?", input.DataSourceID).Scan(&sourceExists); errors.Is(err, sql.ErrNoRows) {
 		return ShardRule{}, ErrShardRuleDataSourceNotFound
 	} else if err != nil {
 		return ShardRule{}, fmt.Errorf("verify shard rule data source: %w", err)
 	}
-	id, err := newID()
-	if err != nil { return ShardRule{}, err }
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	result, err := s.db.ExecContext(ctx, `INSERT INTO admin_shard_rules
+	_, err = tx.ExecContext(ctx, `INSERT INTO admin_shard_rules
 		(id, data_source_id, base_table, shard_type, hash_shards, range_size, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, id, input.DataSourceID, input.BaseTable,
 		input.ShardType, input.HashShards, input.RangeSize, now, now)
 	if err != nil {
 		message := strings.ToLower(err.Error())
 		if strings.Contains(message, "unique") { return ShardRule{}, ErrShardRuleConflict }
-		if strings.Contains(message, "foreign key") { return ShardRule{}, ErrShardRuleDataSourceNotFound }
 		return ShardRule{}, fmt.Errorf("create shard rule: %w", err)
 	}
-	_ = result
+	if err := tx.Commit(); err != nil { return ShardRule{}, fmt.Errorf("commit shard rule creation: %w", err) }
 	return s.GetShardRule(ctx, id)
 }
 
@@ -156,25 +158,27 @@ func (s *Store) GetShardRule(ctx context.Context, id string) (ShardRule, error) 
 func (s *Store) UpdateShardRule(ctx context.Context, id string, raw ShardRuleInput) (ShardRule, error) {
 	input, err := validateShardRuleInput(raw)
 	if err != nil { return ShardRule{}, err }
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil { return ShardRule{}, fmt.Errorf("begin shard rule update: %w", err) }
+	defer tx.Rollback() //nolint:errcheck
 	var sourceExists int
-	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM admin_data_sources WHERE id = ?", input.DataSourceID).Scan(&sourceExists); errors.Is(err, sql.ErrNoRows) {
+	if err := tx.QueryRowContext(ctx, "SELECT 1 FROM admin_data_sources WHERE id = ?", input.DataSourceID).Scan(&sourceExists); errors.Is(err, sql.ErrNoRows) {
 		return ShardRule{}, ErrShardRuleDataSourceNotFound
 	} else if err != nil {
 		return ShardRule{}, fmt.Errorf("verify shard rule data source: %w", err)
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE admin_shard_rules SET data_source_id = ?,
+	result, err := tx.ExecContext(ctx, `UPDATE admin_shard_rules SET data_source_id = ?,
 		base_table = ?, shard_type = ?, hash_shards = ?, range_size = ?, updated_at = ? WHERE id = ?`,
 		input.DataSourceID, input.BaseTable, input.ShardType, input.HashShards, input.RangeSize,
 		time.Now().UTC().Format(time.RFC3339Nano), id)
 	if err != nil {
-		message := strings.ToLower(err.Error())
-		if strings.Contains(message, "unique") { return ShardRule{}, ErrShardRuleConflict }
-		if strings.Contains(message, "foreign key") { return ShardRule{}, ErrShardRuleDataSourceNotFound }
+		if strings.Contains(strings.ToLower(err.Error()), "unique") { return ShardRule{}, ErrShardRuleConflict }
 		return ShardRule{}, fmt.Errorf("update shard rule: %w", err)
 	}
 	count, err := result.RowsAffected()
 	if err != nil { return ShardRule{}, err }
 	if count == 0 { return ShardRule{}, ErrShardRuleNotFound }
+	if err := tx.Commit(); err != nil { return ShardRule{}, fmt.Errorf("commit shard rule update: %w", err) }
 	return s.GetShardRule(ctx, id)
 }
 
