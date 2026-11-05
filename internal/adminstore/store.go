@@ -402,8 +402,27 @@ func (s *Store) migrate(ctx context.Context) error {
 		END`); err != nil {
 		return fmt.Errorf("protect active shard DDL rule deletion: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admin_users (
+		id TEXT PRIMARY KEY,
+		username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+		password_hash TEXT NOT NULL,
+		role TEXT NOT NULL CHECK(role IN ('administrator','viewer','migration_operator','shard_operator')),
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`); err != nil { return fmt.Errorf("create administrator table: %w", err) }
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admin_sessions (
+		token_hash BLOB PRIMARY KEY,
+		admin_id TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		expires_at TEXT NOT NULL,
+		revoked_at TEXT,
+		FOREIGN KEY(admin_id) REFERENCES admin_users(id) ON DELETE CASCADE
+	)`); err != nil { return fmt.Errorf("create administrator session table: %w", err) }
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_admin_sessions_admin ON admin_sessions(admin_id, expires_at)`); err != nil {
+		return fmt.Errorf("index administrator sessions: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
-		VALUES (10, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		VALUES (11, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("record metadata schema version: %w", err)
 	}
 	return tx.Commit()
