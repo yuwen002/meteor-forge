@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,6 +20,9 @@ func main() {
 	if addr == "" {
 		// Keep the service local-only even after administrator authentication is enabled.
 		addr = "127.0.0.1:8081"
+	}
+	if err := validateAdminAddr(addr); err != nil {
+		log.Fatalf("unsafe management API bind address: %v", err)
 	}
 
 	startupCtx, startupCancel := context.WithTimeout(context.Background(), 10*time.Second)

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"net"
 	"path/filepath"
+	"strings"
 
 	"github.com/yuwen002/meteor-forge/internal/adminstore"
 )
@@ -38,4 +40,13 @@ func initializeAdministrator(ctx context.Context, store *adminstore.Store) error
 	_, err = store.BootstrapAdmin(ctx, username, password)
 	if errors.Is(err, adminstore.ErrAdminAlreadyExists) { return nil }
 	return err
+}
+
+func validateAdminAddr(addr string) error {
+ host, _, err := net.SplitHostPort(addr)
+ if err != nil { return errors.New("METEOR_ADMIN_ADDR must be a valid host:port bound to loopback") }
+ if strings.EqualFold(host,"localhost") { return nil }
+ ip := net.ParseIP(host)
+ if ip == nil || !ip.IsLoopback() { return errors.New("METEOR_ADMIN_ADDR must bind to localhost, 127.0.0.1, or ::1; public binding is disabled") }
+ return nil
 }
