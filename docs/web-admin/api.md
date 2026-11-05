@@ -193,6 +193,12 @@ Down、DownSteps 和 ToVersion 必须显式提交 `confirm: true`。前端还会
 
 返回最近 50 条任务记录，按创建时间倒序。
 
+### POST /tenants/{id}/migrations/tasks
+
+为指定的 active 租户提交迁移任务，请求体与 `POST /datasources/{id}/migrations/tasks` 相同，返回 HTTP 202。任务响应额外包含 `tenant_id`，并在管理元数据库中持久化租户与任务的关联；全局任务列表和详情也会返回该字段。已停用租户返回 HTTP 409，不创建任务。提交时会在同一事务内再次校验租户仍为 active 且仍映射到该数据源，避免校验与入队之间的状态竞态。
+
+**迁移作用范围：** 租户 ID 用于校验、任务归属和审计追踪；当前迁移脚本仍由 `pkg/migration` 在租户映射的数据源上执行，属于数据库级迁移，不会自动按租户过滤 SQL。多个租户若映射到同一个数据源，会共享同一套 `schema_migrations` 版本记录，并按数据源串行执行；因此同一物理数据库上的迁移只会应用一次。需要独立迁移历史时，应为租户配置独立数据源/数据库。
+
 ### GET /migration-tasks/{id}
 
 读取单个任务状态。
