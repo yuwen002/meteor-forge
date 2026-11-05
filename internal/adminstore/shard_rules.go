@@ -15,7 +15,6 @@ var (
 	ErrShardRuleInvalidInput = errors.New("invalid shard rule input")
 	ErrShardRuleDataSourceNotFound = errors.New("shard rule data source not found")
 	ErrShardRuleHasActiveDDLTasks = errors.New("shard rule has active DDL tasks")
-	ErrShardRuleHasDDLHistory = errors.New("shard rule has DDL task history")
 )
 
 // ShardRule stores a validated logical-table sharding strategy.
@@ -190,7 +189,6 @@ func (s *Store) DeleteShardRule(ctx context.Context, id string) error {
 	result, err := s.db.ExecContext(ctx, "DELETE FROM admin_shard_rules WHERE id = ?", id)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), ErrShardRuleHasActiveDDLTasks.Error()) { return ErrShardRuleHasActiveDDLTasks }
-		if strings.Contains(strings.ToLower(err.Error()), ErrShardRuleHasDDLHistory.Error()) { return ErrShardRuleHasDDLHistory }
 		return fmt.Errorf("delete shard rule: %w", err)
 	}
 	count, err := result.RowsAffected()
