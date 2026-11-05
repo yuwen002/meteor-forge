@@ -125,9 +125,9 @@ func (m *shardDDLTaskManager) Close() error {
 func shardCloneSQL(driver, target, source string) (string, string, error) {
 	switch driver {
 	case "mysql":
-		return fmt.Sprintf("CREATE TABLE `%s` LIKE `%s`", target, source), "复制表结构、索引和约束；不复制数据。", nil
+		return fmt.Sprintf("CREATE TABLE `%s` LIKE `%s`", target, source), "复制列定义、索引和生成列；不复制数据、外键定义或触发器。", nil
 	case "postgres":
-		return fmt.Sprintf(`CREATE TABLE "%s" (LIKE "%s" INCLUDING ALL)`, target, source), "复制列、默认值、约束、索引和存储属性；不复制数据。", nil
+		return fmt.Sprintf(`CREATE TABLE "%s" (LIKE "%s" INCLUDING ALL)`, target, source), "复制列、默认值、检查/非空约束、索引和存储属性；不复制数据、外键约束或触发器。", nil
 	case "sqlite":
 		return fmt.Sprintf(`CREATE TABLE "%s" AS SELECT * FROM "%s" WHERE 0`, target, source), "SQLite CTAS 仅复制列结构，不复制主键、约束、索引和触发器；请在生产使用前自行补齐这些对象。", nil
 	case "clickhouse":
