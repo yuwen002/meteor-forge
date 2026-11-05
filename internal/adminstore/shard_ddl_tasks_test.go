@@ -9,7 +9,7 @@ import (
 
 func TestShardDDLTaskPersistenceAndAudit(t *testing.T) {
 	ctx := context.Background()
-	store, err := Open(ctx, ":memory:", testEncryptionKey)
+	store, err := Open(ctx, ":memory:", testKey)
 	if err != nil { t.Fatal(err) }
 	t.Cleanup(func(){ _ = store.Close() })
 	source, err := store.Create(ctx, DataSourceInput{Name:"ddl target", Driver:"sqlite", DSN:":memory:"})
@@ -19,7 +19,8 @@ func TestShardDDLTaskPersistenceAndAudit(t *testing.T) {
 	task, err := store.CreateShardDDLTask(ctx, ShardDDLTask{ShardRuleID:rule.ID, DataSourceID:source.ID, Action:"clone", SourceTable:"orders", TargetTable:"orders_202611", RequestSource:"127.0.0.1"})
 	if err != nil { t.Fatal(err) }
 	if task.Status != "queued" || task.ID == "" { t.Fatalf("unexpected task: %+v", task) }
-	if err := store.UpdateShardDDLTask(ctx, task.ID, "succeeded", "completed", nil, ptrTime(time.Now().UTC())); !errors.Is(err, ErrInvalidTaskTransition) {
+	finishedBeforeRun := time.Now().UTC()
+	if err := store.UpdateShardDDLTask(ctx, task.ID, "succeeded", "completed", nil, &finishedBeforeRun); !errors.Is(err, ErrInvalidTaskTransition) {
 		t.Fatalf("queued to succeeded error=%v, want ErrInvalidTaskTransition", err)
 	}
 	started := time.Now().UTC()
@@ -42,7 +43,7 @@ func TestShardDDLTaskPersistenceAndAudit(t *testing.T) {
 
 func TestRecoverInterruptedShardDDLTasks(t *testing.T) {
 	ctx := context.Background()
-	store, err := Open(ctx, ":memory:", testEncryptionKey)
+	store, err := Open(ctx, ":memory:", testKey)
 	if err != nil { t.Fatal(err) }
 	t.Cleanup(func(){ _ = store.Close() })
 	source, err := store.Create(ctx, DataSourceInput{Name:"restart target", Driver:"sqlite", DSN:":memory:"})
