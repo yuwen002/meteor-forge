@@ -370,6 +370,22 @@ func (s *Store) migrate(ctx context.Context) error {
 		ON admin_shard_ddl_audit_events(task_id, occurred_at)`); err != nil {
 		return fmt.Errorf("index shard DDL audit events: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER IF NOT EXISTS prevent_shard_rule_update_with_active_ddl
+		BEFORE UPDATE ON admin_shard_rules
+		WHEN EXISTS (SELECT 1 FROM admin_shard_ddl_tasks WHERE shard_rule_id = OLD.id AND status IN ('queued','running'))
+		BEGIN
+			SELECT RAISE(ABORT, 'shard rule has active DDL tasks');
+		END`); err != nil {
+		return fmt.Errorf("protect active shard DDL rule updates: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER IF NOT EXISTS prevent_shard_rule_delete_with_active_ddl
+		BEFORE DELETE ON admin_shard_rules
+		WHEN EXISTS (SELECT 1 FROM admin_shard_ddl_tasks WHERE shard_rule_id = OLD.id AND status IN ('queued','running'))
+		BEGIN
+			SELECT RAISE(ABORT, 'shard rule has active DDL tasks');
+		END`); err != nil {
+		return fmt.Errorf("protect active shard DDL rule deletion: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
 		VALUES (10, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("record metadata schema version: %w", err)
