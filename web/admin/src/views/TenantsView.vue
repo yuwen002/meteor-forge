@@ -113,6 +113,10 @@ async function runMigrations(item: Tenant) {
 }
 
 
+function isTenantSelectable(row: Tenant) {
+  return row.status === 'active'
+}
+
 function updateSelection(rows: Tenant[]) {
   selectedTenantIDs.value = rows.filter((row) => row.status === 'active').map((row) => row.id)
 }
@@ -135,6 +139,7 @@ async function runBatchMigrations() {
     }>('/tenant-migration-batches', { tenant_ids: selectedTenantIDs.value })
     ElMessage.success(`批次 ${data.id}：已提交 ${data.queued}/${data.total} 个任务，提交失败 ${data.failed} 个`)
     selectedTenantIDs.value = []
+    await load()
   } catch (error: unknown) {
     if (error !== 'cancel' && error !== 'close') {
       const response = (error as { response?: { data?: { message?: string } } })?.response
@@ -211,7 +216,7 @@ onMounted(load)
     </div>
     <el-empty v-if="!dataSources.length && !loading" description="请先在数据源管理中添加目标数据库" />
     <el-table v-else :data="items" v-loading="loading" empty-text="尚未创建租户" style="width: 100%" @selection-change="updateSelection">
-      <el-table-column type="selection" width="48" :selectable="(row: Tenant) => row.status === 'active'" />
+      <el-table-column type="selection" width="48" :selectable="isTenantSelectable" />
       <el-table-column prop="name" label="租户名称" min-width="170" />
       <el-table-column prop="code" label="租户标识" min-width="150" />
       <el-table-column label="目标数据源" min-width="200">
