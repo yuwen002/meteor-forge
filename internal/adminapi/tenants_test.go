@@ -20,7 +20,7 @@ func TestTenantManagementAPI(t *testing.T) {
 		Name: "tenant api db", Driver: "sqlite", DSN: ":memory:",
 	})
 	if err != nil { t.Fatal(err) }
-	server := NewServerWithStore(store)
+	server := newTestServerWithStore(store)
 	t.Cleanup(func() { _ = server.Close() })
 
 	request := func(method, path, body string) *httptest.ResponseRecorder {
@@ -100,7 +100,7 @@ func TestTenantAPIRejectsInvalidAndMissingDataSource(t *testing.T) {
 	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
 	if err != nil { t.Fatal(err) }
 	defer store.Close()
-	server := NewServerWithStore(store)
+	server := newTestServerWithStore(store)
 	defer server.Close()
 
 	invalid := httptest.NewRequest(http.MethodPost, "/api/v1/tenants",

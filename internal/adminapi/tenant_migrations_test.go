@@ -32,7 +32,7 @@ func TestTenantMigrationTaskUsesTenantDataSourceAndPersistsScope(t *testing.T) {
 	})
 	if err != nil { t.Fatal(err) }
 
-	server := NewServerWithMigrationDir(store, dir)
+	server := newTestServerWithMigrationDir(store, dir)
 	t.Cleanup(func() { _ = server.Close() })
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/tenants/"+tenant.ID+"/migrations/tasks", strings.NewReader(`{"action":"up"}`))
@@ -76,7 +76,7 @@ func TestTenantMigrationTaskRejectsSuspendedTenant(t *testing.T) {
 	})
 	if err != nil { t.Fatal(err) }
 
-	server := NewServerWithMigrationDir(store, dir)
+	server := newTestServerWithMigrationDir(store, dir)
 	t.Cleanup(func() { _ = server.Close() })
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/tenants/"+tenant.ID+"/migrations/tasks", strings.NewReader(`{"action":"up"}`))
