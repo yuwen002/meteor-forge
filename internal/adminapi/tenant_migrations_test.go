@@ -54,6 +54,12 @@ func TestTenantMigrationTaskUsesTenantDataSourceAndPersistsScope(t *testing.T) {
 	if persisted.TenantID != tenant.ID {
 		t.Fatalf("persisted tenant ID = %q, want %q", persisted.TenantID, tenant.ID)
 	}
+	events, err := store.ListMigrationAuditEvents(context.Background(), created.ID)
+	if err != nil { t.Fatal(err) }
+	if len(events) < 2 { t.Fatalf("audit events = %d, want queued and terminal transitions", len(events)) }
+	for _, event := range events {
+		if event.TenantID != tenant.ID { t.Fatalf("audit tenant ID = %q, want %q", event.TenantID, tenant.ID) }
+	}
 }
 
 func TestTenantMigrationTaskRejectsSuspendedTenant(t *testing.T) {
