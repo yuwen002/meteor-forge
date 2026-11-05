@@ -5,7 +5,7 @@ import MigrationsView from './views/MigrationsView.vue'
 import TenantsView from './views/TenantsView.vue'
 import ShardingView from './views/ShardingView.vue'
 import TaskCenterView from './views/TaskCenterView.vue'
-import PlaceholderView from './views/PlaceholderView.vue'
+import AuditView from './views/AuditView.vue'
 
 const routes = [
   { path: '/', name: 'dashboard', component: DashboardView, meta: { title: '总览', section: '工作台' } },
@@ -14,7 +14,7 @@ const routes = [
   { path: '/tenants', name: 'tenants', component: TenantsView, meta: { title: '多租户管理', section: '数据库变更', description: '维护租户标识、数据源映射和启停状态。' } },
   { path: '/sharding', name: 'sharding', component: ShardingView, meta: { title: '分库分表', section: '数据库变更', description: '管理分片策略、路由规则和物理分片表。' } },
   { path: '/tasks', name: 'tasks', component: TaskCenterView, meta: { title: '执行任务', section: '运维审计', description: '跟踪迁移、批量租户任务和分片 DDL 的执行过程。' } },
-  { path: '/audit', name: 'audit', component: PlaceholderView, meta: { title: '操作审计', section: '运维审计', description: '追踪操作者、操作对象、执行耗时和结果。' } },
+  { path: '/audit', name: 'audit', component: AuditView, meta: { title: '操作审计', section: '运维审计', description: '追踪操作者、操作对象、执行耗时和结果。' } },
 ]
 
 export default createRouter({

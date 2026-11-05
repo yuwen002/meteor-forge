@@ -95,6 +95,7 @@ func NewServerWithMigrationDir(store *adminstore.Store, migrationDir string) *Se
 	server.registerMigrationRoutes(mux)
 	server.registerShardingRoutes(mux)
 	server.registerShardDDLRoutes(mux)
+	server.registerAuditRoutes(mux)
 	server.handler = withCommonHeaders(mux)
 	return server
 }
