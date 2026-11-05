@@ -460,8 +460,21 @@ func (s *Store) ConnectionConfig(ctx context.Context, id string) (driver, dsn st
 // Update replaces the name, driver, and encrypted DSN atomically.
 func (s *Store) Update(ctx context.Context, id string, input DataSourceInput) (DataSource, error) {
 	if err := validateInput(input); err != nil { return DataSource{}, err }
-	encrypted, err := s.encrypt(input.DSN)
+	var currentDriver string
+	var currentCiphertext []byte
+	err := s.db.QueryRowContext(ctx, "SELECT driver, dsn_ciphertext FROM admin_data_sources WHERE id = ?", id).
+		Scan(&currentDriver, &currentCiphertext)
+	if errors.Is(err, sql.ErrNoRows) { return DataSource{}, ErrNotFound }
+	if err != nil { return DataSource{}, fmt.Errorf("read current data source configuration: %w", err) }
+
+	encrypted := currentCiphertext
+	currentDSN, err := s.decrypt(currentCiphertext)
 	if err != nil { return DataSource{}, err }
+	if currentDriver != input.Driver || currentDSN != input.DSN {
+		encrypted, err = s.encrypt(input.DSN)
+		if err != nil { return DataSource{}, err }
+	}
+
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `UPDATE admin_data_sources SET name = ?, driver = ?,
 		dsn_ciphertext = ?, updated_at = ? WHERE id = ?`,
