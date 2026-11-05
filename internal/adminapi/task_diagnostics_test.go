@@ -19,6 +19,7 @@ func TestSafeTaskFailureDiagnostics(t *testing.T) {
   {"syntax","migration",errors.New("SQLSTATE 42601: syntax error at or near SECRET_SQL"),"SQL_SYNTAX_ERROR","review the migration or generated DDL"},
   {"conflict","shard_ddl",errors.New("table orders_1 already exists"),"DATABASE_OBJECT_CONFLICT","inspect the target schema"},
   {"missing source","shard_ddl",errors.New("source physical table does not exist"),"SHARD_SOURCE_TABLE_MISSING","verify the shard rule"},
+  {"existing target","shard_ddl",errors.New("target physical table already exists"),"SHARD_TARGET_TABLE_EXISTS","do not retry the clone"},
   {"generic DDL","shard_ddl",errors.New("driver internal error with dsn=secret"),"SHARD_DDL_FAILED","inspect the target table"},
   {"generic migration","migration",errors.New("driver internal error with dsn=secret"),"MIGRATION_EXECUTION_FAILED","inspect the task audit"},
   {"timeout","migration",context.DeadlineExceeded,"OPERATION_TIMEOUT","execution time limit"},

@@ -29,9 +29,6 @@ func safeTaskFailure(kind string, err error) string {
  if strings.Contains(message,"syntax error") || strings.Contains(message,"sqlstate 42601") {
   return "[SQL_SYNTAX_ERROR] The database rejected a SQL statement. Next step: review the migration or generated DDL for syntax supported by the selected database version."
  }
- if strings.Contains(message,"already exists") || strings.Contains(message,"duplicate key") || strings.Contains(message,"unique constraint") {
-  return "[DATABASE_OBJECT_CONFLICT] The operation conflicts with an existing database object or record. Next step: inspect the target schema and migration history before changing or retrying the operation."
- }
  if strings.Contains(message,"no such file") || strings.Contains(message,"file does not exist") || strings.Contains(message,"cannot find the path") {
   return "[MIGRATION_SCRIPT_UNAVAILABLE] A required migration script or file is unavailable. Next step: verify the configured migration directory and ensure both up/down scripts are deployed."
  }
@@ -39,6 +36,9 @@ func safeTaskFailure(kind string, err error) string {
   if strings.Contains(message,"source physical table does not exist") { return "[SHARD_SOURCE_TABLE_MISSING] The source physical table does not exist. Next step: verify the shard rule and source table name in the target database." }
   if strings.Contains(message,"target physical table already exists") { return "[SHARD_TARGET_TABLE_EXISTS] The target physical table already exists. Next step: inspect the existing table; do not retry the clone until its ownership and structure are confirmed." }
   return "[SHARD_DDL_FAILED] The physical table DDL operation failed. Next step: inspect the target table and task audit; verify the selected driver and required DDL privileges before retrying."
+ }
+ if strings.Contains(message,"already exists") || strings.Contains(message,"duplicate key") || strings.Contains(message,"unique constraint") {
+  return "[DATABASE_OBJECT_CONFLICT] The operation conflicts with an existing database object or record. Next step: inspect the target schema and migration history before changing or retrying the operation."
  }
  return "[MIGRATION_EXECUTION_FAILED] The migration operation failed. Next step: inspect the task audit, migration history, and target schema before retrying."
 }
