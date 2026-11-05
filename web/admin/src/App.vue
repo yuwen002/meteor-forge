@@ -1,15 +1,19 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { logoutAdmin } from './api'
+import { computed, onMounted, ref } from 'vue'
+import { getAdminSession, logoutAdmin } from './api'
 import { useRoute, useRouter } from 'vue-router'
 import {
   DataAnalysis, Connection, Files, OfficeBuilding, Grid, List, Document,
-  Setting, Menu as MenuIcon,
+  Setting, Menu as MenuIcon, User,
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
 const currentTitle = computed(() => String(route.meta.title ?? '管理后台'))
+const isAdministrator = ref(false)
+onMounted(async () => {
+  try { isAdministrator.value = (await getAdminSession()).role === 'administrator' } catch { isAdministrator.value = false }
+})
 
 async function handleLogout() {
   try { await logoutAdmin() } finally { await router.replace({ name: 'login' }) }
@@ -47,6 +51,15 @@ const navigation = [
           <el-menu-item v-for="item in group.items" :key="item.path" :index="item.path">
             <el-icon><component :is="item.icon" /></el-icon>
             <span>{{ item.label }}</span>
+          </el-menu-item>
+        </el-menu>
+      </div>
+      <div v-if="isAdministrator" class="nav-group">
+        <div class="nav-heading">系统管理</div>
+        <el-menu :default-active="route.path" router class="side-menu">
+          <el-menu-item index="/users">
+            <el-icon><User /></el-icon>
+            <span>管理员管理</span>
           </el-menu-item>
         </el-menu>
       </div>
