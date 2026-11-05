@@ -32,6 +32,7 @@ type MigrationTask struct {
 	CurrentAction string     `json:"current_action,omitempty"`
 	ProgressUpdatedAt *time.Time `json:"progress_updated_at,omitempty"`
 	RequestSource string    `json:"-"`
+	Actor         string    `json:"-"`
 }
 
 type MigrationTaskProgress struct {
@@ -234,8 +235,8 @@ func (s *Store) UpdateMigrationTask(ctx context.Context, id, status, message str
 		return ErrNotFound
 	} else if err != nil { return fmt.Errorf("load migration task for transition: %w", err) }
 	from := task.Status
-	_ = tx.QueryRowContext(ctx, `SELECT request_source FROM admin_migration_audit_events
-		WHERE task_id = ? ORDER BY id ASC LIMIT 1`, id).Scan(&task.RequestSource)
+	_ = tx.QueryRowContext(ctx, `SELECT request_source, actor FROM admin_migration_audit_events
+		WHERE task_id = ? ORDER BY id ASC LIMIT 1`, id).Scan(&task.RequestSource, &task.Actor)
 	query := `UPDATE admin_migration_tasks SET status = ?, message = ?,
 		started_at = COALESCE(?, started_at), finished_at = ?
 		WHERE id = ? AND status IN ('` + allowedFrom + `')`
@@ -251,10 +252,12 @@ func (s *Store) UpdateMigrationTask(ctx context.Context, id, status, message str
 }
 
 func insertMigrationAuditEvent(ctx context.Context, tx *sql.Tx, task MigrationTask, from, to, message string, at time.Time) error {
+	actor := task.Actor
+	if actor == "" { actor = "local-api" }
 	_, err := tx.ExecContext(ctx, `INSERT INTO admin_migration_audit_events
 		(task_id, data_source_id, action, from_status, to_status, actor, request_source, message, occurred_at)
-		VALUES (?, ?, ?, ?, ?, 'local-api', ?, ?, ?)`,
-		task.ID, task.DataSourceID, task.Action, from, to, task.RequestSource, message, at.UTC().Format(time.RFC3339Nano))
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		task.ID, task.DataSourceID, task.Action, from, to, actor, task.RequestSource, message, at.UTC().Format(time.RFC3339Nano))
 	if err != nil { return fmt.Errorf("record migration audit event: %w", err) }
 	return nil
 }

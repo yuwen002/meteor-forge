@@ -23,6 +23,7 @@ type ShardDDLTask struct {
 	StartedAt    *time.Time `json:"started_at,omitempty"`
 	FinishedAt   *time.Time `json:"finished_at,omitempty"`
 	RequestSource string    `json:"-"`
+	Actor         string    `json:"-"`
 }
 
 type ShardDDLAuditEvent struct {
@@ -66,10 +67,12 @@ func (s *Store) CreateShardDDLTask(ctx context.Context, task ShardDDLTask) (Shar
 		if strings.Contains(strings.ToLower(err.Error()), ErrActiveTasks.Error()) { return ShardDDLTask{}, ErrActiveTasks }
 		return ShardDDLTask{}, fmt.Errorf("insert shard DDL task: %w", err)
 	}
+	actor := task.Actor
+	if actor == "" { actor = "local-api" }
 	if _, err := tx.ExecContext(ctx, `INSERT INTO admin_shard_ddl_audit_events
 		(task_id, shard_rule_id, data_source_id, action, from_status, to_status, actor, request_source, message, occurred_at)
-		VALUES (?, ?, ?, ?, '', 'queued', 'local-api', ?, 'DDL task submitted', ?)`,
-		task.ID, task.ShardRuleID, task.DataSourceID, task.Action, task.RequestSource, now.Format(time.RFC3339Nano)); err != nil {
+		VALUES (?, ?, ?, ?, '', 'queued', ?, ?, 'DDL task submitted', ?)`,
+		task.ID, task.ShardRuleID, task.DataSourceID, task.Action, actor, task.RequestSource, now.Format(time.RFC3339Nano)); err != nil {
 		return ShardDDLTask{}, fmt.Errorf("audit shard DDL task submission: %w", err)
 	}
 	if err := tx.Commit(); err != nil { return ShardDDLTask{}, fmt.Errorf("commit shard DDL task: %w", err) }
@@ -106,10 +109,11 @@ func (s *Store) UpdateShardDDLTask(ctx context.Context, id, status, message stri
 		&task.Status, &created, &oldStarted, &oldFinished)
 	if errors.Is(err, sql.ErrNoRows) { return ErrShardDDLTaskNotFound }
 	if err != nil { return err }
-	var requestSource string
-	if err := tx.QueryRowContext(ctx, "SELECT request_source FROM admin_shard_ddl_audit_events WHERE task_id = ? ORDER BY id ASC LIMIT 1", id).Scan(&requestSource); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("load shard DDL audit request source: %w", err)
+	var requestSource, actor string
+	if err := tx.QueryRowContext(ctx, "SELECT request_source, actor FROM admin_shard_ddl_audit_events WHERE task_id = ? ORDER BY id ASC LIMIT 1", id).Scan(&requestSource, &actor); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("load shard DDL audit metadata: %w", err)
 	}
+	if actor == "" { actor = "local-api" }
 	valid := (task.Status == "queued" && (status == "running" || status == "failed" || status == "canceled" || status == "interrupted")) ||
 		(task.Status == "running" && (status == "succeeded" || status == "failed" || status == "canceled" || status == "interrupted"))
 	if !valid { return ErrInvalidTaskTransition }
@@ -128,8 +132,8 @@ func (s *Store) UpdateShardDDLTask(ctx context.Context, id, status, message stri
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO admin_shard_ddl_audit_events
 		(task_id, shard_rule_id, data_source_id, action, from_status, to_status, actor, request_source, message, occurred_at)
-		VALUES (?, ?, ?, ?, ?, ?, 'local-api', ?, ?, ?)`,
-		task.ID, task.ShardRuleID, task.DataSourceID, task.Action, task.Status, status, requestSource, message, now); err != nil {
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		task.ID, task.ShardRuleID, task.DataSourceID, task.Action, task.Status, status, actor, requestSource, message, now); err != nil {
 		return fmt.Errorf("audit shard DDL task transition: %w", err)
 	}
 	return tx.Commit()
