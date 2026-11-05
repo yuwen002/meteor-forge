@@ -63,6 +63,9 @@ func TestShardRuleCRUDAndValidation(t *testing.T) {
 	if _, err := store.GetShardRule(ctx, created.ID); !errors.Is(err, ErrShardRuleNotFound) {
 		t.Fatalf("GetShardRule() after delete error = %v", err)
 	}
+	if err := store.Delete(ctx, source.ID); err != nil {
+		t.Fatalf("delete data source after removing shard rule: %v", err)
+	}
 }
 
 func TestShardRuleRejectsUnsafeOrInvalidConfiguration(t *testing.T) {
