@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -14,6 +15,7 @@ var ErrInvalidTaskTransition = errors.New("invalid migration task state transiti
 
 type MigrationTask struct {
 	ID           string     `json:"id"`
+	BatchID      string     `json:"batch_id,omitempty"`
 	TenantID     string     `json:"tenant_id,omitempty"`
 	DataSourceID string     `json:"data_source_id"`
 	Action       string     `json:"action"`
@@ -65,10 +67,10 @@ func (s *Store) CreateMigrationTask(ctx context.Context, task MigrationTask) (Mi
 	if err != nil { return MigrationTask{}, fmt.Errorf("begin migration task creation: %w", err) }
 	defer tx.Rollback() //nolint:errcheck
 	_, err = tx.ExecContext(ctx, `INSERT INTO admin_migration_tasks
-		(id, data_source_id, action, target_version, steps, status, message, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		(id, data_source_id, action, target_version, steps, status, message, created_at, batch_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID, task.DataSourceID, task.Action, task.TargetVersion, task.Steps,
-		task.Status, "", now.Format(time.RFC3339Nano))
+		task.Status, "", now.Format(time.RFC3339Nano), task.BatchID)
 	if err != nil { return MigrationTask{}, fmt.Errorf("create migration task: %w", err) }
 	if task.TenantID != "" {
 		var mappedDataSourceID, tenantStatus string
@@ -100,14 +102,14 @@ func (s *Store) GetMigrationTask(ctx context.Context, id string) (MigrationTask,
 		t.steps, t.status, t.message, t.created_at, t.started_at, t.finished_at,
 		COALESCE(p.current_version, ''), COALESCE(p.completed_steps, 0),
 		COALESCE(p.total_steps, 0), COALESCE(p.current_action, ''), p.updated_at,
-		COALESCE(tt.tenant_id, '')
+		COALESCE(tt.tenant_id, ''), t.batch_id
 		FROM admin_migration_tasks t
 		LEFT JOIN admin_migration_task_progress p ON p.task_id = t.id
 		LEFT JOIN admin_migration_task_tenants tt ON tt.task_id = t.id
 		WHERE t.id = ?`, id).Scan(
 		&task.ID, &task.DataSourceID, &task.Action, &task.TargetVersion,
 		&task.Steps, &task.Status, &task.Message, &created, &started, &finished,
-		&task.CurrentVersion, &task.CompletedSteps, &task.TotalSteps, &task.CurrentAction, &progressUpdated, &task.TenantID)
+		&task.CurrentVersion, &task.CompletedSteps, &task.TotalSteps, &task.CurrentAction, &progressUpdated, &task.TenantID, &task.BatchID)
 	if errors.Is(err, sql.ErrNoRows) { return MigrationTask{}, ErrNotFound }
 	if err != nil { return MigrationTask{}, fmt.Errorf("get migration task: %w", err) }
 	task.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
@@ -161,6 +163,32 @@ func (s *Store) ListMigrationTasks(ctx context.Context, limit int) ([]MigrationT
 	rows, err := s.db.QueryContext(ctx, `SELECT id FROM admin_migration_tasks
 		ORDER BY created_at DESC LIMIT ?`, limit)
 	if err != nil { return nil, fmt.Errorf("list migration tasks: %w", err) }
+	defer rows.Close()
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil { return nil, err }
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil { return nil, err }
+	items := make([]MigrationTask, 0, len(ids))
+	for _, id := range ids {
+		item, err := s.GetMigrationTask(ctx, id)
+		if err != nil { return nil, err }
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+
+ // ListMigrationTasksByBatch returns all durable child tasks for one batch.
+func (s *Store) ListMigrationTasksByBatch(ctx context.Context, batchID string) ([]MigrationTask, error) {
+	if strings.TrimSpace(batchID) == "" {
+		return nil, fmt.Errorf("%w: batch ID is required", ErrInvalidInput)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM admin_migration_tasks
+		WHERE batch_id = ? ORDER BY created_at ASC, id ASC`, batchID)
+	if err != nil { return nil, fmt.Errorf("list migration batch tasks: %w", err) }
 	defer rows.Close()
 	ids := make([]string, 0)
 	for rows.Next() {
