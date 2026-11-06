@@ -31,8 +31,8 @@ func TestTenantMigrationBatchPersistsSubmissionFailuresAndAudit(t *testing.T) {
 	if events[1].Actor != "operator" || events[1].RequestSource != "127.0.0.1" {
 		t.Fatalf("batch audit identity was not persisted: %+v", events[1])
 	}
-	if err := store.CompleteTenantMigrationBatch(context.Background(), batch.ID, 1, failures); err != ErrInvalidTaskTransition {
-		t.Fatalf("second completion error=%v want %v", err, ErrInvalidTaskTransition)
+	if err := store.CompleteTenantMigrationBatch(context.Background(), batch.ID, 1, failures); err != ErrTenantMigrationBatchTransition {
+		t.Fatalf("second completion error=%v want %v", err, ErrTenantMigrationBatchTransition)
 	}
 }
 

@@ -35,7 +35,7 @@ type tenantMigrationBatchResponse struct {
 	Failures    []tenantMigrationBatchFailure   `json:"failures"`
 	Tasks            []adminstore.MigrationTask                 `json:"tasks"`
 	Status           string                                      `json:"status,omitempty"`
-	SubmissionFailed int                                         `json:"submission_failed,omitempty"`
+	SubmissionFailed int                                         `json:"submission_failed"`
 	Actor            string                                      `json:"actor,omitempty"`
 	RequestSource    string                                      `json:"request_source,omitempty"`
 	CreatedAt        time.Time                                   `json:"created_at,omitempty"`
@@ -167,15 +167,28 @@ func (s *Server) createTenantMigrationBatch(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusAccepted, response)
 		return
 	}
+	response.SubmissionFailed = len(storeFailures)
+	response.Status = "submitted"
+	if response.SubmissionFailed > 0 {
+		response.Status = "partially_submitted"
+		if response.Queued == 0 {
+			response.Status = "submission_failed"
+		}
+	}
+	response.AuditPersisted = true
 	record, err := batchStore.GetTenantMigrationBatch(r.Context(), batchID)
-	if err == nil {
-		response.Status = record.Status
-		response.SubmissionFailed = record.SubmissionFailed
+	if err != nil {
+		response.Warning = "batch summary was saved but could not be reloaded; refresh the batch details"
+	} else {
 		response.CreatedAt = record.CreatedAt
 		response.UpdatedAt = record.UpdatedAt
 	}
-	response.AuditEvents, _ = batchStore.ListTenantMigrationBatchAuditEvents(r.Context(), batchID)
-	response.AuditPersisted = true
+	events, auditErr := batchStore.ListTenantMigrationBatchAuditEvents(r.Context(), batchID)
+	if auditErr != nil {
+		response.Warning = "batch audit history could not be loaded; refresh the batch details"
+	} else {
+		response.AuditEvents = events
+	}
 	writeJSON(w, http.StatusAccepted, response)
 }
 
@@ -213,7 +226,10 @@ func (s *Server) getTenantMigrationBatch(w http.ResponseWriter, r *http.Request)
 		Actor: batch.Actor, RequestSource: batch.RequestSource,
 		CreatedAt: batch.CreatedAt, UpdatedAt: batch.UpdatedAt,
 		Failures: make([]tenantMigrationBatchFailure, 0, batch.SubmissionFailed),
-		Tasks: items, AuditEvents: auditEvents, AuditPersisted: true,
+		Tasks: items, AuditEvents: auditEvents, AuditPersisted: batch.Status != "submitting",
+	}
+	if batch.Status == "submitting" {
+		response.Warning = "batch submission results are not finalized; inspect child tasks before retrying"
 	}
 	for _, failure := range batch.SubmissionFailures {
 		response.Failures = append(response.Failures, tenantMigrationBatchFailure{

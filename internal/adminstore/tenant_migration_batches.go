@@ -9,14 +9,19 @@ import (
 	"time"
 )
 
-var ErrTenantMigrationBatchNotFound = errors.New("tenant migration batch not found")
+var (
+	ErrTenantMigrationBatchNotFound = errors.New("tenant migration batch not found")
+	ErrTenantMigrationBatchTransition = errors.New("invalid tenant migration batch transition")
+)
 
+// TenantMigrationBatchFailure describes a tenant whose child task could not be submitted.
 type TenantMigrationBatchFailure struct {
 	TenantID string `json:"tenant_id"`
 	Code     string `json:"code"`
 	Message  string `json:"message"`
 }
 
+// TenantMigrationBatchRecord persists the batch submission result independently of child tasks.
 type TenantMigrationBatchRecord struct {
 	ID                 string
 	Total              int
@@ -30,6 +35,7 @@ type TenantMigrationBatchRecord struct {
 	UpdatedAt          time.Time
 }
 
+// TenantMigrationBatchAuditEvent records the batch-level submission lifecycle.
 type TenantMigrationBatchAuditEvent struct {
 	ID            int64     `json:"id"`
 	BatchID       string    `json:"batch_id"`
@@ -115,7 +121,7 @@ func (s *Store) CompleteTenantMigrationBatch(ctx context.Context, id string, que
 		return fmt.Errorf("count tenant migration batch update: %w", err)
 	}
 	if affected != 1 {
-		return ErrInvalidTaskTransition
+		return ErrTenantMigrationBatchTransition
 	}
 	message := fmt.Sprintf("queued %d of %d tenant migration tasks; %d submission failures", queued, total, len(failures))
 	if err := insertTenantMigrationBatchAudit(ctx, tx, id, actor, requestSource, "submission_completed", message, now); err != nil {
