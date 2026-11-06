@@ -253,6 +253,36 @@ func (s *Store) migrate(ctx context.Context) error {
 		ON admin_migration_task_tenants(tenant_id)`); err != nil {
 		return fmt.Errorf("index tenant migration task mapping: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admin_tenant_migration_batches (
+		id TEXT PRIMARY KEY,
+		total INTEGER NOT NULL,
+		queued INTEGER NOT NULL DEFAULT 0,
+		submission_failed INTEGER NOT NULL DEFAULT 0,
+		submission_failures TEXT NOT NULL DEFAULT '[]',
+		status TEXT NOT NULL,
+		actor TEXT NOT NULL DEFAULT '',
+		request_source TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("create tenant migration batch table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admin_tenant_migration_batch_audit_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		batch_id TEXT NOT NULL,
+		event TEXT NOT NULL,
+		actor TEXT NOT NULL DEFAULT '',
+		request_source TEXT NOT NULL DEFAULT '',
+		message TEXT NOT NULL DEFAULT '',
+		occurred_at TEXT NOT NULL,
+		FOREIGN KEY(batch_id) REFERENCES admin_tenant_migration_batches(id) ON DELETE CASCADE
+	)`); err != nil {
+		return fmt.Errorf("create tenant migration batch audit table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_admin_tenant_migration_batch_audit
+		ON admin_tenant_migration_batch_audit_events(batch_id, id)`); err != nil {
+		return fmt.Errorf("index tenant migration batch audit events: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER IF NOT EXISTS prevent_datasource_update_with_tenants
 		BEFORE UPDATE OF driver, dsn_ciphertext ON admin_data_sources
 		WHEN EXISTS (SELECT 1 FROM admin_tenants WHERE data_source_id = OLD.id)
@@ -445,6 +475,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
 		VALUES (12, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("record security audit schema version: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
+		VALUES (13, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("record tenant migration batch audit schema version: %w", err)
 	}
 	return tx.Commit()
 }

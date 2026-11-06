@@ -2,9 +2,11 @@ package adminapi
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/yuwen002/meteor-forge/internal/adminstore"
 )
@@ -31,7 +33,24 @@ type tenantMigrationBatchResponse struct {
 	Canceled    int                            `json:"canceled"`
 	Interrupted int                            `json:"interrupted"`
 	Failures    []tenantMigrationBatchFailure   `json:"failures"`
-	Tasks       []adminstore.MigrationTask      `json:"tasks"`
+	Tasks            []adminstore.MigrationTask                 `json:"tasks"`
+	Status           string                                      `json:"status,omitempty"`
+	SubmissionFailed int                                         `json:"submission_failed"`
+	Actor            string                                      `json:"actor,omitempty"`
+	RequestSource    string                                      `json:"request_source,omitempty"`
+	CreatedAt        time.Time                                   `json:"created_at,omitempty"`
+	UpdatedAt        time.Time                                   `json:"updated_at,omitempty"`
+	AuditEvents      []adminstore.TenantMigrationBatchAuditEvent `json:"audit_events,omitempty"`
+	AuditPersisted   bool                                        `json:"audit_persisted"`
+	Warning          string                                      `json:"warning,omitempty"`
+}
+
+type tenantMigrationBatchStore interface {
+	CreateTenantMigrationBatch(context.Context, adminstore.TenantMigrationBatchRecord) error
+	CompleteTenantMigrationBatch(context.Context, string, int, []adminstore.TenantMigrationBatchFailure) error
+	GetTenantMigrationBatch(context.Context, string) (adminstore.TenantMigrationBatchRecord, error)
+	ListTenantMigrationBatchAuditEvents(context.Context, string) ([]adminstore.TenantMigrationBatchAuditEvent, error)
+	ListMigrationTasksByBatch(context.Context, string) ([]adminstore.MigrationTask, error)
 }
 
 // createTenantMigrationBatch fans an Up operation out to a bounded set of
@@ -98,78 +117,177 @@ func (s *Server) createTenantMigrationBatch(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	requestSource, _, _ := net.SplitHostPort(r.RemoteAddr)
-	if requestSource == "" { requestSource = r.RemoteAddr }
+	if requestSource == "" {
+		requestSource = r.RemoteAddr
+	}
+	batchStore, ok := s.store.(tenantMigrationBatchStore)
+	if !ok {
+		writeAPIError(w, http.StatusServiceUnavailable, "batch_store_unavailable", "migration batch storage is unavailable")
+		return
+	}
+	actor := authenticatedActor(r)
+	if err := batchStore.CreateTenantMigrationBatch(r.Context(), adminstore.TenantMigrationBatchRecord{
+		ID: batchID, Total: len(selected), Actor: actor, RequestSource: requestSource,
+	}); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "batch_create_failed", "unable to persist migration batch")
+		return
+	}
 
 	response := tenantMigrationBatchResponse{
-		ID: batchID, Total: len(selected),
+		ID: batchID, Total: len(selected), Status: "submitting",
+		Actor: actor, RequestSource: requestSource,
 		Failures: make([]tenantMigrationBatchFailure, 0),
 		Tasks: make([]adminstore.MigrationTask, 0, len(selected)),
 	}
+	storeFailures := make([]adminstore.TenantMigrationBatchFailure, 0)
 	for _, item := range selected {
 		task, submitErr := s.tasks.Submit(r.Context(), adminstore.MigrationTask{
 			BatchID: batchID, TenantID: item.ID, DataSourceID: item.DataSourceID,
-			Action: "up", RequestSource: requestSource, Actor: authenticatedActor(r),
+			Action: "up", RequestSource: requestSource, Actor: actor,
 		})
 		if submitErr != nil {
 			response.Failed++
-			response.Failures = append(response.Failures, tenantMigrationBatchFailure{
+			failure := tenantMigrationBatchFailure{
 				TenantID: item.ID, Code: "submission_failed",
 				Message: "unable to queue migration for this tenant; other tenants were processed independently",
+			}
+			response.Failures = append(response.Failures, failure)
+			storeFailures = append(storeFailures, adminstore.TenantMigrationBatchFailure{
+				TenantID: failure.TenantID, Code: failure.Code, Message: failure.Message,
 			})
 			continue
 		}
 		response.Queued++
 		response.Tasks = append(response.Tasks, task)
 	}
+	if err := batchStore.CompleteTenantMigrationBatch(r.Context(), batchID, response.Queued, storeFailures); err != nil {
+		response.Status = "submission_audit_incomplete"
+		response.AuditPersisted = false
+		response.Warning = "submission outcomes could not be fully persisted; inspect the child tasks before retrying"
+		writeJSON(w, http.StatusAccepted, response)
+		return
+	}
+	response.SubmissionFailed = len(storeFailures)
+	response.Status = "submitted"
+	if response.SubmissionFailed > 0 {
+		response.Status = "partially_submitted"
+		if response.Queued == 0 {
+			response.Status = "submission_failed"
+		}
+	}
+	response.AuditPersisted = true
+	record, err := batchStore.GetTenantMigrationBatch(r.Context(), batchID)
+	if err != nil {
+		response.Warning = "batch summary was saved but could not be reloaded; refresh the batch details"
+	} else {
+		response.CreatedAt = record.CreatedAt
+		response.UpdatedAt = record.UpdatedAt
+	}
+	events, auditErr := batchStore.ListTenantMigrationBatchAuditEvents(r.Context(), batchID)
+	if auditErr != nil {
+		response.Warning = "batch audit history could not be loaded; refresh the batch details"
+	} else {
+		response.AuditEvents = events
+	}
 	writeJSON(w, http.StatusAccepted, response)
 }
 
 func (s *Server) getTenantMigrationBatch(w http.ResponseWriter, r *http.Request) {
-	if !s.requireStore(w) { return }
-	store, ok := s.store.(interface {
-		ListMigrationTasksByBatch(context.Context, string) ([]adminstore.MigrationTask, error)
-	})
+	if !s.requireStore(w) {
+		return
+	}
+	batchStore, ok := s.store.(tenantMigrationBatchStore)
 	if !ok {
 		writeAPIError(w, http.StatusServiceUnavailable, "batch_store_unavailable", "migration batch storage is unavailable")
 		return
 	}
-	items, err := store.ListMigrationTasksByBatch(r.Context(), r.PathValue("id"))
+	batch, err := batchStore.GetTenantMigrationBatch(r.Context(), r.PathValue("id"))
+	if errors.Is(err, adminstore.ErrTenantMigrationBatchNotFound) {
+		writeAPIError(w, http.StatusNotFound, "batch_not_found", "migration batch not found")
+		return
+	}
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "batch_query_failed", "unable to read migration batch")
 		return
 	}
-	if len(items) == 0 {
-		writeAPIError(w, http.StatusNotFound, "batch_not_found", "migration batch not found")
+	items, err := batchStore.ListMigrationTasksByBatch(r.Context(), batch.ID)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "batch_query_failed", "unable to read migration batch tasks")
+		return
+	}
+	auditEvents, err := batchStore.ListTenantMigrationBatchAuditEvents(r.Context(), batch.ID)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "batch_audit_query_failed", "unable to read migration batch audit history")
 		return
 	}
 	response := tenantMigrationBatchResponse{
-		ID: items[0].BatchID, Total: len(items),
-		Tasks: items, Failures: make([]tenantMigrationBatchFailure, 0),
+		ID: batch.ID, Total: batch.Total, Status: batch.Status,
+		SubmissionFailed: batch.SubmissionFailed,
+		Actor: batch.Actor, RequestSource: batch.RequestSource,
+		CreatedAt: batch.CreatedAt, UpdatedAt: batch.UpdatedAt,
+		Failures: make([]tenantMigrationBatchFailure, 0, batch.SubmissionFailed),
+		Tasks: items, AuditEvents: auditEvents, AuditPersisted: batch.Status != "submitting",
 	}
+	if batch.Status == "submitting" {
+		response.Warning = "batch submission results are not finalized; inspect child tasks before retrying"
+	}
+	for _, failure := range batch.SubmissionFailures {
+		response.Failures = append(response.Failures, tenantMigrationBatchFailure{
+			TenantID: failure.TenantID, Code: failure.Code, Message: failure.Message,
+		})
+	}
+	response.Failed = batch.SubmissionFailed
 	for _, item := range items {
 		switch item.Status {
-		case "queued": response.Queued++
-		case "running": response.Running++
-		case "succeeded": response.Succeeded++
+		case "queued":
+			response.Queued++
+		case "running":
+			response.Running++
+		case "succeeded":
+			response.Succeeded++
 		case "failed":
 			response.Failed++
 			response.Failures = append(response.Failures, tenantMigrationBatchFailure{
-				TenantID: item.TenantID, Code: "migration_failed",
-				Message: item.Message,
+				TenantID: item.TenantID, Code: "migration_failed", Message: item.Message,
 			})
 		case "canceled":
 			response.Canceled++
 			response.Failures = append(response.Failures, tenantMigrationBatchFailure{
-				TenantID: item.TenantID, Code: "migration_canceled",
-				Message: item.Message,
+				TenantID: item.TenantID, Code: "migration_canceled", Message: item.Message,
 			})
 		case "interrupted":
 			response.Interrupted++
 			response.Failures = append(response.Failures, tenantMigrationBatchFailure{
-				TenantID: item.TenantID, Code: "migration_interrupted",
-				Message: item.Message,
+				TenantID: item.TenantID, Code: "migration_interrupted", Message: item.Message,
 			})
 		}
 	}
+	response.Status = tenantMigrationBatchExecutionStatus(response)
 	writeJSON(w, http.StatusOK, response)
+}
+
+func tenantMigrationBatchExecutionStatus(response tenantMigrationBatchResponse) string {
+	if response.Queued+response.Running > 0 {
+		return "running"
+	}
+	finished := response.Succeeded + response.Failed + response.Canceled + response.Interrupted
+	if finished < response.Total {
+		return response.Status
+	}
+	if response.Failed > 0 || response.Interrupted > 0 || response.Canceled > 0 {
+		if response.Succeeded > 0 {
+			return "partially_completed"
+		}
+		if response.Canceled > 0 && response.Failed == 0 && response.Interrupted == 0 {
+			return "canceled"
+		}
+		if response.Interrupted > 0 && response.Failed == 0 && response.Canceled == 0 {
+			return "interrupted"
+		}
+		return "failed"
+	}
+	if response.Succeeded == response.Total {
+		return "succeeded"
+	}
+	return response.Status
 }
