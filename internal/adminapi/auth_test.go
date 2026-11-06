@@ -90,7 +90,7 @@ func TestLoginRateLimiterIsBoundedAndAppliesCooldown(t *testing.T) {
  for i:=0;i<5;i++{if !limiter.allow("127.0.0.1|admin",now){t.Fatalf("attempt %d unexpectedly blocked",i+1)}}
  if limiter.allow("127.0.0.1|admin",now){t.Fatal("sixth attempt should be blocked")}
  if limiter.allow("127.0.0.1|admin",now.Add(10*time.Second)){t.Fatal("cooldown should remain active")}
- if !limiter.allow("127.0.0.1|admin",now.Add(61*time.Second)){t.Fatal("attempt should be allowed after the rate window")}
+ if !limiter.allow("127.0.0.1|admin",now.Add(31*time.Second)){t.Fatal("attempt should be allowed after the cooldown")}
 }
 
 func TestSameOriginChecksSchemeAndHost(t *testing.T) {

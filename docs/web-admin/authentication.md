@@ -77,7 +77,7 @@ Login accepts username/password in a JSON body and returns generic authenticatio
 
 ## Login abuse controls
 
-A bounded in-memory limiter is implemented, keyed by the direct peer address and normalized username, allowing five attempts per minute followed by a 30-second cooldown. It caps tracked keys at 4,096 and prunes expired entries. It does not trust forwarded headers. A future multi-instance deployment must move throttling to shared storage.
+A bounded in-memory limiter is implemented with two independent buckets: direct peer IP and direct peer IP + normalized username. Each bucket allows five attempts, then applies a 30-second cooldown; attempts after the cooldown begin a fresh window. It caps tracked keys at 4,096 and prunes expired entries. It does not trust forwarded headers. A future multi-instance deployment must move throttling to shared storage.
 
 ## Implemented RBAC model
 
@@ -90,7 +90,7 @@ Start with explicit least-privilege roles:
 
 The backend currently restricts migration execution and tenant migration batches to `migration_operator` (with rollback/version-changing actions separately restricted to `administrator`); shard clone operations to `shard_operator`; and administrator account/security-audit endpoints to `administrator`. All authenticated roles can read operational status and audit views.
 
-Authorization must be enforced in backend handlers/services, not only by hiding frontend buttons. Destructive rollback and physical DDL retain explicit confirmation requirements. Operational task audit records store the authenticated actor. Security audit records store actor/subject, action, outcome, direct peer address, a short static detail, and timestamp. Passwords, cookies, session tokens, DSNs, and raw database errors must never be written.
+Authorization must be enforced in backend handlers/services, not only by hiding frontend buttons. Destructive rollback and physical DDL retain explicit confirmation requirements. Operational task audit records store the authenticated actor. Security audit records store actor/subject, action, outcome, direct peer address, a short static detail, and timestamp. Administrator creation, role changes, deletion, password changes, login-session creation, and logout are committed in the same metadata-database transaction as their success audit event; an audit insert failure rolls back the associated mutation. Passwords, cookies, session tokens, DSNs, and raw database errors must never be written.
 
 ## Required security tests
 

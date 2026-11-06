@@ -29,7 +29,7 @@ func(l *loginLimiter) allow(key string,now time.Time)bool{
  v,ok:=l.entries[key]
  if !ok && len(l.entries)>=4096{return false}
  if v.blockedUntil.After(now){return false}
- if !ok || now.Sub(v.windowStart)>time.Minute {v=loginAttempt{windowStart:now}}
+ if !ok || now.Sub(v.windowStart)>time.Minute || (!v.blockedUntil.IsZero() && !v.blockedUntil.After(now)) {v=loginAttempt{windowStart:now}}
  v.count++
  if v.count>5 {v.blockedUntil=now.Add(30*time.Second)}
  l.entries[key]=v
@@ -72,7 +72,9 @@ func(s *Server) loginHandler(w http.ResponseWriter,r *http.Request){
  if !decodeAuthJSON(w,r,&input){return}
  key:=loginKey(r,input.Username)
  now:=time.Now()
- if !s.loginLimiter.allow(loginIPKey(r),now) || !s.loginLimiter.allow(key,now){writeJSON(w,http.StatusTooManyRequests,map[string]string{"error":"too many login attempts"});return}
+ ipAllowed:=s.loginLimiter.allow(loginIPKey(r),now)
+ userAllowed:=s.loginLimiter.allow(key,now)
+ if !ipAllowed || !userAllowed {writeJSON(w,http.StatusTooManyRequests,map[string]string{"error":"too many login attempts"});return}
  admin,err:=s.authStore.AuthenticateAdmin(r.Context(),input.Username,input.Password)
  if err!=nil{
   if !errors.Is(err,adminstore.ErrInvalidCredentials){writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"authentication failed"});return}
