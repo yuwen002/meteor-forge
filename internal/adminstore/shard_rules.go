@@ -174,7 +174,7 @@ func (s *Store) UpdateShardRule(ctx context.Context, id string, raw ShardRuleInp
 		time.Now().UTC().Format(time.RFC3339Nano), id)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") { return ShardRule{}, ErrShardRuleConflict }
-		if strings.Contains(strings.ToLower(err.Error()), ErrShardRuleHasActiveDDLTasks.Error()) { return ShardRule{}, ErrShardRuleHasActiveDDLTasks }
+		if strings.Contains(strings.ToLower(err.Error()), strings.ToLower(ErrShardRuleHasActiveDDLTasks.Error())) { return ShardRule{}, ErrShardRuleHasActiveDDLTasks }
 		return ShardRule{}, fmt.Errorf("update shard rule: %w", err)
 	}
 	count, err := result.RowsAffected()
@@ -188,7 +188,7 @@ func (s *Store) UpdateShardRule(ctx context.Context, id string, raw ShardRuleInp
 func (s *Store) DeleteShardRule(ctx context.Context, id string) error {
 	result, err := s.db.ExecContext(ctx, "DELETE FROM admin_shard_rules WHERE id = ?", id)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), ErrShardRuleHasActiveDDLTasks.Error()) { return ErrShardRuleHasActiveDDLTasks }
+		if strings.Contains(strings.ToLower(err.Error()), strings.ToLower(ErrShardRuleHasActiveDDLTasks.Error())) { return ErrShardRuleHasActiveDDLTasks }
 		return fmt.Errorf("delete shard rule: %w", err)
 	}
 	count, err := result.RowsAffected()
