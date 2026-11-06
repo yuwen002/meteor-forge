@@ -2,6 +2,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
+import { useAdminPermissions } from '../permissions'
 
 interface DataSource {
   id: string
@@ -44,6 +45,8 @@ interface TenantInput {
   data_source_id: string
   status: 'active' | 'suspended'
 }
+
+const { canManageTenants, canTestConnections, canRunMigrations } = useAdminPermissions()
 
 const items = ref<Tenant[]>([])
 const dataSources = ref<DataSource[]>([])
@@ -94,6 +97,7 @@ function openEdit(item: Tenant) {
 }
 
 async function save() {
+  if (!canManageTenants.value) return
   if (!form.name.trim() || !form.code.trim() || !form.data_source_id) {
     ElMessage.warning('请填写租户名称、标识并选择数据源')
     return
@@ -114,6 +118,7 @@ async function save() {
 }
 
 async function runMigrations(item: Tenant) {
+  if (!canRunMigrations.value) return
   try {
     await ElMessageBox.confirm(
       '系统将在租户关联的数据源上执行全部待执行迁移。若多个租户共用该数据源，迁移只会执行一次并共享版本记录。',
@@ -143,6 +148,7 @@ function updateSelection(rows: Tenant[]) {
 }
 
 async function runBatchMigrations() {
+  if (!canRunMigrations.value) return
   if (!selectedTenantIDs.value.length) {
     ElMessage.warning('请先选择至少一个运行中的租户')
     return
@@ -197,6 +203,7 @@ async function testConnection(item: Tenant) {
 }
 
 async function remove(item: Tenant) {
+  if (!canManageTenants.value) return
   try {
     await ElMessageBox.confirm(
       '此操作只删除 meteor-forge 中的租户登记，不会删除关联数据源、目标数据库或其中的数据。',
@@ -224,7 +231,7 @@ onMounted(load)
       <h1>多租户管理</h1>
       <p>维护租户标识与目标数据源映射。每个租户映射到一个已登记的数据源，连接凭据仍由数据源管理统一加密保管。</p>
     </div>
-    <el-button type="primary" :disabled="!dataSources.length" @click="openCreate">添加租户</el-button>
+    <el-button v-if="canManageTenants" type="primary" :disabled="!dataSources.length" @click="openCreate">添加租户</el-button>
   </div>
 
   <el-alert
@@ -243,7 +250,7 @@ onMounted(load)
         <span>{{ items.length }} 个租户</span>
       </div>
       <div class="toolbar-actions">
-        <el-button type="success" plain :disabled="!selectedTenantIDs.length" :loading="batching" @click="runBatchMigrations">批量执行 Up（{{ selectedTenantIDs.length }}）</el-button>
+        <el-button v-if="canRunMigrations" type="success" plain :disabled="!selectedTenantIDs.length" :loading="batching" @click="runBatchMigrations">批量执行 Up（{{ selectedTenantIDs.length }}）</el-button>
         <el-button v-if="batch" text type="primary" @click="batchDialogVisible = true">查看最近批次</el-button>
         <el-button text :loading="loading" @click="load">刷新</el-button>
       </div>
@@ -271,12 +278,12 @@ onMounted(load)
       <el-table-column prop="updated_at" label="最近更新" min-width="190">
         <template #default="{ row }">{{ new Date(row.updated_at).toLocaleString() }}</template>
       </el-table-column>
-      <el-table-column label="操作" fixed="right" width="290">
+      <el-table-column v-if="canManageTenants || canTestConnections || canRunMigrations" label="操作" fixed="right" width="290">
         <template #default="{ row }">
-          <el-button link type="primary" :loading="testingID === row.id" @click="testConnection(row)">测试连接</el-button>
-          <el-button link type="success" :loading="migratingID === row.id" :disabled="row.status !== 'active'" @click="runMigrations(row)">执行 Up</el-button>
-          <el-button link @click="openEdit(row)">编辑</el-button>
-          <el-button link type="danger" @click="remove(row)">删除</el-button>
+          <el-button v-if="canTestConnections" link type="primary" :loading="testingID === row.id" @click="testConnection(row)">测试连接</el-button>
+          <el-button v-if="canRunMigrations" link type="success" :loading="migratingID === row.id" :disabled="row.status !== 'active'" @click="runMigrations(row)">执行 Up</el-button>
+          <el-button v-if="canManageTenants" link @click="openEdit(row)">编辑</el-button>
+          <el-button v-if="canManageTenants" link type="danger" @click="remove(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>

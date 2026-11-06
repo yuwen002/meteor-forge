@@ -1,3 +1,4 @@
+import type { AdminRole } from './permissions'
 import axios from 'axios'
 
 export const api = axios.create({
@@ -19,7 +20,7 @@ export async function getHealth(): Promise<HealthResponse> {
   return data
 }
 
-export interface AdminSession { username: string; role: string; expires_at: string }
+export interface AdminSession { username: string; role: AdminRole; expires_at: string }
 
 export async function loginAdmin(username: string, password: string): Promise<AdminSession> {
   const { data } = await api.post<AdminSession>('/auth/login', { username, password })

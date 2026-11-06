@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
+import { useAdminPermissions } from '../permissions'
 
 type TaskKind = 'migration' | 'shard_ddl'
 type TaskStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled' | 'interrupted'
@@ -36,6 +37,8 @@ interface AuditEvent {
   message?: string
   occurred_at: string
 }
+
+const { canCancelMigrationTask, canCancelShardDDL } = useAdminPermissions()
 
 const tasks = ref<UnifiedTask[]>([])
 const selected = ref<UnifiedTask | null>(null)
@@ -74,6 +77,10 @@ function actionLabel(task: UnifiedTask) {
   if (task.kind === 'shard_ddl') return task.action === 'clone' ? '物理表结构克隆' : task.action
   const labels: Record<string, string> = { up: '升级迁移', down: '回滚一步', down_steps: '按步数回滚', to_version: '迁移到指定版本' }
   return labels[task.action] ?? task.action
+}
+function canCancelTask(task: UnifiedTask | null): boolean {
+  if (!task) return false
+  return task.kind === 'migration' ? canCancelMigrationTask(task.action) : canCancelShardDDL.value
 }
 function duration(task: UnifiedTask) {
   if (!task.started_at) return '未开始'
@@ -132,7 +139,7 @@ async function selectTask(task: UnifiedTask) {
 
 async function cancelSelected() {
   const task = selected.value
-  if (!task || !['queued', 'running'].includes(task.status)) return
+  if (!task || !['queued', 'running'].includes(task.status) || !canCancelTask(task)) return
   try {
     await ElMessageBox.confirm(
       task.kind === 'migration'
@@ -241,7 +248,7 @@ onBeforeUnmount(() => {
       <div class="task-detail-actions">
         <el-tag :type="statusType(selected.status)" effect="plain">{{ statusLabel(selected.status) }}</el-tag>
         <el-button
-          v-if="['queued', 'running'].includes(selected.status)"
+          v-if="['queued', 'running'].includes(selected.status) && canCancelTask(selected)"
           type="danger"
           plain
           size="small"
@@ -277,7 +284,7 @@ onBeforeUnmount(() => {
     </el-table>
     <el-alert
       title="审计身份说明"
-      description="当前管理 API 尚未接入登录认证，操作者 local-api 是固定服务标记，不代表真实登录用户；请求来源是管理 API 连接来源。"
+      description="操作者来自已认证的管理账号；请求来源由管理 API 直接观察，不信任 X-Forwarded-For 等转发头。"
       type="info"
       :closable="false"
       class="task-audit-note"

@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
+import { useAdminPermissions } from '../permissions'
 
 interface DataSource {
   id: string
@@ -49,6 +50,8 @@ interface ShardDDLAuditEvent {
   message: string
   occurred_at: string
 }
+
+const { canManageShardRules, canPreviewShardRoutes, canCheckShardTables, canRunShardDDL } = useAdminPermissions()
 
 const loading = ref(false)
 const saving = ref(false)
@@ -120,6 +123,7 @@ async function load() {
 }
 
 function openCreate() {
+  if (!canManageShardRules.value) return
   editingID.value = ''
   Object.assign(form, {
     data_source_id: dataSources.value[0]?.id ?? '',
@@ -132,6 +136,7 @@ function openCreate() {
 }
 
 function openEdit(rule: ShardRule) {
+  if (!canManageShardRules.value) return
   editingID.value = rule.id
   Object.assign(form, {
     data_source_id: rule.data_source_id,
@@ -144,6 +149,7 @@ function openEdit(rule: ShardRule) {
 }
 
 async function save() {
+  if (!canManageShardRules.value) return
   if (!form.data_source_id || !form.base_table.trim()) {
     ElMessage.warning('请选择数据源并填写基础表名')
     return
@@ -188,6 +194,7 @@ async function openTables(rule: ShardRule) {
 }
 
 async function previewClone() {
+  if (!canRunShardDDL.value) return
   if (!tableRule.value || !cloneSource.value.trim() || !cloneTarget.value.trim()) {
     ElMessage.warning('请填写模板物理表和目标分片表名')
     return
@@ -209,6 +216,7 @@ async function previewClone() {
 }
 
 async function submitClone() {
+  if (!canRunShardDDL.value) return
   if (!tableRule.value || !clonePreview.value) return
   try {
     await ElMessageBox.confirm(
@@ -293,7 +301,7 @@ function openPreview(rule: ShardRule) {
 }
 
 async function runPreview() {
-  if (!previewRule.value) return
+  if (!canPreviewShardRoutes.value || !previewRule.value) return
   const payload: Record<string, string | number> = {}
   if (isTimeRule.value) {
     if (routeInput.start_time.trim() || routeInput.end_time.trim()) {
@@ -340,6 +348,7 @@ async function runPreview() {
 }
 
 async function remove(rule: ShardRule) {
+  if (!canManageShardRules.value) return
   try {
     await ElMessageBox.confirm(
       '只删除 meteor-forge 中的分片规则配置，不会删除目标数据库中的物理表或数据。',
@@ -364,7 +373,7 @@ onMounted(load)
       <h1>分库分表</h1>
       <p>登记逻辑表分片策略，预览路由并盘点物理表；可在检查 DDL 预览后提交受审计的结构克隆任务。</p>
     </div>
-    <el-button type="primary" :disabled="!dataSources.length" @click="openCreate">新增分片规则</el-button>
+    <el-button v-if="canManageShardRules" type="primary" :disabled="!dataSources.length" @click="openCreate">新增分片规则</el-button>
   </div>
 
   <el-alert
@@ -407,10 +416,10 @@ onMounted(load)
       </el-table-column>
       <el-table-column label="操作" fixed="right" width="210">
         <template #default="{ row }">
-          <el-button link type="primary" @click="openPreview(row)">路由预览</el-button>
+          <el-button v-if="canPreviewShardRoutes" link type="primary" @click="openPreview(row)">路由预览</el-button>
           <el-button link type="success" @click="openTables(row)">物理表</el-button>
-          <el-button link @click="openEdit(row)">编辑</el-button>
-          <el-button link type="danger" @click="remove(row)">删除</el-button>
+          <el-button v-if="canManageShardRules" link @click="openEdit(row)">编辑</el-button>
+          <el-button v-if="canManageShardRules" link type="danger" @click="remove(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -457,20 +466,20 @@ onMounted(load)
       <el-divider />
       <div class="table-check-row">
         <el-input v-model="tableCheckName" placeholder="输入物理表名，例如 orders_202611" />
-        <el-button type="primary" :loading="tableChecking" @click="checkTableExists">检查存在性</el-button>
+        <el-button v-if="canCheckShardTables" type="primary" :loading="tableChecking" @click="checkTableExists">检查存在性</el-button>
       </div>
       <el-alert v-if="tableCheckResult !== null" :title="tableCheckResult ? '物理表存在' : '物理表不存在'" :type="tableCheckResult ? 'success' : 'warning'" :closable="false" show-icon class="table-check-result" />
       <el-divider />
       <div class="clone-heading"><strong>结构克隆</strong><el-tag type="warning" effect="plain">不会复制数据</el-tag></div>
-      <div class="clone-form">
+      <div v-if="canRunShardDDL" class="clone-form">
         <el-input v-model="cloneSource" placeholder="模板表，例如 orders" />
         <el-input v-model="cloneTarget" placeholder="目标表，例如 orders_202611" />
         <el-button type="primary" :loading="clonePreviewing" @click="previewClone">生成 DDL 预览</el-button>
       </div>
-      <template v-if="clonePreview">
+      <template v-if="clonePreview && canRunShardDDL">
         <el-alert :title="clonePreview.warning" type="warning" :closable="false" show-icon class="clone-warning" />
         <pre class="clone-sql">{{ clonePreview.sql }}</pre>
-        <el-button type="danger" :loading="cloneSubmitting" @click="submitClone">确认并提交克隆任务</el-button>
+        <el-button v-if="canRunShardDDL" type="danger" :loading="cloneSubmitting" @click="submitClone">确认并提交克隆任务</el-button>
       </template>
       <div v-if="cloneTask" class="clone-task">
         <div class="clone-task-heading">
