@@ -61,3 +61,9 @@ npm run build
 ```
 
 租户、分片、执行任务、操作审计和安全审计页面已接入真实管理 API。前端权限矩阵与后端角色保持一致：viewer 只读；migration_operator 可执行/取消 Up；shard_operator 可执行分片 DDL；administrator 可管理数据源、租户、分片规则、回滚和管理员账号。
+
+## 中文手册
+
+Web 管理后台的完整操作流程见仓库根目录 docs/web-admin/README.md。建议按顺序阅读用户手册、部署与运维手册、API 接口目录和认证授权说明。
+
+当前管理 API 仅支持 loopback 监听，前端 Vite 开发服务器通过本地代理访问 API；Go API 不直接托管前端静态文件。

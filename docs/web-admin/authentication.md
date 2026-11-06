@@ -1,137 +1,95 @@
-# Web Admin Authentication and Authorization
+# 管理后台认证与授权
 
-> Status: administrator bootstrap, password verification, persistent sessions, login/logout/password-change endpoints, backend RBAC, administrator account management, frontend login/role guards, and authenticated task-audit attribution are implemented in code. Persistent security audit events now cover login success/failure, logout, password changes, and administrator account creation/role changes/deletion; a read-only administrator-only endpoint exposes these events. CI/security-test execution remains outstanding. Startup enforces loopback-only binding; do not expose the service through a reverse proxy or public interface.
+## 1. 当前安全边界
 
-## Goals
+管理 API 默认监听 127.0.0.1:8081，并且启动时拒绝非 loopback 地址。认证不是允许公网访问的理由；当前实现不支持受信任反向代理、远程管理或公网部署。不要通过代理或端口映射绕过 loopback 限制。
 
-- Require an authenticated administrator for every management API operation.
-- Keep health checks public but disclose no configuration or database details.
-- Support a first-run local administrator bootstrap without a public registration endpoint.
-- Store password verifiers and opaque session-token hashes, never plaintext passwords or session tokens.
-- Make session expiry, logout, and server-side revocation effective immediately.
-- Enforce role-based authorization in the backend and expose administrator-only account/security controls.
-- Preserve the existing separation between the management metadata database and target databases.
+健康检查 GET /api/v1/health 公开，但只返回最小存活信息。其他管理 API 均要求有效会话。
 
-## Threat model and deployment boundary
+## 2. 首次管理员初始化
 
-The management API can create and execute database migrations, roll back schema changes, alter tenant mappings, and create physical shard tables. A local-only listener is a defense-in-depth boundary, not an authentication mechanism.
+首次启动时：
 
-The command defaults to `127.0.0.1:8081` and currently rejects any `METEOR_ADMIN_ADDR` that is not `localhost`, `127.0.0.1`, or `::1`. A future remote-deployment milestone must separately define TLS termination, trusted proxy handling, secure cookies, access policy, audit retention/integrity, and deployment hardening before relaxing this restriction.
+- METEOR_ADMIN_USERNAME 可选，默认 admin。
+- METEOR_ADMIN_BOOTSTRAP_PASSWORD 在尚无管理员时必需，至少 12 个字符。
+- METEOR_ADMIN_ENCRYPTION_KEY 必需，为 64 位十六进制字符串，解码后 32 字节。
+- 管理员创建成功后，启动环境变量不会重置已有密码；不存在公开注册或密码重置接口。
 
-Do not trust `X-Forwarded-For` or similar headers for authentication, audit identity, or login throttling unless a future explicit trusted-proxy configuration is implemented.
+生成密钥：
 
-## First-run administrator bootstrap
+~~~sh
+openssl rand -hex 32
+~~~
 
-- Username comes from `METEOR_ADMIN_USERNAME`; default: `admin`.
-- On first initialization only, require `METEOR_ADMIN_BOOTSTRAP_PASSWORD`.
-- Require a strong password (minimum 12 characters; reject whitespace-only and oversized values).
-- Persist only a salted password verifier.
-- Once an administrator exists, ignore the bootstrap password environment variable; never reset an existing password from environment on every restart.
-- Do not expose a public registration or password-reset endpoint.
-- If the metadata store has no administrator and no bootstrap password is configured, fail startup with a clear configuration error rather than starting an unauthenticated management API.
-- Password rotation should be a separate authenticated operation with current-password verification and session revocation.
+请通过安全配置渠道注入密码和密钥，不要提交到 Git、前端环境变量或日志。
 
-## Password and session storage
+## 3. 密码存储
 
-The current implementation uses standard-library PBKDF2-HMAC-SHA256 with 310,000 iterations, a 16-byte random per-password salt, a 32-byte derived key, versioned storage encoding, and constant-time comparison. This avoids a new dependency but is a deliberate trade-off versus Argon2id; reassess the work factor and consider Argon2id before wider deployment. Never use plain SHA-256, reversible encryption, or a fast hash for passwords.
+当前实现使用标准库 PBKDF2-HMAC-SHA256，310,000 次迭代、每个密码独立的 16 字节随机盐、32 字节派生密钥和常量时间比较。数据库只保存带版本信息的密码验证器，不保存明文密码。
 
-Session tokens must be generated from a cryptographically secure random source (at least 256 bits). Return the raw token only in a cookie; persist only its SHA-256 hash. Store username, creation time, expiry time, and revocation state. Use a bounded lifetime (initially 12 hours), HttpOnly, SameSite=Strict, Path=/api/v1 cookies, and Secure when served over HTTPS. Expired sessions must be rejected even if cleanup has not run.
+该方案是当前实现的明确取舍，不等同于已采用 Argon2id。部署范围扩大前应重新评估密码哈希参数及算法升级计划。
 
-Logout revokes the server-side session and clears the cookie. Password change and administrator disablement revoke all active sessions for that account.
+## 4. 会话机制
 
-## Implemented bootstrap configuration
+- 登录接口 POST /api/v1/auth/login 校验账号密码并签发会话。
+- 会话 token 至少 256 bit 随机；原始 token 只通过 Cookie 返回，管理元数据库只保存 SHA-256 摘要。
+- Cookie 名称为 meteor_admin_session，HttpOnly、SameSite=Strict、Path=/api/v1，生命周期为 12 小时；HTTPS 场景设置 Secure。
+- GET /api/v1/auth/session 返回当前管理员身份和过期时间。
+- 登出会撤销服务端会话并清除 Cookie。
+- 修改密码、角色变更和账号删除会撤销相关现有会话。
+- 过期会话即使尚未清理，也会被拒绝。
 
-- `METEOR_ADMIN_USERNAME`: optional; defaults to `admin`.
-- `METEOR_ADMIN_BOOTSTRAP_PASSWORD`: required only when the metadata store has no administrator; minimum 12 characters. Once an administrator exists, the environment variable is ignored and cannot reset its password.
-- `POST /api/v1/auth/login` accepts JSON credentials and issues the 12-hour HttpOnly, SameSite=Strict cookie `meteor_admin_session`. The raw token is never persisted; only its SHA-256 digest is stored.
-- `POST /api/v1/auth/logout` revokes the current session. `POST /api/v1/auth/password` verifies the current password, changes the password, and revokes all sessions.
-- The Vite development proxy preserves the browser Host header so same-origin checks compare the browser Origin to the original UI host.
+不要将 Cookie/token 放进 localStorage、URL、日志、埋点或前端应用状态。
 
-## HTTP contract
+## 5. CSRF 与浏览器请求保护
 
-| Method | Endpoint | Authentication | Purpose |
-|---|---|---|---|
-| POST | `/api/v1/auth/login` | Public, rate-limited | Verify credentials and issue session cookie |
-| GET | `/api/v1/auth/session` | Required | Return current administrator identity and session expiry |
-| POST | `/api/v1/auth/logout` | Required + CSRF checks | Revoke current session and clear cookie |
-| POST | `/api/v1/auth/password` | Required + CSRF checks | Change password and revoke other sessions |
-| GET | `/api/v1/auth/users` | Administrator | List administrator accounts (password verifiers are never returned) |
-| POST | `/api/v1/auth/users` | Administrator + CSRF checks | Create an administrator account |
-| PUT | `/api/v1/auth/users/{id}/role` | Administrator + CSRF checks | Change role and revoke existing sessions |
-| DELETE | `/api/v1/auth/users/{id}` | Administrator + CSRF checks | Delete an account; last administrator cannot be removed |
-| GET | `/api/v1/auth/security-events` | Administrator | List authentication and administrator lifecycle audit events |
-| GET | `/api/v1/health` | Public | Minimal liveness response |
+- 对 Cookie 认证的状态变更请求校验 Origin 与请求 Host。
+- 拒绝跨源状态变更请求，不启用通配符 CORS。
+- 认证状态变更接口要求 JSON Content-Type。
+- 设置 no-store、nosniff 和 no-referrer 等响应头。
+- 不信任 X-Forwarded-For 等转发头作为身份或来源依据，除非未来实现显式可信代理配置。
 
-All other `/api/v1/**` endpoints require a valid session. Unknown API routes are behind the same authentication middleware.
+当前前端通过 Vite 同源代理访问本地 API。自定义开发代理时应保持浏览器 Host/Origin 语义，不要随意更改跨源策略。
 
-Login accepts username/password in a JSON body and returns generic authentication errors so callers cannot enumerate usernames. Responses must never contain password hashes, session tokens, or bootstrap secrets.
+## 6. 登录限流与错误信息
 
-## CSRF and browser protections
+登录接口具有服务端限流。用户名或密码错误使用通用认证失败响应，避免枚举用户名。响应不得包含密码验证器、会话 token 或 bootstrap secret。
 
-- Use a host-only cookie (do not set Domain), HttpOnly, SameSite=Strict, and a narrow API path.
-- Validate the request Origin against the request host for cookie-authenticated state-changing requests. Reject cross-origin requests; do not enable wildcard CORS.
-- Require JSON content type for state-changing authentication endpoints.
-- Keep the existing no-store, nosniff, and no-referrer response headers.
-- Do not put session tokens in localStorage, URLs, logs, analytics, or frontend application state.
-- If cross-origin administration is ever required, design an explicit CSRF-token and trusted-origin model rather than weakening these defaults.
+## 7. 角色与权限
 
-## Login abuse controls
+| 角色 | 权限范围 |
+|---|---|
+| administrator | 完整管理权限，包括账号、数据源、租户、分片规则、回滚和 DDL |
+| migration_operator | 查看资源；提交获准的 Up 迁移和取消迁移任务；不能回滚 |
+| shard_operator | 查看资源；预览分片路由；提交物理表结构克隆和取消 DDL |
+| viewer | 只读 |
 
-A bounded in-memory limiter is implemented with two independent buckets: direct peer IP and direct peer IP + normalized username. Each bucket allows five attempts, then applies a 30-second cooldown; attempts after the cooldown begin a fresh window. It caps tracked keys at 4,096 and prunes expired entries. It does not trust forwarded headers. A future multi-instance deployment must move throttling to shared storage.
+后端中间件对每个 API 请求执行认证和角色授权。前端路由守卫和按钮显隐只负责用户体验，不能作为安全边界。
 
-## Implemented RBAC model
+## 8. 管理员账号管理
 
-Start with explicit least-privilege roles:
+管理员专属接口：
 
-- `viewer`: read data sources, migration status, tenants, shard rules, task details, and audit events.
-- `migration_operator`: viewer permissions plus migration preview and migration execution; rollback remains separately gated.
-- `shard_operator`: viewer permissions plus shard clone preview and shard DDL execution.
-- `administrator`: user/session management and role assignment, plus all operational permissions.
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | /api/v1/auth/users | 列出账号，不返回密码验证器 |
+| POST | /api/v1/auth/users | 创建账号 |
+| PUT | /api/v1/auth/users/{id}/role | 修改角色 |
+| DELETE | /api/v1/auth/users/{id} | 删除账号 |
+| GET | /api/v1/auth/security-events | 查看安全审计 |
 
-The backend currently restricts migration execution and tenant migration batches to `migration_operator` (with rollback/version-changing actions separately restricted to `administrator`); shard clone operations to `shard_operator`; and administrator account/security-audit endpoints to `administrator`. Migration operators may cancel only `up` tasks; cancellation of rollback or version-change tasks is administrator-only. All authenticated roles can read operational status and audit views.
+密码至少 12 个字符。不能修改自己的角色；不能删除或降级最后一个管理员。账号角色变更或删除会撤销该账号的会话。
 
-### Backend route permission matrix
+## 9. 安全审计
 
-| Route / operation | viewer | migration_operator | shard_operator | administrator |
-|---|---:|---:|---:|---:|
-| Read data sources, tenants, migration tasks/audits, shard rules/tables, operational audit events | Yes | Yes | Yes | Yes |
-| Read authentication session | Yes | Yes | Yes | Yes |
-| Create/update/delete data sources, tenants, and shard rules; test target connections | No | No | No | Yes |
-| Create/list administrator accounts, change roles, read security audit events | No | No | No | Yes |
-| Change own password or log out | Yes | Yes | Yes | Yes |
-| Migration preview and `up` execution; tenant migration batches | No | Yes | No | Yes |
-| Migration rollback / version change (`down`, `down_steps`, `to_version`) | No | No | No | Yes |
-| Cancel migration `up` task | No | Yes | No | Yes |
-| Cancel migration rollback / version-change task | No | No | No | Yes |
-| Shard route preview and physical-table existence checks | Yes | No | Yes | Yes |
-| Shard clone preview and clone DDL task submission/cancellation | No | No | Yes | Yes |
+安全审计事件覆盖登录成功/失败、登出、密码变更、管理员创建、角色变更和删除。仅 administrator 可读取。记录包含操作者、目标账号、结果、请求来源和说明，不包含密码或会话凭据。
 
-The matrix is enforced by backend middleware and action-specific handler checks. In particular, migration-task cancellation first loads the persisted task action; an operator cannot bypass the administrator-only rollback rule by calling the generic cancellation endpoint. The route-level regression suite covers the registered route classes for all four roles.
+请求来源使用管理 API 直接观察到的远端地址，不信任未经配置的转发头。
 
-Authorization must be enforced in backend handlers/services, not only by hiding frontend buttons. Destructive rollback and physical DDL retain explicit confirmation requirements. Operational task audit records store the authenticated actor. Security audit records store actor/subject, action, outcome, direct peer address, a short static detail, and timestamp. Administrator creation, role changes, deletion, password changes, login-session creation, and logout are committed in the same metadata-database transaction as their success audit event; an audit insert failure rolls back the associated mutation. Passwords, cookies, session tokens, DSNs, and raw database errors must never be written.
+## 10. 部署注意事项
 
-## Required security tests
-
-- First boot refuses to start without a bootstrap password; creates exactly one administrator when configured.
-- Restart does not overwrite an existing password from environment variables.
-- Password hashes are salted and never returned by API responses.
-- Correct and incorrect credentials; generic error behavior for unknown usernames.
-- Session cookie attributes, token-hash-only persistence, expiry, logout, and server-side revocation.
-- Every management endpoint rejects missing, invalid, expired, and revoked sessions.
-- Health and login remain reachable without a session; no other endpoint does.
-- Cross-origin and missing-Origin state-changing requests are rejected according to the chosen browser contract.
-- Login throttling is bounded and does not trust spoofed forwarding headers.
-- Password change revokes previous sessions.
-- RBAC tests prove backend enforcement for every read/write/execute class, including migration-task cancellation by action type.
-- Security audit event persistence, administrator-only access, and absence of passwords, cookie values, and raw session tokens.
-
-## Merge gate
-
-Do not mark the management-platform PR ready for review until authentication and authorization are enforced server-side, the security tests above pass, the local-only bind default is verified, and the latest Go, integration, lint, and frontend CI jobs pass on the exact PR head SHA.
-
-
-## Security audit events
-
-The Web Admin exposes these events on the administrator-only **系统管理 → 安全审计** page.
-
-`GET /api/v1/auth/security-events` is administrator-only and supports `limit` (1–200, default 50) and `offset` (0–10,000,000, default 0). Events include login success/failure, logout, password changes, and administrator account creation, role changes, and deletion. Each event contains actor, subject, action, outcome, direct peer address, a short static detail, and UTC timestamp. The event stream never stores submitted passwords, session cookies, token values, DSNs, or raw driver errors. Failed credential checks are recorded without distinguishing unknown usernames from incorrect passwords.
+- 保持 loopback-only 监听。
+- 加密密钥必须安全备份；丢失密钥后，已保存 DSN 无法解密。
+- 管理元数据库文件和父目录应限制访问。
+- 不要把管理 API 暴露到公网。
+- 远程访问、TLS 终止、可信代理、MFA、审计完整性保护和多节点协调均不属于当前已交付能力。
