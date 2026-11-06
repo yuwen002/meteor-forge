@@ -22,6 +22,28 @@
 
 ---
 
+## 🖥️ Web 管理后台
+
+项目同时提供基于 Vue 3 + TypeScript + Element Plus 的 Web 管理后台，以及 Go 标准库 HTTP API。管理后台覆盖数据源管理、多租户管理、动态租户发现、数据库迁移、分库分表、异步任务和操作/安全审计。
+
+**当前安全边界：** 管理 API 默认监听 127.0.0.1:8081，并强制 loopback 绑定；当前版本不支持公网或远程管理部署。Go API 不托管前端静态文件，推荐按前端目录说明使用本地 Vite 代理进行联调。
+
+本地启动：
+
+~~~sh
+# 终端 1：启动管理 API（首次启动需设置密钥和管理员密码）
+export METEOR_ADMIN_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+export METEOR_ADMIN_BOOTSTRAP_PASSWORD='至少12位的强密码'
+go run ./cmd/server
+
+# 终端 2：启动前端
+cd web/admin
+npm install
+npm run dev
+~~~
+
+完整安装、配置、权限、操作和排障流程见 [Web 管理后台中文用户手册](docs/web-admin/user-guide.md)，部署边界和备份恢复见 [部署与运维手册](docs/web-admin/deployment.md)。所有 Web 管理文档从 [文档中心](docs/web-admin/README.md) 进入。
+
 ## 📁 项目结构
 
 ```text
