@@ -54,6 +54,22 @@ interface MigrationBatch {
     total_steps: number
   }>
 }
+interface TenantAuditSnapshot {
+  name: string
+  code: string
+  data_source_id: string
+  status: string
+}
+interface TenantAuditEvent {
+  id: number
+  tenant_id: string
+  action: 'created' | 'updated' | 'deleted'
+  actor: string
+  request_source: string
+  before?: TenantAuditSnapshot | null
+  after?: TenantAuditSnapshot | null
+  occurred_at: string
+}
 interface TenantInput {
   name: string
   code: string
@@ -74,6 +90,11 @@ const migratingID = ref('')
 const selectedTenantIDs = ref<string[]>([])
 const batching = ref(false)
 const batchDialogVisible = ref(false)
+const auditVisible = ref(false)
+const auditLoading = ref(false)
+const auditTenantName = ref('')
+const auditEvents = ref<TenantAuditEvent[]>([])
+const auditTotal = ref(0)
 const batch = ref<MigrationBatch | null>(null)
 const form = reactive<TenantInput>({
   name: '', code: '', data_source_id: '', status: 'active',
@@ -236,6 +257,34 @@ async function remove(item: Tenant) {
   }
 }
 
+async function viewAudit(item: Tenant) {
+  auditTenantName.value = item.name
+  auditEvents.value = []
+  auditTotal.value = 0
+  auditVisible.value = true
+  auditLoading.value = true
+  try {
+    const { data } = await api.get<{ items: TenantAuditEvent[]; total: number }>(
+      '/tenants/' + item.id + '/audit',
+      { params: { limit: 50, offset: 0 } },
+    )
+    auditEvents.value = data.items
+    auditTotal.value = data.total
+  } catch (error: unknown) {
+    const response = (error as { response?: { data?: { message?: string } } })?.response
+    ElMessage.error(response?.data?.message ?? '读取租户审计失败')
+  } finally {
+    auditLoading.value = false
+  }
+}
+function auditActionLabel(action: TenantAuditEvent['action']): string {
+  return action === 'created' ? '创建租户' : action === 'updated' ? '修改租户' : '删除租户'
+}
+function auditSnapshotLabel(snapshot?: TenantAuditSnapshot | null): string {
+  if (!snapshot) return '—'
+  return `${snapshot.name}（${snapshot.code}） · ${snapshot.data_source_id} · ${snapshot.status}`
+}
+
 onMounted(load)
 </script>
 
@@ -293,8 +342,9 @@ onMounted(load)
       <el-table-column prop="updated_at" label="最近更新" min-width="190">
         <template #default="{ row }">{{ new Date(row.updated_at).toLocaleString() }}</template>
       </el-table-column>
-      <el-table-column v-if="canManageTenants || canTestConnections || canRunMigrations" label="操作" fixed="right" width="290">
+      <el-table-column label="操作" fixed="right" width="350">
         <template #default="{ row }">
+          <el-button link @click="viewAudit(row)">审计</el-button>
           <el-button v-if="canTestConnections" link type="primary" :loading="testingID === row.id" @click="testConnection(row)">测试连接</el-button>
           <el-button v-if="canRunMigrations" link type="success" :loading="migratingID === row.id" :disabled="row.status !== 'active'" @click="runMigrations(row)">执行 Up</el-button>
           <el-button v-if="canManageTenants" link @click="openEdit(row)">编辑</el-button>
@@ -365,6 +415,25 @@ onMounted(load)
     </template>
   </el-dialog>
 
+  <el-dialog v-model="auditVisible" :title="`租户审计 · ${auditTenantName}`" width="760px">
+    <div class="audit-total">共 {{ auditTotal }} 条生命周期记录</div>
+    <el-timeline v-loading="auditLoading" v-if="auditEvents.length">
+      <el-timeline-item
+        v-for="event in auditEvents"
+        :key="event.id"
+        :timestamp="new Date(event.occurred_at).toLocaleString()"
+        :type="event.action === 'created' ? 'success' : event.action === 'deleted' ? 'danger' : 'primary'"
+      >
+        <div class="audit-event-title">{{ auditActionLabel(event.action) }} · {{ event.actor }}</div>
+        <div class="audit-event-meta">来源：{{ event.request_source || '—' }}</div>
+        <div v-if="event.before" class="audit-snapshot">变更前：{{ auditSnapshotLabel(event.before) }}</div>
+        <div v-if="event.after" class="audit-snapshot">变更后：{{ auditSnapshotLabel(event.after) }}</div>
+      </el-timeline-item>
+    </el-timeline>
+    <el-empty v-else-if="!auditLoading" description="该租户暂无审计记录" :image-size="64" />
+    <template #footer><el-button @click="auditVisible = false">关闭</el-button></template>
+  </el-dialog>
+
   <el-dialog v-model="dialogVisible" :title="editingID ? '编辑租户' : '添加租户'" width="560px" destroy-on-close>
     <el-form :model="form" label-position="top">
       <el-form-item label="租户名称" required>
@@ -406,6 +475,9 @@ onMounted(load)
 .batch-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; font-size: 12px; }
 .batch-summary span { margin-right: 8px; color: #667085; }
 .batch-alert { margin-top: 14px; }
+.audit-total { margin-bottom: 14px; color: #8a95a5; font-size: 11px; }
+.audit-event-title { color: #34445d; font-size: 12px; font-weight: 600; }
+.audit-event-meta, .audit-snapshot { margin-top: 5px; color: #8a95a5; font-size: 11px; line-height: 1.6; }
 .table-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
 .table-toolbar > div { display: flex; align-items: center; gap: 10px; }
 .toolbar-actions { display: flex; align-items: center; gap: 10px; }

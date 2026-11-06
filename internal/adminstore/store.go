@@ -283,6 +283,22 @@ func (s *Store) migrate(ctx context.Context) error {
 		ON admin_tenant_migration_batch_audit_events(batch_id, id)`); err != nil {
 		return fmt.Errorf("index tenant migration batch audit events: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admin_tenant_audit_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		tenant_id TEXT NOT NULL,
+		action TEXT NOT NULL,
+		actor TEXT NOT NULL DEFAULT '',
+		request_source TEXT NOT NULL DEFAULT '',
+		before_json TEXT NOT NULL DEFAULT 'null',
+		after_json TEXT NOT NULL DEFAULT 'null',
+		occurred_at TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("create tenant audit event table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_admin_tenant_audit_events_tenant
+		ON admin_tenant_audit_events(tenant_id, id DESC)`); err != nil {
+		return fmt.Errorf("index tenant audit events: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `CREATE TRIGGER IF NOT EXISTS prevent_datasource_update_with_tenants
 		BEFORE UPDATE OF driver, dsn_ciphertext ON admin_data_sources
 		WHEN EXISTS (SELECT 1 FROM admin_tenants WHERE data_source_id = OLD.id)
@@ -479,6 +495,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
 		VALUES (13, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("record tenant migration batch audit schema version: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
+		VALUES (14, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("record tenant lifecycle audit schema version: %w", err)
 	}
 	return tx.Commit()
 }
