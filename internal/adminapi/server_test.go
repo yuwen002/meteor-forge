@@ -52,6 +52,24 @@ func TestUnknownRouteReturnsNotFound(t *testing.T) {
 	}
 }
 
+func TestHealthOnlyServerDoesNotRegisterManagementRoutes(t *testing.T) {
+ server := NewServer()
+ for _, tc := range []struct{method,path string}{
+  {http.MethodGet,"/api/v1/datasources"},
+  {http.MethodPost,"/api/v1/datasources"},
+  {http.MethodGet,"/api/v1/tenants"},
+  {http.MethodPost,"/api/v1/migration-tasks"},
+  {http.MethodGet,"/api/v1/audit-events"},
+ } {
+  req:=httptest.NewRequest(tc.method,tc.path,nil)
+  rec:=httptest.NewRecorder()
+  server.Handler().ServeHTTP(rec,req)
+  if rec.Code!=http.StatusNotFound {
+   t.Errorf("%s %s status=%d, want %d (health-only server must not expose operational routes)",tc.method,tc.path,rec.Code,http.StatusNotFound)
+  }
+ }
+}
+
 func TestManagementAPIRequiresAuthenticationBeforeBootstrap(t *testing.T) {
  store,err:=adminstore.Open(context.Background(),":memory:",apiTestKey)
  if err!=nil{t.Fatal(err)}

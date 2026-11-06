@@ -98,13 +98,18 @@ func newServerWithMigrationDir(store *adminstore.Store, migrationDir string, enf
 		cancel()
 	}
 	mux.HandleFunc("GET "+apiPrefix+"/health", healthHandler)
-	server.registerDataSourceRoutes(mux)
-	server.registerTenantRoutes(mux)
-	server.registerMigrationRoutes(mux)
-	server.registerShardingRoutes(mux)
-	server.registerShardDDLRoutes(mux)
-	server.registerAuditRoutes(mux)
-	if store != nil { server.registerAuthRoutes(mux) }
+	// A nil metadata store is a health-only embedding mode. Do not register
+	// operational handlers that would otherwise run without authentication
+	// or dereference an unavailable store.
+	if store != nil {
+		server.registerDataSourceRoutes(mux)
+		server.registerTenantRoutes(mux)
+		server.registerMigrationRoutes(mux)
+		server.registerShardingRoutes(mux)
+		server.registerShardDDLRoutes(mux)
+		server.registerAuditRoutes(mux)
+		server.registerAuthRoutes(mux)
+	}
 	var handler http.Handler = mux
 	if store != nil && enforceAuthentication {
 		handler = server.withAuthentication(handler)
