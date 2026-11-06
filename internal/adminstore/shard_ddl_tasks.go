@@ -111,7 +111,7 @@ func (s *Store) UpdateShardDDLTask(ctx context.Context, id, status, message stri
 	if err != nil { return err }
 	var requestSource, actor string
 	if err := tx.QueryRowContext(ctx, "SELECT request_source, actor FROM admin_shard_ddl_audit_events WHERE task_id = ? ORDER BY id ASC LIMIT 1", id).Scan(&requestSource, &actor); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("load shard DDL audit metadata: %w", err)
+		return fmt.Errorf("load shard DDL audit request source and actor: %w", err)
 	}
 	if actor == "" { actor = "local-api" }
 	valid := (task.Status == "queued" && (status == "running" || status == "failed" || status == "canceled" || status == "interrupted")) ||
@@ -176,10 +176,10 @@ func (s *Store) RecoverInterruptedShardDDLTasks(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil { return err }
 	defer tx.Rollback() //nolint:errcheck
-	rows, err := tx.QueryContext(ctx, "SELECT t.id, t.shard_rule_id, t.data_source_id, t.action, t.status,
+	rows, err := tx.QueryContext(ctx, `SELECT t.id, t.shard_rule_id, t.data_source_id, t.action, t.status,
 		COALESCE((SELECT request_source FROM admin_shard_ddl_audit_events WHERE task_id = t.id ORDER BY id ASC LIMIT 1), ''),
 		COALESCE((SELECT actor FROM admin_shard_ddl_audit_events WHERE task_id = t.id ORDER BY id ASC LIMIT 1), 'local-api')
-		FROM admin_shard_ddl_tasks t WHERE t.status IN ('queued','running')")
+		FROM admin_shard_ddl_tasks t WHERE t.status IN ('queued','running')`)
 	if err != nil { return err }
 	type pending struct { id, ruleID, sourceID, action, status, requestSource, actor string }
 	items := make([]pending, 0)

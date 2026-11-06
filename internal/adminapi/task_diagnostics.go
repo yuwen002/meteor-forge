@@ -35,6 +35,9 @@ func safeTaskFailure(kind string, err error) string {
  if kind == "shard_ddl" {
   if strings.Contains(message,"source physical table does not exist") { return "[SHARD_SOURCE_TABLE_MISSING] The source physical table does not exist. Next step: verify the shard rule and source table name in the target database." }
   if strings.Contains(message,"target physical table already exists") { return "[SHARD_TARGET_TABLE_EXISTS] The target physical table already exists. Next step: inspect the existing table; do not retry the clone until its ownership and structure are confirmed." }
+  if strings.Contains(message,"already exists") || strings.Contains(message,"duplicate key") || strings.Contains(message,"unique constraint") {
+   return "[DATABASE_OBJECT_CONFLICT] The operation conflicts with an existing database object or record. Next step: inspect the target schema and migration history before changing or retrying the operation."
+  }
   return "[SHARD_DDL_FAILED] The physical table DDL operation failed. Next step: inspect the target table and task audit; verify the selected driver and required DDL privileges before retrying."
  }
  if strings.Contains(message,"already exists") || strings.Contains(message,"duplicate key") || strings.Contains(message,"unique constraint") {

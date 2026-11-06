@@ -22,7 +22,15 @@ const outcomeLabels: Record<SecurityAuditEvent['outcome'], string> = {
   failed: '失败',
   denied: '拒绝',
 }
-function outcomeType(value: SecurityAuditEvent['outcome']) {
+function actionLabel(value: unknown): string {
+  if (typeof value !== 'string' || !Object.hasOwn(actionLabels, value)) return String(value ?? '')
+  return actionLabels[value as SecurityAuditEvent['action']]
+}
+function outcomeLabel(value: unknown): string {
+  if (typeof value !== 'string' || !Object.hasOwn(outcomeLabels, value)) return String(value ?? '')
+  return outcomeLabels[value as SecurityAuditEvent['outcome']]
+}
+function outcomeType(value: unknown) {
   if (value === 'succeeded') return 'success'
   if (value === 'failed' || value === 'denied') return 'danger'
   return 'info'
@@ -71,11 +79,11 @@ onMounted(() => void refresh())
           <template #default="{ row }">{{ new Date(row.occurred_at).toLocaleString() }}</template>
         </el-table-column>
         <el-table-column label="事件" min-width="140">
-          <template #default="{ row }">{{ actionLabels[row.action] ?? row.action }}</template>
+          <template #default="{ row }">{{ actionLabel(row.action) }}</template>
         </el-table-column>
         <el-table-column label="结果" width="110">
           <template #default="{ row }">
-            <el-tag :type="outcomeType(row.outcome)" effect="plain">{{ outcomeLabels[row.outcome] ?? row.outcome }}</el-tag>
+            <el-tag :type="outcomeType(row.outcome)" effect="plain">{{ outcomeLabel(row.outcome) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="actor" label="操作者" min-width="150" />

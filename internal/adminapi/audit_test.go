@@ -127,7 +127,7 @@ func TestOperationAuditEndpointFiltersAndPaginates(t *testing.T) {
 		{"/api/v1/audit-events?from=2026-11-05T12:00:00Z&to=2026-11-04T12:00:00Z", http.StatusBadRequest},
 	} {
 		response := request(tc.path)
-		if response.Code != tc.want || !strings.Contains(response.Body.String(), "error") {
+		if response.Code != tc.want || !strings.Contains(response.Body.String(), "\"code\"") {
 			t.Errorf("%s status=%d body=%s, want %d", tc.path, response.Code, response.Body.String(), tc.want)
 		}
 	}
