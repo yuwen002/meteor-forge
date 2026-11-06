@@ -56,7 +56,7 @@ func TestTenantContextTrimsIdentifiersAndHandlesNil(t *testing.T) {
 	if err != nil || got != "tenant-x" {
 		t.Fatalf("FromContext got=%q err=%v, want normalized tenant-x", got, err)
 	}
-	if _, err := FromContext(nil); !errors.Is(err, ErrTenantNotFound) {
+	if _, err := FromContext(context.TODO()); !errors.Is(err, ErrTenantNotFound) {
 		t.Fatalf("FromContext(nil) error = %v, want ErrTenantNotFound", err)
 	}
 }

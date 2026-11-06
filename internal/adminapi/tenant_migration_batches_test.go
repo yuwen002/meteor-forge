@@ -31,7 +31,7 @@ func TestTenantMigrationBatchIsolatesFailuresAndPersistsSummary(t *testing.T) {
 	})
 	if err != nil { t.Fatal(err) }
 
-	var tenants []adminstore.Tenant
+	tenants := make([]adminstore.Tenant, 0, 3)
 	for i, sourceID := range []string{sharedSource.ID, sharedSource.ID, brokenSource.ID} {
 		item, createErr := store.CreateTenant(context.Background(), adminstore.TenantInput{
 			Name: "Batch tenant " + string(rune('A'+i)),
