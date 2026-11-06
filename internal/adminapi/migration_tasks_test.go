@@ -27,15 +27,29 @@ func TestMigrationTaskUpAndConfirmedDown(t *testing.T) {
 	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
 	if err != nil { t.Fatal(err) }
 	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.BootstrapAdmin(context.Background(), "root", "a-strong-password-123"); err != nil {
+		t.Fatal(err)
+	}
 	source, err := store.Create(context.Background(), adminstore.DataSourceInput{
 		Name: "task target", Driver: "sqlite", DSN: target,
 	})
 	if err != nil { t.Fatal(err) }
-	server := newTestServerWithMigrationDir(store, dir)
+	server := NewServerWithMigrationDir(store, dir)
 	t.Cleanup(func() { _ = server.Close() })
+	login := httptest.NewRequest(http.MethodPost, "http://localhost/api/v1/auth/login",
+		strings.NewReader(`{"username":"root","password":"a-strong-password-123"}`))
+	login.Header.Set("Content-Type", "application/json")
+	loginRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(loginRec, login)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("administrator login status=%d body=%s", loginRec.Code, loginRec.Body.String())
+	}
+	cookie := loginRec.Result().Cookies()[0]
 
-	up := httptest.NewRequest(http.MethodPost, "/api/v1/datasources/"+source.ID+"/migrations/tasks", strings.NewReader(`{"action":"up"}`))
+	up := httptest.NewRequest(http.MethodPost, "http://localhost/api/v1/datasources/"+source.ID+"/migrations/tasks", strings.NewReader(`{"action":"up"}`))
 	up.Header.Set("Content-Type", "application/json")
+	up.Header.Set("Origin", "http://localhost")
+	up.AddCookie(cookie)
 	upRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(upRec, up)
 	if upRec.Code != http.StatusAccepted { t.Fatalf("submit up status=%d body=%s", upRec.Code, upRec.Body.String()) }
@@ -59,12 +73,16 @@ func TestMigrationTaskUpAndConfirmedDown(t *testing.T) {
 
 	downWithoutConfirmation := httptest.NewRequest(http.MethodPost, "/api/v1/datasources/"+source.ID+"/migrations/tasks", strings.NewReader(`{"action":"down"}`))
 	downWithoutConfirmation.Header.Set("Content-Type", "application/json")
+	downWithoutConfirmation.Header.Set("Origin", "http://localhost")
+	downWithoutConfirmation.AddCookie(cookie)
 	downRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(downRec, downWithoutConfirmation)
 	if downRec.Code != http.StatusBadRequest { t.Fatalf("unconfirmed Down status=%d body=%s", downRec.Code, downRec.Body.String()) }
 
 	down := httptest.NewRequest(http.MethodPost, "/api/v1/datasources/"+source.ID+"/migrations/tasks", strings.NewReader(`{"action":"down","confirm":true}`))
 	down.Header.Set("Content-Type", "application/json")
+	down.Header.Set("Origin", "http://localhost")
+	down.AddCookie(cookie)
 	downRec = httptest.NewRecorder()
 	server.Handler().ServeHTTP(downRec, down)
 	if downRec.Code != http.StatusAccepted { t.Fatalf("submit down status=%d body=%s", downRec.Code, downRec.Body.String()) }

@@ -111,7 +111,7 @@ func (s *Store) UpdateShardDDLTask(ctx context.Context, id, status, message stri
 	if err != nil { return err }
 	var requestSource, actor string
 	if err := tx.QueryRowContext(ctx, "SELECT request_source, actor FROM admin_shard_ddl_audit_events WHERE task_id = ? ORDER BY id ASC LIMIT 1", id).Scan(&requestSource, &actor); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("load shard DDL audit metadata: %w", err)
+		return fmt.Errorf("load shard DDL audit request source and actor: %w", err)
 	}
 	if actor == "" { actor = "local-api" }
 	valid := (task.Status == "queued" && (status == "running" || status == "failed" || status == "canceled" || status == "interrupted")) ||
