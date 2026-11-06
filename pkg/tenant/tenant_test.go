@@ -48,3 +48,15 @@ func TestHeaderResolver(t *testing.T) {
 		t.Errorf("expected ErrTenantNotFound, got %v", err)
 	}
 }
+
+
+func TestTenantContextTrimsIdentifiersAndHandlesNil(t *testing.T) {
+	ctx := WithTenantID(context.Background(), "  tenant-x  ")
+	got, err := FromContext(ctx)
+	if err != nil || got != "tenant-x" {
+		t.Fatalf("FromContext got=%q err=%v, want normalized tenant-x", got, err)
+	}
+	if _, err := FromContext(nil); !errors.Is(err, ErrTenantNotFound) {
+		t.Fatalf("FromContext(nil) error = %v, want ErrTenantNotFound", err)
+	}
+}

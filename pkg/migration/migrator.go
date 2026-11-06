@@ -12,15 +12,25 @@ import (
 type DefaultMigrator struct {
 	loader Loader
 	driver Driver
+	observer ProgressObserver
 }
 
 // 确保 DefaultMigrator 实现了 Migrator 接口。
 var _ Migrator = (*DefaultMigrator)(nil)
 
 func NewDefaultMigrator(loader Loader, driver Driver) *DefaultMigrator {
-	return &DefaultMigrator{
-		loader: loader,
-		driver: driver,
+	return NewDefaultMigratorWithObserver(loader, driver, nil)
+}
+
+// NewDefaultMigratorWithObserver 创建支持执行进度回调的迁移引擎。
+// observer 在每条迁移开始和成功完成时同步调用；回调应快速返回且不得重入当前引擎。
+func NewDefaultMigratorWithObserver(loader Loader, driver Driver, observer ProgressObserver) *DefaultMigrator {
+	return &DefaultMigrator{loader: loader, driver: driver, observer: observer}
+}
+
+func (m *DefaultMigrator) reportProgress(progress Progress) {
+	if m.observer != nil {
+		m.observer(progress)
 	}
 }
 
@@ -38,6 +48,20 @@ func (m *DefaultMigrator) releaseLock(_ context.Context) {
 	_ = m.driver.Unlock(context.Background())
 }
 
+// validateAppliedScripts verifies every applied database version still has a matching local script.
+// Callers must hold the driver's migration lock.
+func validateAppliedScripts(records []Record, scripts []*Script) error {
+	local := make(map[string]*Script, len(scripts))
+	for _, script := range scripts { local[script.Version] = script }
+	for _, record := range records {
+		script, ok := local[record.Version]
+		if !ok { return fmt.Errorf("applied migration script for version %s is missing locally", record.Version) }
+		if record.Checksum != "" && record.Checksum != script.Checksum() {
+			return fmt.Errorf("%w: version %s (db=%s, local=%s)", ErrChecksumMismatch, record.Version, record.Checksum, script.Checksum())
+		}
+	}
+	return nil
+}
 // Up 执行所有未完成的迁移脚本。
 // 执行前先对全部本地脚本做校验和防篡改比对，已应用过的脚本内容被修改时返回 ErrChecksumMismatch。
 // 整个过程持有 Driver 迁移锁，防止多实例并发迁移。
@@ -57,37 +81,23 @@ func (m *DefaultMigrator) Up(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load scripts failed: %w", err)
 	}
-	if len(scripts) == 0 {
-		return ErrNoPendingMigrations
-	}
-
 	// 3. 获取数据库中已执行的记录
 	appliedRecords, err := m.driver.GetAppliedVersions(ctx)
 	if err != nil {
 		return err
 	}
 
-	// 转成 map 方便快速查找（version -> 存档哈希）
-	appliedMap := make(map[string]string)
-	for _, r := range appliedRecords {
-		appliedMap[r.Version] = r.Checksum
+	if err := validateAppliedScripts(appliedRecords, scripts); err != nil {
+		return err
 	}
-
-	// 3.5 防篡改校验：已应用过的脚本若本地内容与库中存档哈希不一致，
-	// 立即中止，避免“代码与数据库对不上”的线上事故。
-	// 存档哈希为空串的存量记录（旧版工具写入）跳过比对，保持升级兼容。
-	for _, s := range scripts {
-		if archived, applied := appliedMap[s.Version]; applied && archived != "" {
-			if archived != s.Checksum() {
-				return fmt.Errorf("%w: version %s (db=%s, local=%s)", ErrChecksumMismatch, s.Version, archived, s.Checksum())
-			}
-		}
-	}
+	appliedMap := make(map[string]bool, len(appliedRecords))
+	for _, record := range appliedRecords { appliedMap[record.Version] = true }
+	if len(scripts) == 0 { return ErrNoPendingMigrations }
 
 	// 4. 筛选出待执行的脚本
 	var pendingScripts []*Script
 	for _, s := range scripts {
-		if _, applied := appliedMap[s.Version]; !applied {
+		if !appliedMap[s.Version] {
 			pendingScripts = append(pendingScripts, s)
 		}
 	}
@@ -96,11 +106,13 @@ func (m *DefaultMigrator) Up(ctx context.Context) error {
 		return ErrNoPendingMigrations
 	}
 
-	// 5. 依次向上执行
-	for _, script := range pendingScripts {
+	// 5. 依次向上执行，并在每个版本开始/完成时报告进度。
+	for i, script := range pendingScripts {
+		m.reportProgress(Progress{CurrentVersion: script.Version, CompletedSteps: i, TotalSteps: len(pendingScripts), CurrentAction: "up"})
 		if err := m.driver.ApplyMigration(ctx, script, false); err != nil {
 			return fmt.Errorf("migration up failed at version %s: %w", script.Version, err)
 		}
+		m.reportProgress(Progress{CurrentVersion: script.Version, CompletedSteps: i + 1, TotalSteps: len(pendingScripts), CurrentAction: "up"})
 	}
 
 	return nil
@@ -152,19 +164,25 @@ func (m *DefaultMigrator) DownSteps(ctx context.Context, steps int) error {
 	for _, s := range scripts {
 		scriptMap[s.Version] = s
 	}
+	if err := validateAppliedScripts(appliedRecords, scripts); err != nil { return err }
 
 	// 记录不足时宽松退档：只回滚实际存在的条数（退到空即返回 nil）
 	count := min(steps, len(appliedRecords))
 
+	// 先完整校验本批次所有回滚脚本，避免执行一部分后才发现后续脚本不可回滚。
 	for i := 0; i < count; i++ {
 		version := appliedRecords[i].Version
 		script, ok := scriptMap[version]
-		if !ok {
-			return fmt.Errorf("rollback failed: local script for version %s not found", version)
-		}
-		if err := m.driver.ApplyMigration(ctx, script, true); err != nil {
+		if !ok { return fmt.Errorf("rollback failed: local script for version %s not found", version) }
+		if script.DownSQL == "" { return fmt.Errorf("rollback failed: down SQL for version %s is empty", version) }
+	}
+	for i := 0; i < count; i++ {
+		version := appliedRecords[i].Version
+		m.reportProgress(Progress{CurrentVersion: version, CompletedSteps: i, TotalSteps: count, CurrentAction: "down"})
+		if err := m.driver.ApplyMigration(ctx, scriptMap[version], true); err != nil {
 			return fmt.Errorf("migration down failed at version %s: %w", version, err)
 		}
+		m.reportProgress(Progress{CurrentVersion: version, CompletedSteps: i + 1, TotalSteps: count, CurrentAction: "down"})
 	}
 
 	return nil
@@ -187,10 +205,6 @@ func (m *DefaultMigrator) ToVersion(ctx context.Context, version string) error {
 	if err != nil {
 		return fmt.Errorf("load scripts failed: %w", err)
 	}
-	if len(scripts) == 0 {
-		return ErrNoPendingMigrations
-	}
-
 	// 定位目标版本在脚本序列中的位置
 	targetIdx := len(scripts) - 1 // 空串 => 最新版本
 	if version == "0" {
@@ -210,9 +224,9 @@ func (m *DefaultMigrator) ToVersion(ctx context.Context, version string) error {
 	}
 
 	appliedRecords, err := m.driver.GetAppliedVersions(ctx)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
+	if err := validateAppliedScripts(appliedRecords, scripts); err != nil { return err }
+	if len(scripts) == 0 { return ErrNoPendingMigrations }
 	appliedMap := make(map[string]bool)
 	for _, r := range appliedRecords {
 		appliedMap[r.Version] = true
@@ -226,26 +240,40 @@ func (m *DefaultMigrator) ToVersion(ctx context.Context, version string) error {
 	}
 
 	applied := 0
+	totalSteps := 0
+	if targetIdx > currentIdx { totalSteps = targetIdx - currentIdx }
+	if currentIdx > targetIdx { totalSteps = currentIdx - targetIdx }
+	completedSteps := 0
 	// 升级：从 currentIdx 到 targetIdx 逐个应用未执行的脚本
 	for i := currentIdx + 1; i <= targetIdx; i++ {
 		if appliedMap[scripts[i].Version] {
 			continue
 		}
+		m.reportProgress(Progress{CurrentVersion: scripts[i].Version, CompletedSteps: completedSteps, TotalSteps: totalSteps, CurrentAction: "up"})
 		if err := m.driver.ApplyMigration(ctx, scripts[i], false); err != nil {
 			return fmt.Errorf("migration to version %s failed at %s: %w", version, scripts[i].Version, err)
 		}
 		applied++
+		completedSteps++
+		m.reportProgress(Progress{CurrentVersion: scripts[i].Version, CompletedSteps: completedSteps, TotalSteps: totalSteps, CurrentAction: "up"})
 	}
 
+	// 回退前先校验全部待回滚脚本，避免因后续脚本缺失 Down SQL 导致部分退档。
+	for i := currentIdx; i > targetIdx; i-- {
+		if appliedMap[scripts[i].Version] && scripts[i].DownSQL == "" {
+			return fmt.Errorf("migration to version %s cannot roll back %s: down SQL is empty", version, scripts[i].Version)
+		}
+	}
 	// 回退：从 currentIdx 向下（不含 targetIdx）逐个回滚
 	for i := currentIdx; i > targetIdx; i-- {
-		if !appliedMap[scripts[i].Version] {
-			continue
-		}
+		if !appliedMap[scripts[i].Version] { continue }
+		m.reportProgress(Progress{CurrentVersion: scripts[i].Version, CompletedSteps: completedSteps, TotalSteps: totalSteps, CurrentAction: "down"})
 		if err := m.driver.ApplyMigration(ctx, scripts[i], true); err != nil {
 			return fmt.Errorf("migration to version %s failed rollback at %s: %w", version, scripts[i].Version, err)
 		}
 		applied++
+		completedSteps++
+		m.reportProgress(Progress{CurrentVersion: scripts[i].Version, CompletedSteps: completedSteps, TotalSteps: totalSteps, CurrentAction: "down"})
 	}
 
 	if applied == 0 {

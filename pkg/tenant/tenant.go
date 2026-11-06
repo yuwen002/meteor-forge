@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 )
 
 var (
@@ -31,12 +32,14 @@ type Manager interface {
 
 // WithTenantID 将 tenant_id 写入 Context
 func WithTenantID(ctx context.Context, tenantID string) context.Context {
-	return context.WithValue(ctx, contextKey{}, tenantID)
+	return context.WithValue(ctx, contextKey{}, strings.TrimSpace(tenantID))
 }
 
 // FromContext 从 Context 中提取 tenant_id
 func FromContext(ctx context.Context) (string, error) {
+	if ctx == nil { return "", ErrTenantNotFound }
 	tenantID, ok := ctx.Value(contextKey{}).(string)
+	tenantID = strings.TrimSpace(tenantID)
 	if !ok || tenantID == "" {
 		return "", ErrTenantNotFound
 	}

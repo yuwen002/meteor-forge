@@ -368,3 +368,47 @@ cd examples/demo && go run main.go
 ## 📄 License
 
 本项目基于 [MIT License](LICENSE) 开源，你可以自由地将其用于商业或个人项目。
+
+## 🖥️ Web 管理后台
+
+项目正在建设独立的 Web 管理后台，用于统一管理数据源、Schema Migration、多租户和分库分表。管理后台通过 Go HTTP API 调用现有核心包，不会把 Web 依赖引入 `pkg/`。
+
+### 本地启动
+
+终端一：生成并配置管理元数据加密密钥，启动管理 API（默认仅监听本机 `127.0.0.1:8081`）：
+
+```bash
+export METEOR_ADMIN_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+# 首次启动时设置初始管理员密码（至少 12 个字符）；后续启动会忽略此变量，不会重置密码。
+read -s -p "Initial admin password: " METEOR_ADMIN_BOOTSTRAP_PASSWORD
+echo
+export METEOR_ADMIN_BOOTSTRAP_PASSWORD
+go run ./cmd/server
+```
+
+初次启动必须提供 `METEOR_ADMIN_BOOTSTRAP_PASSWORD`，服务会创建默认用户名 `admin`（可通过 `METEOR_ADMIN_USERNAME` 修改）的管理员。管理员创建后，后续启动不再读取该密码变量，也不会覆盖已有密码。登录入口由 Web 管理后台提供。\n\n管理元数据库默认保存在操作系统用户配置目录的 `meteor-forge/admin.db`，可通过 `METEOR_ADMIN_DB` 修改。请妥善备份密钥；丢失密钥将无法解密已登记数据源的 DSN。密钥不得提交到 Git。
+
+健康检查：
+
+```bash
+curl http://127.0.0.1:8081/api/v1/health
+```
+
+终端二：启动前端：
+
+```bash
+cd web/admin
+npm install
+npm run dev
+```
+
+可通过 `METEOR_ADMIN_ADDR` 修改 API 监听地址，但当前只接受 `localhost`、`127.0.0.1` 或 `::1`；非 loopback 地址会导致启动失败。打开 Vite 提示的本地地址（默认 `http://127.0.0.1:5173`）。前端通过保留 Host 的开发代理访问 Go API。
+
+详细架构、阶段计划和安全边界见 [Web 管理后台架构文档](docs/web-admin/architecture.md)，[管理 API 文档](docs/web-admin/api.md)，前端开发说明见 [web/admin/README.md](web/admin/README.md)。
+
+> 当前已接入数据源管理、Migration、租户、分片规则、执行任务中心和操作审计，并加入管理员登录、会话校验及 RBAC。管理 API 启动时会强制要求首次管理员初始化，并拒绝非 loopback 监听地址。认证/授权安全审计和 CI 验收仍在进行中；请继续保持本机访问，不要通过公网或未受信任的反向代理暴露服务。
+
+
+### 数据源管理进度
+
+管理元数据库现使用 SQLite 独立存储，数据源 DSN 使用 AES-256-GCM 加密后持久化。管理 API 已提供数据源新增、列表、详情、更新、删除和连接测试接口；列表与详情响应不会返回 DSN。连接测试支持 MySQL、PostgreSQL、SQLite 和 ClickHouse，并设置 5 秒超时。管理 API 已由服务端会话中间件保护，支持管理员、只读查看者、迁移操作员和分片操作员角色；具体权限由后端强制执行。首次启动必须设置初始管理员密码，已有管理员不会被环境变量重置。

@@ -83,8 +83,8 @@ func TestMemoryManagerClose(t *testing.T) {
 		t.Fatalf("Close failed: %v", err)
 	}
 	// Close 后映射清空
-	if _, err := m.GetDB("t1"); !errors.Is(err, ErrDBNotFound) {
-		t.Errorf("expected ErrDBNotFound after Close, got %v", err)
+	if _, err := m.GetDB("t1"); !errors.Is(err, ErrManagerClosed) {
+		t.Errorf("expected ErrManagerClosed after Close, got %v", err)
 	}
 }
 
@@ -127,4 +127,44 @@ func TestMemoryManagerConcurrent(t *testing.T) {
 	if err := m.Close(); err != nil {
 		t.Fatalf("Close failed: %v", err)
 	}
+}
+
+
+func TestMemoryManagerValidatesRegistrationAndClosedState(t *testing.T) {
+	manager := NewMemoryManager()
+	if err := manager.Register("", newTestDB(t)); !errors.Is(err, ErrInvalidTenantID) {
+		t.Fatalf("empty tenant id error = %v, want ErrInvalidTenantID", err)
+	}
+	if err := manager.Register("tenant", nil); !errors.Is(err, ErrNilTenantDB) {
+		t.Fatalf("nil database error = %v, want ErrNilTenantDB", err)
+	}
+	if err := manager.Close(); err != nil { t.Fatal(err) }
+	if err := manager.Close(); err != nil { t.Fatalf("second Close should be safe: %v", err) }
+	if err := manager.Register("tenant", newTestDB(t)); !errors.Is(err, ErrManagerClosed) {
+		t.Fatalf("Register after Close = %v, want ErrManagerClosed", err)
+	}
+	if _, err := manager.GetDB("tenant"); !errors.Is(err, ErrManagerClosed) {
+		t.Fatalf("GetDB after Close = %v, want ErrManagerClosed", err)
+	}
+}
+
+func TestMemoryManagerNormalizesTenantIdentifiers(t *testing.T) {
+	manager := NewMemoryManager()
+	db := newTestDB(t)
+	if err := manager.Register("  tenant-x  ", db); err != nil { t.Fatal(err) }
+	got, err := manager.GetDB("tenant-x")
+	if err != nil { t.Fatalf("GetDB with normalized tenant id: %v", err) }
+	if got != db { t.Fatal("GetDB returned a different connection handle") }
+	if err := manager.Close(); err != nil { t.Fatal(err) }
+}
+
+func TestMemoryManagerRegisterSameHandleDoesNotCloseIt(t *testing.T) {
+	manager := NewMemoryManager()
+	db := newTestDB(t)
+	if err := manager.Register("tenant", db); err != nil { t.Fatal(err) }
+	if err := manager.Register("tenant", db); err != nil { t.Fatal(err) }
+	got, err := manager.GetDB("tenant")
+	if err != nil { t.Fatal(err) }
+	if got != db { t.Fatal("registering the same handle must preserve it") }
+	if err := manager.Close(); err != nil { t.Fatal(err) }
 }

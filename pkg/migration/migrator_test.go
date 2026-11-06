@@ -323,3 +323,142 @@ func TestMigratorUpToleratesLegacyRecordsWithoutChecksum(t *testing.T) {
 		t.Errorf("expected 2 applied records, got %d", len(driver.records))
 	}
 }
+
+
+// 已应用记录必须在本地存在；Up 不得在版本历史漂移时继续执行。
+func TestMigratorUpBlocksMissingAppliedScript(t *testing.T) {
+	migrator, driver := newTestMigrator()
+	driver.records = []Record{{Version: "999", Name: "missing"}}
+	err := migrator.Up(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "999") {
+		t.Fatalf("expected missing local script error for version 999, got %v", err)
+	}
+	if len(driver.records) != 1 {
+		t.Fatalf("history must remain unchanged, got %+v", driver.records)
+	}
+}
+
+// Down 在迁移锁内校验已应用脚本 checksum，不能回滚与本地版本不一致的历史。
+func TestMigratorDownBlocksTamperedAppliedScript(t *testing.T) {
+	migrator, driver := newTestMigrator()
+	if err := migrator.Up(context.Background()); err != nil { t.Fatal(err) }
+	driver.records[len(driver.records)-1].Checksum = "deadbeef"
+	err := migrator.Down(context.Background())
+	if !errors.Is(err, ErrChecksumMismatch) {
+		t.Fatalf("expected ErrChecksumMismatch, got %v", err)
+	}
+	if len(driver.records) != 2 {
+		t.Fatalf("history must remain unchanged, got %+v", driver.records)
+	}
+}
+
+// ToVersion 与 Up/Down 使用相同的已应用历史校验规则。
+func TestMigratorToVersionBlocksMissingAppliedScript(t *testing.T) {
+	migrator, driver := newTestMigrator()
+	driver.records = []Record{{Version: "999", Name: "missing"}}
+	err := migrator.ToVersion(context.Background(), "001")
+	if err == nil || !strings.Contains(err.Error(), "999") {
+		t.Fatalf("expected missing local script error for version 999, got %v", err)
+	}
+	if len(driver.records) != 1 {
+		t.Fatalf("history must remain unchanged, got %+v", driver.records)
+	}
+}
+
+// 选中回滚的脚本必须包含 Down SQL；在执行任何 DDL 前拒绝不完整脚本。
+func TestMigratorDownBlocksEmptyDownSQL(t *testing.T) {
+	fsys := fstest.MapFS{"001_only.up.sql": {Data: []byte("SELECT 1;")}}
+	script := &Script{Version: "001", Description: "only", UpSQL: "SELECT 1;"}
+	driver := NewMockDriver()
+	driver.records = []Record{{Version: "001", Name: "only", Checksum: script.Checksum()}}
+	migrator := NewDefaultMigrator(NewFileSystemLoader(fsys, "."), driver)
+	err := migrator.Down(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "down SQL") {
+		t.Fatalf("expected empty Down SQL error, got %v", err)
+	}
+	if len(driver.records) != 1 {
+		t.Fatalf("history must remain unchanged, got %+v", driver.records)
+	}
+}
+
+
+// 空迁移目录也必须检测数据库中遗留的已应用版本，不能误报“没有待迁移”。
+func TestMigratorUpDetectsAllLocalScriptsDeleted(t *testing.T) {
+	driver := NewMockDriver()
+	driver.records = []Record{{Version: "001", Name: "first"}}
+	migrator := NewDefaultMigrator(NewFileSystemLoader(fstest.MapFS{}, "."), driver)
+	err := migrator.Up(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "001") {
+		t.Fatalf("expected missing applied script error, got %v", err)
+	}
+}
+
+// DownSteps 必须在执行第一条回滚 SQL 前校验整个批次。
+func TestMigratorDownStepsPreflightsAllDownSQL(t *testing.T) {
+	fsys := fstest.MapFS{
+		"001_first.up.sql":  {Data: []byte("SELECT 1;")},
+		"002_second.up.sql": {Data: []byte("SELECT 2;")},
+		"002_second.down.sql": {Data: []byte("SELECT 2;")},
+	}
+	first := &Script{Version: "001", UpSQL: "SELECT 1;"}
+	second := &Script{Version: "002", UpSQL: "SELECT 2;", DownSQL: "SELECT 2;"}
+	driver := NewMockDriver()
+	driver.records = []Record{
+		{Version: "001", Checksum: first.Checksum()},
+		{Version: "002", Checksum: second.Checksum()},
+	}
+	migrator := NewDefaultMigrator(NewFileSystemLoader(fsys, "."), driver)
+	err := migrator.DownSteps(context.Background(), 2)
+	if err == nil || !strings.Contains(err.Error(), "001") {
+		t.Fatalf("expected missing Down SQL error for 001, got %v", err)
+	}
+	if len(driver.records) != 2 {
+		t.Fatalf("preflight failure must not partially roll back records: %+v", driver.records)
+	}
+}
+
+// ToVersion 回滚多步时也必须先验证所有 Down SQL，不能部分执行后才失败。
+func TestMigratorToVersionPreflightsAllDownSQL(t *testing.T) {
+	fsys := fstest.MapFS{
+		"001_first.up.sql":  {Data: []byte("SELECT 1;")},
+		"002_second.up.sql": {Data: []byte("SELECT 2;")},
+		"002_second.down.sql": {Data: []byte("SELECT 2;")},
+	}
+	first := &Script{Version: "001", UpSQL: "SELECT 1;"}
+	second := &Script{Version: "002", UpSQL: "SELECT 2;", DownSQL: "SELECT 2;"}
+	driver := NewMockDriver()
+	driver.records = []Record{
+		{Version: "001", Checksum: first.Checksum()},
+		{Version: "002", Checksum: second.Checksum()},
+	}
+	migrator := NewDefaultMigrator(NewFileSystemLoader(fsys, "."), driver)
+	err := migrator.ToVersion(context.Background(), "0")
+	if err == nil || !strings.Contains(err.Error(), "001") {
+		t.Fatalf("expected missing Down SQL error for 001, got %v", err)
+	}
+	if len(driver.records) != 2 {
+		t.Fatalf("preflight failure must not partially roll back records: %+v", driver.records)
+	}
+}
+
+
+func TestMigratorProgressObserverReportsStepBoundaries(t *testing.T) {
+	migrator, _ := newTestMigrator()
+	var updates []Progress
+	engine := NewDefaultMigratorWithObserver(migrator.loader, migrator.driver, func(progress Progress) {
+		updates = append(updates, progress)
+	})
+	if err := engine.Up(context.Background()); err != nil { t.Fatal(err) }
+	if len(updates) != 4 {
+		t.Fatalf("progress updates = %d, want start/completion for two migrations: %+v", len(updates), updates)
+	}
+	want := []Progress{
+		{CurrentVersion: "001", CompletedSteps: 0, TotalSteps: 2, CurrentAction: "up"},
+		{CurrentVersion: "001", CompletedSteps: 1, TotalSteps: 2, CurrentAction: "up"},
+		{CurrentVersion: "002", CompletedSteps: 1, TotalSteps: 2, CurrentAction: "up"},
+		{CurrentVersion: "002", CompletedSteps: 2, TotalSteps: 2, CurrentAction: "up"},
+	}
+	for i := range want {
+		if updates[i] != want[i] { t.Errorf("progress[%d] = %+v, want %+v", i, updates[i], want[i]) }
+	}
+}
