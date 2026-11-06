@@ -24,7 +24,7 @@ onMounted(()=>void loadEvents())
 </script>
 <template>
 <div class="page-heading"><div><div class="eyebrow">OPERATIONS / AUDIT TRAIL</div><h1>操作审计</h1><p>统一检索数据库迁移与分片 DDL 的状态变更记录，按时间倒序查看操作轨迹。</p></div><el-button :loading="loading" @click="loadEvents">刷新记录</el-button></div>
-<el-alert title="身份与来源说明" description="当前 API 尚未接入登录认证。操作者 local-api 是固定服务标记，不代表真实登录用户；请求来源是管理 API 连接来源，可能是本机代理地址。" type="info" :closable="false" show-icon class="audit-note"/>
+<el-alert title="身份与来源说明" description="审计事件关联已认证的管理员身份和任务操作。请求来源取管理 API 直接观察到的远端地址，不信任 X-Forwarded-For 等未经配置的转发头。" type="info" :closable="false" show-icon class="audit-note"/>
 <el-card shadow="never" class="audit-card"><div class="audit-toolbar"><strong>审计事件</strong><div class="audit-filters">
 <el-select v-model="kind" clearable placeholder="全部操作类型" style="width:160px" @change="applyFilters"><el-option label="数据库迁移" value="migration"/><el-option label="分片 DDL" value="shard_ddl"/></el-select>
 <el-select v-model="status" clearable placeholder="全部状态" style="width:140px" @change="applyFilters"><el-option v-for="item in statuses" :key="item" :label="statusLabel(item)" :value="item"/></el-select>
