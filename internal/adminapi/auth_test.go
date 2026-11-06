@@ -221,3 +221,37 @@ func TestSecurityAuditRecordsLoginAndAdministratorActions(t *testing.T) {
  deniedRec:=httptest.NewRecorder();server.Handler().ServeHTTP(deniedRec,denied)
  if deniedRec.Code!=http.StatusForbidden{t.Fatalf("viewer security audit status=%d body=%s",deniedRec.Code,deniedRec.Body.String())}
 }
+
+
+func TestReadOnlyAdminRouteRequiresExactResourceShape(t *testing.T) {
+ cases:=[]struct{path string;want bool}{
+  {"/api/v1/datasources",true},
+  {"/api/v1/datasources/source-1",true},
+  {"/api/v1/datasources//migrations/status",false},
+  {"/api/v1/datasources/source-1/migrations/status",true},
+  {"/api/v1/datasources/source-1/migrations/status/extra",false},
+  {"/api/v1/datasources/",false},
+  {"/api/v1/tenants/tenant-1",true},
+  {"/api/v1/tenants//",false},
+  {"/api/v1/migration-tasks/task-1/audit",true},
+  {"/api/v1/migration-tasks//audit",false},
+  {"/api/v1/shard-ddl-tasks/task-1/audit",true},
+  {"/api/v1/shard-ddl-tasks/task-1/audit/extra",false},
+ }
+ for _,tc:=range cases {
+  if got:=isReadOnlyAdminRoute(tc.path);got!=tc.want { t.Errorf("isReadOnlyAdminRoute(%q)=%v, want %v",tc.path,got,tc.want) }
+ }
+}
+
+func TestLoginLimiterAppliesPerIPAcrossDifferentUsernames(t *testing.T) {
+ limiter:=newLoginLimiter()
+ reqA:=httptest.NewRequest(http.MethodPost,"http://localhost/api/v1/auth/login",nil)
+ reqB:=httptest.NewRequest(http.MethodPost,"http://localhost/api/v1/auth/login",nil)
+ reqA.RemoteAddr="192.0.2.10:1000"
+ reqB.RemoteAddr="192.0.2.10:2000"
+ now:=time.Now()
+ for i:=0;i<5;i++ {
+  if !limiter.allow(loginIPKey(reqA),now) { t.Fatalf("IP attempt %d unexpectedly blocked",i+1) }
+ }
+ if limiter.allow(loginIPKey(reqB),now) { t.Fatal("changing username or source port must not bypass per-IP limit") }
+}

@@ -92,9 +92,8 @@ func(s *Server) sessionHandler(w http.ResponseWriter,r *http.Request){
 func(s *Server) logoutHandler(w http.ResponseWriter,r *http.Request){
  if !requireAuthJSON(w,r){return}
  cookie,_:=r.Cookie(adminSessionCookie)
- if cookie!=nil{if err:=s.authStore.RevokeAdminSession(r.Context(),cookie.Value);err!=nil{writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to revoke session"});return}}
  session,_:=adminSessionFromRequest(r)
- if err:=s.authStore.RecordSecurityAuditEvent(r.Context(),adminstore.SecurityAuditEvent{Actor:session.Admin.Username,Subject:session.Admin.Username,Action:"logout",Outcome:"succeeded",RequestSource:requestSourceForAudit(r),Details:"administrator logged out"});err!=nil{writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to record logout event"});return}
+ if err:=s.authStore.RevokeAdminSessionWithAudit(r.Context(),cookie.Value,adminstore.SecurityAuditEvent{Actor:session.Admin.Username,Subject:session.Admin.Username,Action:"logout",Outcome:"succeeded",RequestSource:requestSourceForAudit(r),Details:"administrator logged out"});err!=nil{writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to revoke session or record logout event"});return}
  clearAdminCookie(w,r);w.WriteHeader(http.StatusNoContent)
 }
 func(s *Server) passwordHandler(w http.ResponseWriter,r *http.Request){
@@ -147,7 +146,7 @@ func sameOrigin(r *http.Request)bool{
 }
 
 func isReadOnlyAdminRoute(path string) bool {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
 	if len(parts) < 3 || parts[0] != "api" || parts[1] != "v1" {
 		return false
 	}
