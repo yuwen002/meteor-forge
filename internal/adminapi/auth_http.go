@@ -48,10 +48,13 @@ func(s *Server) registerAuthRoutes(mux *http.ServeMux){
  mux.HandleFunc("PUT "+apiPrefix+"/auth/users/{id}/role",s.updateAdminRoleHandler)
  mux.HandleFunc("DELETE "+apiPrefix+"/auth/users/{id}",s.deleteAdminUserHandler)
 }
-func loginKey(r *http.Request,username string)string{
- host:=r.RemoteAddr
- if parsed,_,err:=net.SplitHostPort(host);err==nil{host=parsed}
- return strings.ToLower(host)+"|"+strings.ToLower(strings.TrimSpace(username))
+func loginIPKey(r *http.Request) string {
+ host := r.RemoteAddr
+ if parsed, _, err := net.SplitHostPort(host); err == nil { host = parsed }
+ return strings.ToLower(host)
+}
+func loginKey(r *http.Request, username string) string {
+ return loginIPKey(r) + "|" + strings.ToLower(strings.TrimSpace(username))
 }
 func decodeAuthJSON(w http.ResponseWriter,r *http.Request,dst any)bool{
  if !strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")),"application/json"){
@@ -68,11 +71,14 @@ func(s *Server) loginHandler(w http.ResponseWriter,r *http.Request){
  var input struct{Username string `json:"username"`;Password string `json:"password"`}
  if !decodeAuthJSON(w,r,&input){return}
  key:=loginKey(r,input.Username)
- if !s.loginLimiter.allow(key,time.Now()){writeJSON(w,http.StatusTooManyRequests,map[string]string{"error":"too many login attempts"});return}
+ now:=time.Now()
+ if !s.loginLimiter.allow(loginIPKey(r),now) || !s.loginLimiter.allow(key,now){writeJSON(w,http.StatusTooManyRequests,map[string]string{"error":"too many login attempts"});return}
  admin,err:=s.authStore.AuthenticateAdmin(r.Context(),input.Username,input.Password)
  if err!=nil{
   if !errors.Is(err,adminstore.ErrInvalidCredentials){writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"authentication failed"});return}
-  _ = s.authStore.RecordSecurityAuditEvent(r.Context(),adminstore.SecurityAuditEvent{Subject:strings.TrimSpace(input.Username),Action:"login",Outcome:"failed",RequestSource:requestSourceForAudit(r),Details:"invalid credentials"})
+  if auditErr:=s.authStore.RecordSecurityAuditEvent(r.Context(),adminstore.SecurityAuditEvent{Subject:strings.TrimSpace(input.Username),Action:"login",Outcome:"failed",RequestSource:requestSourceForAudit(r),Details:"invalid credentials"});auditErr!=nil {
+   writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to record authentication event"});return
+  }
   writeJSON(w,http.StatusUnauthorized,map[string]string{"error":"invalid username or password"});return
  }
  token,expires,err:=s.authStore.CreateAdminSession(r.Context(),admin.ID,adminSessionLifetime)
@@ -101,15 +107,16 @@ func(s *Server) passwordHandler(w http.ResponseWriter,r *http.Request){
  session,ok:=adminSessionFromRequest(r);if !ok{writeJSON(w,http.StatusUnauthorized,map[string]string{"error":"authentication required"});return}
  var input struct{CurrentPassword string `json:"current_password"`;NewPassword string `json:"new_password"`}
  if !decodeAuthJSON(w,r,&input){return}
- if err:=s.authStore.ChangeAdminPassword(r.Context(),session.Admin.ID,input.CurrentPassword,input.NewPassword);err!=nil{
+ if err:=s.authStore.ChangeAdminPasswordWithAudit(r.Context(),session.Admin.ID,input.CurrentPassword,input.NewPassword,adminstore.SecurityAuditEvent{Actor:session.Admin.Username,Subject:session.Admin.Username,Action:"password_change",Outcome:"succeeded",RequestSource:requestSourceForAudit(r),Details:"administrator password changed"});err!=nil{
   if errors.Is(err,adminstore.ErrInvalidCredentials){
-   _ = s.authStore.RecordSecurityAuditEvent(r.Context(),adminstore.SecurityAuditEvent{Actor:session.Admin.Username,Subject:session.Admin.Username,Action:"password_change",Outcome:"failed",RequestSource:requestSourceForAudit(r),Details:"current password verification failed"})
+   if auditErr:=s.authStore.RecordSecurityAuditEvent(r.Context(),adminstore.SecurityAuditEvent{Actor:session.Admin.Username,Subject:session.Admin.Username,Action:"password_change",Outcome:"failed",RequestSource:requestSourceForAudit(r),Details:"current password verification failed"});auditErr!=nil {
+    writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to record password change event"});return
+   }
    writeJSON(w,http.StatusUnauthorized,map[string]string{"error":"current password is incorrect"});return
   }
   if errors.Is(err,adminstore.ErrInvalidPassword){writeJSON(w,http.StatusBadRequest,map[string]string{"error":"new password must contain 12 to 1024 characters"});return}
   writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to change password"});return
  }
- if err:=s.authStore.RecordSecurityAuditEvent(r.Context(),adminstore.SecurityAuditEvent{Actor:session.Admin.Username,Subject:session.Admin.Username,Action:"password_change",Outcome:"succeeded",RequestSource:requestSourceForAudit(r),Details:"administrator password changed"});err!=nil{writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to record password change event"});return}
  clearAdminCookie(w,r);w.WriteHeader(http.StatusNoContent)
 }
 func requireAuthJSON(w http.ResponseWriter,r *http.Request)bool{
@@ -146,35 +153,31 @@ func sameOrigin(r *http.Request)bool{
 }
 
 func isReadOnlyAdminRoute(path string) bool {
-	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
-	if len(parts) < 3 || parts[0] != "api" || parts[1] != "v1" {
-		return false
-	}
-	switch parts[2] {
-	case "auth":
-		return len(parts) == 4 && parts[3] == "session"
-	case "datasources":
-		return len(parts) == 3 ||
-			(len(parts) == 4) ||
-			(len(parts) == 6 && parts[4] == "migrations" && parts[5] == "status")
-	case "tenants":
-		return len(parts) == 3 || len(parts) == 4
-	case "tenant-migration-batches":
-		return len(parts) == 4
-	case "migration-tasks":
-		return len(parts) == 3 || len(parts) == 4 ||
-			(len(parts) == 5 && parts[4] == "audit")
-	case "shard-rules":
-		return len(parts) == 3 || len(parts) == 4 ||
-			(len(parts) == 5 && parts[4] == "tables")
-	case "shard-ddl-tasks":
-		return len(parts) == 3 || len(parts) == 4 ||
-			(len(parts) == 5 && parts[4] == "audit")
-	case "audit-events":
-		return len(parts) == 3
-	default:
-		return false
-	}
+ parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+ if len(parts) < 3 || parts[0] != "api" || parts[1] != "v1" { return false }
+ nonEmpty := func(i int) bool { return i < len(parts) && parts[i] != "" && parts[i] != "." && parts[i] != ".." }
+ switch parts[2] {
+ case "auth":
+  return len(parts)==4 && parts[3]=="session"
+ case "datasources":
+  if len(parts)==3 { return true }
+  if len(parts)==4 { return nonEmpty(3) }
+  return len(parts)==6 && nonEmpty(3) && parts[4]=="migrations" && parts[5]=="status"
+ case "tenants":
+  return len(parts)==3 || (len(parts)==4 && nonEmpty(3))
+ case "tenant-migration-batches":
+  return len(parts)==4 && nonEmpty(3)
+ case "migration-tasks":
+  return len(parts)==3 || (len(parts)==4 && nonEmpty(3)) || (len(parts)==5 && nonEmpty(3) && parts[4]=="audit")
+ case "shard-rules":
+  return len(parts)==3 || (len(parts)==4 && nonEmpty(3)) || (len(parts)==5 && nonEmpty(3) && parts[4]=="tables")
+ case "shard-ddl-tasks":
+  return len(parts)==3 || (len(parts)==4 && nonEmpty(3)) || (len(parts)==5 && nonEmpty(3) && parts[4]=="audit")
+ case "audit-events":
+  return len(parts)==3
+ default:
+  return false
+ }
 }
 
 func authorizeAdminRole(role, method, path string) bool {
@@ -205,7 +208,8 @@ func (s *Server) listAdminUsersHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createAdminUserHandler(w http.ResponseWriter, r *http.Request) {
  var input struct { Username string `json:"username"`; Password string `json:"password"`; Role string `json:"role"` }
  if !decodeAuthJSON(w,r,&input) { return }
- item,err:=s.authStore.CreateAdminUser(r.Context(),input.Username,input.Password,input.Role)
+ current,_:=adminSessionFromRequest(r)
+ item,err:=s.authStore.CreateAdminUserWithAudit(r.Context(),input.Username,input.Password,input.Role,adminstore.SecurityAuditEvent{Actor:current.Admin.Username,Subject:strings.TrimSpace(input.Username),Action:"admin_create",Outcome:"succeeded",RequestSource:requestSourceForAudit(r),Details:"administrator account created"})
  if err!=nil {
   switch {
   case errors.Is(err,adminstore.ErrInvalidPassword),errors.Is(err,adminstore.ErrInvalidRole),errors.Is(err,adminstore.ErrInvalidAdminInput):
@@ -217,8 +221,6 @@ func (s *Server) createAdminUserHandler(w http.ResponseWriter, r *http.Request) 
   }
   return
  }
- current,_:=adminSessionFromRequest(r)
- _ = s.authStore.RecordSecurityAuditEvent(r.Context(),adminstore.SecurityAuditEvent{Actor:current.Admin.Username,Subject:item.Username,Action:"admin_create",Outcome:"succeeded",RequestSource:requestSourceForAudit(r),Details:"administrator account created"})
  writeJSON(w,http.StatusCreated,item)
 }
 func (s *Server) updateAdminRoleHandler(w http.ResponseWriter, r *http.Request) {
@@ -227,7 +229,7 @@ func (s *Server) updateAdminRoleHandler(w http.ResponseWriter, r *http.Request) 
  if id==current.Admin.ID { writeJSON(w,http.StatusConflict,map[string]string{"error":"cannot change your own role"});return }
  var input struct { Role string `json:"role"` }
  if !decodeAuthJSON(w,r,&input) { return }
- err:=s.authStore.UpdateAdminRole(r.Context(),id,input.Role)
+ err:=s.authStore.UpdateAdminRoleWithAudit(r.Context(),id,input.Role,adminstore.SecurityAuditEvent{Actor:current.Admin.Username,Subject:id,Action:"admin_role_update",Outcome:"succeeded",RequestSource:requestSourceForAudit(r),Details:"administrator role changed to "+input.Role})
  if err!=nil {
   switch {
   case errors.Is(err,adminstore.ErrAdminNotFound):writeJSON(w,http.StatusNotFound,map[string]string{"error":"administrator not found"})
@@ -237,15 +239,13 @@ func (s *Server) updateAdminRoleHandler(w http.ResponseWriter, r *http.Request) 
   }
   return
  }
- current,_:=adminSessionFromRequest(r)
- _ = s.authStore.RecordSecurityAuditEvent(r.Context(),adminstore.SecurityAuditEvent{Actor:current.Admin.Username,Subject:id,Action:"admin_role_update",Outcome:"succeeded",RequestSource:requestSourceForAudit(r),Details:"administrator role changed to "+input.Role})
  w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) deleteAdminUserHandler(w http.ResponseWriter, r *http.Request) {
  current,_:=adminSessionFromRequest(r)
  id:=r.PathValue("id")
  if id==current.Admin.ID { writeJSON(w,http.StatusConflict,map[string]string{"error":"cannot delete your own account"});return }
- err:=s.authStore.DeleteAdminUser(r.Context(),id)
+ err:=s.authStore.DeleteAdminUserWithAudit(r.Context(),id,adminstore.SecurityAuditEvent{Actor:current.Admin.Username,Subject:id,Action:"admin_delete",Outcome:"succeeded",RequestSource:requestSourceForAudit(r),Details:"administrator account deleted"})
  if err!=nil {
   switch {
   case errors.Is(err,adminstore.ErrAdminNotFound):writeJSON(w,http.StatusNotFound,map[string]string{"error":"administrator not found"})
@@ -254,8 +254,6 @@ func (s *Server) deleteAdminUserHandler(w http.ResponseWriter, r *http.Request) 
   }
   return
  }
- current,_:=adminSessionFromRequest(r)
- _ = s.authStore.RecordSecurityAuditEvent(r.Context(),adminstore.SecurityAuditEvent{Actor:current.Admin.Username,Subject:id,Action:"admin_delete",Outcome:"succeeded",RequestSource:requestSourceForAudit(r),Details:"administrator account deleted"})
  w.WriteHeader(http.StatusNoContent)
 }
 
