@@ -88,7 +88,7 @@ Start with explicit least-privilege roles:
 - `shard_operator`: viewer permissions plus shard clone preview and shard DDL execution.
 - `administrator`: user/session management and role assignment, plus all operational permissions.
 
-The backend currently restricts migration execution and tenant migration batches to `migration_operator` (with rollback/version-changing actions separately restricted to `administrator`); shard clone operations to `shard_operator`; and administrator account/security-audit endpoints to `administrator`. All authenticated roles can read operational status and audit views.
+The backend currently restricts migration execution and tenant migration batches to `migration_operator` (with rollback/version-changing actions separately restricted to `administrator`); shard clone operations to `shard_operator`; and administrator account/security-audit endpoints to `administrator`. Migration operators may cancel only `up` tasks; cancellation of rollback or version-change tasks is administrator-only. All authenticated roles can read operational status and audit views.
 
 Authorization must be enforced in backend handlers/services, not only by hiding frontend buttons. Destructive rollback and physical DDL retain explicit confirmation requirements. Operational task audit records store the authenticated actor. Security audit records store actor/subject, action, outcome, direct peer address, a short static detail, and timestamp. Administrator creation, role changes, deletion, password changes, login-session creation, and logout are committed in the same metadata-database transaction as their success audit event; an audit insert failure rolls back the associated mutation. Passwords, cookies, session tokens, DSNs, and raw database errors must never be written.
 
@@ -104,7 +104,7 @@ Authorization must be enforced in backend handlers/services, not only by hiding 
 - Cross-origin and missing-Origin state-changing requests are rejected according to the chosen browser contract.
 - Login throttling is bounded and does not trust spoofed forwarding headers.
 - Password change revokes previous sessions.
-- RBAC tests prove backend enforcement for every read/write/execute class.
+- RBAC tests prove backend enforcement for every read/write/execute class, including migration-task cancellation by action type.
 - Security audit event persistence, administrator-only access, and absence of passwords, cookie values, and raw session tokens.
 
 ## Merge gate

@@ -241,8 +241,26 @@ func (s *Server) getMigrationTask(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) cancelMigrationTask(w http.ResponseWriter, r *http.Request) {
-	if !s.requireStore(w) || s.tasks == nil { return }
+	if !s.requireStore(w) || s.tasks == nil {
+		return
+	}
 	id := r.PathValue("id")
+	task, err := s.tasks.store.GetMigrationTask(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, adminstore.ErrNotFound) {
+			writeAPIError(w, http.StatusNotFound, "not_found", "migration task not found")
+		} else {
+			writeAPIError(w, http.StatusInternalServerError, "task_query_failed", "unable to read migration task")
+		}
+		return
+	}
+	if task.Action != "up" {
+		session, ok := adminSessionFromRequest(r)
+		if !ok || session.Admin.Role != "administrator" {
+			writeAPIError(w, http.StatusForbidden, "administrator_required", "only administrators may cancel rollback or version-change tasks")
+			return
+		}
+	}
 	if err := s.tasks.Cancel(id); err != nil {
 		writeAPIError(w, http.StatusConflict, "task_not_active", "migration task is not currently active")
 		return
