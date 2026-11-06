@@ -21,6 +21,7 @@ type tenantStore interface {
 	DeleteTenant(context.Context, string) error
 	DeleteTenantWithAudit(context.Context, string, string, string) error
 	ListTenantAuditEvents(context.Context, string, int, int) ([]adminstore.TenantAuditEvent, int, error)
+	CreateDiscoveredTenantsWithAudit(context.Context, []adminstore.TenantInput, string, string) ([]adminstore.Tenant, error)
 }
 
 func (s *Server) registerTenantRoutes(mux *http.ServeMux) {

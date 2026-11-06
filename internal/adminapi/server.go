@@ -104,6 +104,7 @@ func newServerWithMigrationDir(store *adminstore.Store, migrationDir string, enf
 	if store != nil {
 		server.registerDataSourceRoutes(mux)
 		server.registerTenantRoutes(mux)
+		server.registerTenantDiscoveryRoutes(mux)
 		server.registerMigrationRoutes(mux)
 		server.registerShardingRoutes(mux)
 		server.registerShardDDLRoutes(mux)

@@ -3,6 +3,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
 import { useAdminPermissions } from '../permissions'
+import TenantDiscoveryDialog from '../components/TenantDiscoveryDialog.vue'
 
 interface DataSource {
   id: string
@@ -84,6 +85,7 @@ const dataSources = ref<DataSource[]>([])
 const loading = ref(false)
 const saving = ref(false)
 const dialogVisible = ref(false)
+const discoveryVisible = ref(false)
 const editingID = ref('')
 const testingID = ref('')
 const migratingID = ref('')
@@ -295,7 +297,10 @@ onMounted(load)
       <h1>多租户管理</h1>
       <p>维护租户标识与目标数据源映射。每个租户映射到一个已登记的数据源，连接凭据仍由数据源管理统一加密保管。</p>
     </div>
-    <el-button v-if="canManageTenants" type="primary" :disabled="!dataSources.length" @click="openCreate">添加租户</el-button>
+    <div class="heading-actions">
+      <el-button v-if="canManageTenants" plain @click="discoveryVisible = true">发现并导入租户</el-button>
+      <el-button v-if="canManageTenants" type="primary" :disabled="!dataSources.length" @click="openCreate">添加租户</el-button>
+    </div>
   </div>
 
   <el-alert
@@ -467,9 +472,12 @@ onMounted(load)
       <el-button type="primary" :loading="saving" @click="save">保存</el-button>
     </template>
   </el-dialog>
+
+  <TenantDiscoveryDialog v-model="discoveryVisible" :data-sources="dataSources" @imported="load" />
 </template>
 
 <style scoped>
+.heading-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .tenant-card { border: 1px solid #e8edf4; border-radius: 12px; }
 .tenant-alert { margin-bottom: 20px; }
 .batch-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; font-size: 12px; }
