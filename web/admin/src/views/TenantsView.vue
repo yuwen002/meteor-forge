@@ -20,6 +20,14 @@ interface Tenant {
   created_at: string
   updated_at: string
 }
+interface MigrationBatchAuditEvent {
+  id: number
+  event: string
+  actor: string
+  request_source: string
+  message: string
+  occurred_at: string
+}
 interface MigrationBatch {
   id: string
   total: number
@@ -29,6 +37,13 @@ interface MigrationBatch {
   failed: number
   canceled: number
   interrupted: number
+  submission_failed: number
+  status: string
+  actor: string
+  request_source: string
+  created_at: string
+  updated_at: string
+  audit_events: MigrationBatchAuditEvent[]
   failures: Array<{ tenant_id: string; code: string; message: string }>
   tasks: Array<{
     id: string
@@ -293,6 +308,9 @@ onMounted(load)
     <template v-if="batch">
       <div class="batch-summary">
         <span>批次：{{ batch.id }}</span>
+        <span>发起人：{{ batch.actor || '—' }}</span>
+        <span>来源：{{ batch.request_source || '—' }}</span>
+        <el-tag type="info">{{ batch.status }}</el-tag>
         <el-tag type="info">排队 {{ batch.queued }}</el-tag>
         <el-tag type="primary">执行中 {{ batch.running }}</el-tag>
         <el-tag type="success">成功 {{ batch.succeeded }}</el-tag>
@@ -312,6 +330,25 @@ onMounted(load)
         </el-table-column>
         <el-table-column prop="message" label="结果摘要" min-width="220" />
       </el-table>
+      <el-alert
+        v-if="batch.submission_failed"
+        :title="`有 ${batch.submission_failed} 个租户在创建子任务时提交失败`"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="batch-alert"
+      />
+      <el-divider v-if="batch.audit_events?.length" content-position="left">批次审计</el-divider>
+      <el-timeline v-if="batch.audit_events?.length" class="batch-audit">
+        <el-timeline-item
+          v-for="event in batch.audit_events"
+          :key="event.id"
+          :timestamp="new Date(event.occurred_at).toLocaleString()"
+        >
+          <strong>{{ event.event === 'submission_started' ? '开始提交' : '提交结果已持久化' }}</strong>
+          · {{ event.actor }} · {{ event.message }}
+        </el-timeline-item>
+      </el-timeline>
       <el-alert
         v-if="batch.failures.length"
         title="部分租户迁移未成功"

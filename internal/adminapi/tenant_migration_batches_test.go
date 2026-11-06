@@ -119,3 +119,63 @@ func TestTenantMigrationBatchRejectsDuplicateAndSuspendedTenants(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	if len(tasks) != 0 { t.Fatalf("validation created %d tasks; want none", len(tasks)) }
 }
+
+func TestTenantMigrationBatchPersistsSubmissionFailuresWithoutChildTasks(t *testing.T) {
+	dir := t.TempDir()
+	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
+	if err != nil { t.Fatal(err) }
+	t.Cleanup(func() { _ = store.Close() })
+	source, err := store.Create(context.Background(), adminstore.DataSourceInput{
+		Name: "batch blocked source", Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "blocked.db"),
+	})
+	if err != nil { t.Fatal(err) }
+	tenant, err := store.CreateTenant(context.Background(), adminstore.TenantInput{
+		Name: "Blocked tenant", Code: "batch-blocked", DataSourceID: source.ID, Status: "active",
+	})
+	if err != nil { t.Fatal(err) }
+	rule, err := store.CreateShardRule(context.Background(), adminstore.ShardRuleInput{
+		DataSourceID: source.ID, BaseTable: "orders", ShardType: "month",
+	})
+	if err != nil { t.Fatal(err) }
+
+	server := newTestServerWithMigrationDir(store, dir)
+	t.Cleanup(func() { _ = server.Close() })
+	// Persist an active shard DDL task directly. It holds the database-level
+	// mutual-exclusion guard without entering the server's in-memory worker queue.
+	if _, err := store.CreateShardDDLTask(context.Background(), adminstore.ShardDDLTask{
+		ShardRuleID: rule.ID, DataSourceID: source.ID, Action: "clone",
+		SourceTable: "orders_202611", TargetTable: "orders_202612",
+	}); err != nil { t.Fatal(err) }
+
+	body, _ := json.Marshal(map[string]any{"tenant_ids": []string{tenant.ID}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tenant-migration-batches", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("submit batch status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var submitted tenantMigrationBatchResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &submitted); err != nil { t.Fatal(err) }
+	if submitted.Total != 1 || submitted.Queued != 0 || submitted.Failed != 1 || submitted.SubmissionFailed != 1 || len(submitted.Tasks) != 0 {
+		t.Fatalf("unexpected failed submission summary: %+v", submitted)
+	}
+	if !submitted.AuditPersisted || len(submitted.AuditEvents) != 2 {
+		t.Fatalf("batch submission audit was not persisted: %+v", submitted)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/v1/tenant-migration-batches/"+submitted.ID, nil)
+	getRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get failed-submission batch status=%d body=%s", getRec.Code, getRec.Body.String())
+	}
+	var summary tenantMigrationBatchResponse
+	if err := json.Unmarshal(getRec.Body.Bytes(), &summary); err != nil { t.Fatal(err) }
+	if summary.Total != 1 || summary.Failed != 1 || summary.SubmissionFailed != 1 || len(summary.Tasks) != 0 || len(summary.Failures) != 1 {
+		t.Fatalf("failed submission batch was not recoverable: %+v", summary)
+	}
+	if len(summary.AuditEvents) != 2 || summary.Actor != "local-api" {
+		t.Fatalf("batch-level audit identity/events missing: %+v", summary)
+	}
+}
