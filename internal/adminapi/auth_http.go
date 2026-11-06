@@ -163,7 +163,9 @@ func isReadOnlyAdminRoute(path string) bool {
   if len(parts)==3 { return true }
   if len(parts)==4 { return nonEmpty(3) }
   return len(parts)==6 && nonEmpty(3) && parts[4]=="migrations" && parts[5]=="status"
- case "tenants":
+ case "tenant-discovery":
+		return len(parts) == 4 && parts[3] == "preview"
+	case "tenants":
   return len(parts)==3 || (len(parts)==4 && nonEmpty(3)) || (len(parts)==5 && nonEmpty(3) && parts[4]=="audit")
  case "tenant-migration-batches":
   return len(parts)==4 && nonEmpty(3)
@@ -187,6 +189,7 @@ func authorizeAdminRole(role, method, path string) bool {
  if method == http.MethodGet || method == http.MethodHead { return isReadOnlyAdminRoute(path) }
  parts := strings.Split(strings.Trim(path, "/"), "/")
  if method == http.MethodPost {
+  if path == apiPrefix+"/tenant-discovery/preview" { return role == "viewer" || role == "migration_operator" || role == "shard_operator" }
   if path == apiPrefix+"/tenant-migration-batches" { return role == "migration_operator" }
   if len(parts)==6 && parts[0]=="api" && parts[1]=="v1" && parts[2]=="datasources" && parts[4]=="migrations" && (parts[5]=="preview" || parts[5]=="tasks") { return role=="migration_operator" }
   if len(parts)==6 && parts[0]=="api" && parts[1]=="v1" && parts[2]=="tenants" && parts[4]=="migrations" && parts[5]=="tasks" { return role=="migration_operator" }
