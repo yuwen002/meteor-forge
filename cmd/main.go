@@ -30,6 +30,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/yuwen002/meteor-forge/internal/adminstore"
 	"github.com/yuwen002/meteor-forge/pkg/driver/clickhouse"
 	"github.com/yuwen002/meteor-forge/pkg/driver/mysql"
 	"github.com/yuwen002/meteor-forge/pkg/driver/postgres"
@@ -51,6 +52,8 @@ var (
 	downSteps   int
 	gotoVersion string
 	dbDriver    string
+	metadataBackupPath string
+	metadataBackupPath string
 )
 
 const (
@@ -283,6 +286,50 @@ func main() {
 		},
 	}
 
+	// 管理元数据库在线备份：使用 SQLite VACUUM INTO 创建一致性快照。
+	metadataBackupCmd := &cobra.Command{
+		Use:   "metadata-backup",
+		Short: "在线备份 meteor-forge 管理元数据库",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if metadataBackupPath == "" {
+				return errors.New("必须通过 --to 指定备份文件路径")
+			}
+			key := os.Getenv("METEOR_ADMIN_ENCRYPTION_KEY")
+			if key == "" {
+				return errors.New("METEOR_ADMIN_ENCRYPTION_KEY is required")
+			}
+			path := os.Getenv("METEOR_ADMIN_DB")
+			if path == "" {
+				configDir, err := os.UserConfigDir()
+				if err != nil {
+					return fmt.Errorf("resolve user config directory: %w", err)
+				}
+				path = filepath.Join(configDir, "meteor-forge", "admin.db")
+			}
+			store, err := adminstore.Open(cmd.Context(), path, key)
+			if err != nil {
+				return fmt.Errorf("open management metadata database: %w", err)
+			}
+			defer func() {
+				if closeErr := store.Close(); closeErr != nil {
+					log.Printf("close metadata database after backup: %v", closeErr)
+				}
+			}()
+			backupPath, err := store.BackupTo(cmd.Context(), metadataBackupPath)
+			if err != nil {
+				return err
+			}
+			version, err := store.SchemaVersion(cmd.Context())
+			if err != nil {
+				return err
+			}
+			fmt.Printf("管理元数据库备份完成：%s（schema version %d）\n", backupPath, version)
+			return nil
+		},
+	}
+	metadataBackupCmd.Flags().StringVar(&metadataBackupPath, "to", "", "备份文件输出路径（必须不存在）")
+
 	// 7. goto 命令：精准对齐到目标版本（双向跳转，多退少补；版本 0 回滚全部）
 	gotoCmd := &cobra.Command{
 		Use:   "goto",
@@ -312,7 +359,7 @@ func main() {
 	gotoCmd.Flags().StringVarP(&gotoVersion, "version", "v", "", "目标版本号（如 20261102143000；输入 0 回滚全部迁移）")
 
 	// 挂载所有子命令
-	rootCmd.AddCommand(upCmd, downCmd, statusCmd, createCmd, tenantsUpCmd, tenantsSyncCmd, gotoCmd)
+	rootCmd.AddCommand(upCmd, downCmd, statusCmd, createCmd, tenantsUpCmd, tenantsSyncCmd, gotoCmd, metadataBackupCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

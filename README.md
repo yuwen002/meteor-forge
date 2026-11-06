@@ -388,6 +388,8 @@ go run ./cmd/server
 
 初次启动必须提供 `METEOR_ADMIN_BOOTSTRAP_PASSWORD`，服务会创建默认用户名 `admin`（可通过 `METEOR_ADMIN_USERNAME` 修改）的管理员。管理员创建后，后续启动不再读取该密码变量，也不会覆盖已有密码。登录入口由 Web 管理后台提供。\n\n管理元数据库默认保存在操作系统用户配置目录的 `meteor-forge/admin.db`，可通过 `METEOR_ADMIN_DB` 修改。请妥善备份密钥；丢失密钥将无法解密已登记数据源的 DSN。密钥不得提交到 Git。
 
+在线备份管理元数据库可使用 `meteor-forge metadata-backup --to /path/to/backup.db`。该命令使用 SQLite 一致性快照、执行完整性检查并将备份权限设为 `0600`。恢复必须先停止管理服务，并使用备份时相同的 `METEOR_ADMIN_ENCRYPTION_KEY`。详见 [备份与恢复手册](docs/web-admin/backup-restore.md)。
+
 健康检查：
 
 ```bash

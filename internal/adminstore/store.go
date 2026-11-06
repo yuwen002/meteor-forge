@@ -47,8 +47,9 @@ type DataSourceInput struct {
 
 // Store owns the management metadata database and the DSN encryption key.
 type Store struct {
-	db  *sql.DB
+	db   *sql.DB
 	aead cipher.AEAD
+	path string
 }
 
 // Open creates the metadata directory, opens SQLite, and applies schema migrations.
@@ -81,7 +82,7 @@ func Open(ctx context.Context, path, keyHex string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	store := &Store{db: db, aead: aead}
+	store := &Store{db: db, aead: aead, path: path}
 	if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout = 5000"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("configure metadata database: %w", err)
