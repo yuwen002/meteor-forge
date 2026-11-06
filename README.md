@@ -406,7 +406,7 @@ npm run dev
 
 详细架构、阶段计划和安全边界见 [Web 管理后台架构文档](docs/web-admin/architecture.md)，[管理 API 文档](docs/web-admin/api.md)，前端开发说明见 [web/admin/README.md](web/admin/README.md)。
 
-> 当前已接入数据源管理、Migration、租户、分片规则、执行任务中心和操作审计，并加入管理员登录、会话校验及 RBAC。管理 API 启动时会强制要求首次管理员初始化，并拒绝非 loopback 监听地址。认证/授权安全审计和 CI 验收仍在进行中；请继续保持本机访问，不要通过公网或未受信任的反向代理暴露服务。
+> 当前已接入数据源管理、Migration、租户、分片规则、执行任务中心、操作审计和安全审计，并实现管理员登录、会话校验、CSRF/Origin 防护及后端 RBAC。管理 API 启动时会强制要求首次管理员初始化，并拒绝非 loopback 监听地址。CI 覆盖 Go 单元测试、数据库驱动集成测试、前端类型检查/构建和 golangci-lint；请继续保持本机访问，不要通过公网或未受信任的反向代理暴露服务。
 
 
 ### 数据源管理进度
