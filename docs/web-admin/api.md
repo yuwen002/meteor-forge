@@ -404,4 +404,43 @@ ID 策略支持单点或闭区间预览：
 - SQLite 使用 CTAS（`CREATE TABLE ... AS SELECT ... WHERE 0`），仅复制列结构，不复制主键、约束、索引和触发器。生产环境需要这些对象时，应在克隆后通过独立、受审计的迁移补齐。
 - 当前只开放结构克隆，不提供数据复制、覆盖已有表、DROP 或自动清理。
 
-管理 API 当前没有认证/授权，仍只允许 loopback 监听，不得暴露公网。
+除公开健康检查与登录接口外，所有管理 API 均要求有效会话，并由后端 RBAC 强制授权。完整角色矩阵见 [角色权限矩阵](permissions.md)，认证细节见 [认证与安全说明](authentication.md)。管理 API 当前强制 loopback 监听，不得暴露公网。
+
+
+## 认证、健康检查与操作审计接口索引
+
+### GET /health
+
+公开的最小存活接口，返回服务状态、API 版本和 UTC 时间戳。不检查目标数据源连通性，也不暴露配置。
+
+### 认证与管理员接口
+
+| 方法 | 路径 | 权限 |
+|---|---|---|
+| POST | `/auth/login` | 公开、登录限流 |
+| GET | `/auth/session` | 已登录 |
+| POST | `/auth/logout` | 已登录、Origin/CSRF 校验 |
+| POST | `/auth/password` | 已登录、当前密码校验、Origin/CSRF 校验 |
+| GET | `/auth/users` | administrator |
+| POST | `/auth/users` | administrator |
+| PUT | `/auth/users/{id}/role` | administrator |
+| DELETE | `/auth/users/{id}` | administrator |
+| GET | `/auth/security-events` | administrator |
+
+登录请求为 JSON：`{"username":"admin","password":"<password>"}`。成功后返回 HttpOnly 会话 Cookie；响应体只返回用户名、角色和过期时间。退出和修改密码会执行 Origin/CSRF 校验。
+
+### GET /audit-events
+
+读取迁移与分片 DDL 的操作审计事件。支持筛选参数：
+
+- `kind`：`migration` 或 `shard_ddl`。
+- `status`：queued、running、succeeded、failed、canceled、interrupted。
+- `task_id`、`data_source_id`、`tenant_id`、`shard_rule_id`。
+- `from`、`to`：RFC3339 时间戳，from 不得晚于 to。
+- `limit`：1–200，默认 50；`offset`：0–10,000,000，默认 0。
+
+响应包含 `items`、`total`、`limit`、`offset`。所有已认证角色可读取操作审计；安全审计事件与此接口分离，仅管理员可读取。
+
+## 当前不提供的 API
+
+当前没有租户定时/批量连接健康巡检 API、巡检历史查询 API、自动停用租户 API 或自动恢复 API。现有 `POST /tenants/{id}/test` 是管理员按需触发的单租户连接测试，超时 5 秒，不会改变租户状态。
