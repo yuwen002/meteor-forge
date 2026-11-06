@@ -38,7 +38,7 @@
 - [x] DSN 使用 AES-256-GCM 加密存储，API 不回显凭据。
 - [x] MySQL、PostgreSQL、SQLite、ClickHouse 连接测试（5 秒超时）。
 - [x] 数据源管理前端页面与 Dashboard 实际数据源数量。
-- [ ] 管理元数据库 schema 升级机制完善、备份/恢复说明。
+- [x] 管理元数据库 schema 版本记录与幂等升级流程；提供在线一致性备份命令、完整性校验和停机恢复 runbook。
 - [x] 数据源连接池注册表、连接池生命周期管理和并发访问控制。
 - [x] 对各数据库驱动补充集成测试（SQLite 临时文件 + CI MySQL/PostgreSQL/ClickHouse 服务容器）。
 
