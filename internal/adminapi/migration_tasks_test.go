@@ -71,7 +71,7 @@ func TestMigrationTaskUpAndConfirmedDown(t *testing.T) {
 	if count != 1 { t.Fatal("Up task did not create target table") }
 	_ = db.Close()
 
-	downWithoutConfirmation := httptest.NewRequest(http.MethodPost, "/api/v1/datasources/"+source.ID+"/migrations/tasks", strings.NewReader(`{"action":"down"}`))
+	downWithoutConfirmation := httptest.NewRequest(http.MethodPost, "http://localhost/api/v1/datasources/"+source.ID+"/migrations/tasks", strings.NewReader(`{"action":"down"}`))
 	downWithoutConfirmation.Header.Set("Content-Type", "application/json")
 	downWithoutConfirmation.Header.Set("Origin", "http://localhost")
 	downWithoutConfirmation.AddCookie(cookie)
@@ -79,7 +79,7 @@ func TestMigrationTaskUpAndConfirmedDown(t *testing.T) {
 	server.Handler().ServeHTTP(downRec, downWithoutConfirmation)
 	if downRec.Code != http.StatusBadRequest { t.Fatalf("unconfirmed Down status=%d body=%s", downRec.Code, downRec.Body.String()) }
 
-	down := httptest.NewRequest(http.MethodPost, "/api/v1/datasources/"+source.ID+"/migrations/tasks", strings.NewReader(`{"action":"down","confirm":true}`))
+	down := httptest.NewRequest(http.MethodPost, "http://localhost/api/v1/datasources/"+source.ID+"/migrations/tasks", strings.NewReader(`{"action":"down","confirm":true}`))
 	down.Header.Set("Content-Type", "application/json")
 	down.Header.Set("Origin", "http://localhost")
 	down.AddCookie(cookie)
