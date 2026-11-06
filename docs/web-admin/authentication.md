@@ -90,6 +90,24 @@ Start with explicit least-privilege roles:
 
 The backend currently restricts migration execution and tenant migration batches to `migration_operator` (with rollback/version-changing actions separately restricted to `administrator`); shard clone operations to `shard_operator`; and administrator account/security-audit endpoints to `administrator`. Migration operators may cancel only `up` tasks; cancellation of rollback or version-change tasks is administrator-only. All authenticated roles can read operational status and audit views.
 
+### Backend route permission matrix
+
+| Route / operation | viewer | migration_operator | shard_operator | administrator |
+|---|---:|---:|---:|---:|
+| Read data sources, tenants, migration tasks/audits, shard rules/tables, operational audit events | Yes | Yes | Yes | Yes |
+| Read authentication session | Yes | Yes | Yes | Yes |
+| Create/update/delete data sources, tenants, and shard rules; test target connections | No | No | No | Yes |
+| Create/list administrator accounts, change roles, read security audit events | No | No | No | Yes |
+| Change own password or log out | Yes | Yes | Yes | Yes |
+| Migration preview and `up` execution; tenant migration batches | No | Yes | No | Yes |
+| Migration rollback / version change (`down`, `down_steps`, `to_version`) | No | No | No | Yes |
+| Cancel migration `up` task | No | Yes | No | Yes |
+| Cancel migration rollback / version-change task | No | No | No | Yes |
+| Shard route preview and physical-table existence checks | Yes | No | Yes | Yes |
+| Shard clone preview and clone DDL task submission/cancellation | No | No | Yes | Yes |
+
+The matrix is enforced by backend middleware and action-specific handler checks. In particular, migration-task cancellation first loads the persisted task action; an operator cannot bypass the administrator-only rollback rule by calling the generic cancellation endpoint. The route-level regression suite covers the registered route classes for all four roles.
+
 Authorization must be enforced in backend handlers/services, not only by hiding frontend buttons. Destructive rollback and physical DDL retain explicit confirmation requirements. Operational task audit records store the authenticated actor. Security audit records store actor/subject, action, outcome, direct peer address, a short static detail, and timestamp. Administrator creation, role changes, deletion, password changes, login-session creation, and logout are committed in the same metadata-database transaction as their success audit event; an audit insert failure rolls back the associated mutation. Passwords, cookies, session tokens, DSNs, and raw database errors must never be written.
 
 ## Required security tests
