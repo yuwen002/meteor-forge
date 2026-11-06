@@ -262,5 +262,32 @@ func (s *Server) getTenantMigrationBatch(w http.ResponseWriter, r *http.Request)
 			})
 		}
 	}
+	response.Status = tenantMigrationBatchExecutionStatus(response)
 	writeJSON(w, http.StatusOK, response)
+}
+
+func tenantMigrationBatchExecutionStatus(response tenantMigrationBatchResponse) string {
+	if response.Queued+response.Running > 0 {
+		return "running"
+	}
+	finished := response.Succeeded + response.Failed + response.Canceled + response.Interrupted
+	if finished < response.Total {
+		return response.Status
+	}
+	if response.Failed > 0 || response.Interrupted > 0 || response.Canceled > 0 {
+		if response.Succeeded > 0 {
+			return "partially_completed"
+		}
+		if response.Canceled > 0 && response.Failed == 0 && response.Interrupted == 0 {
+			return "canceled"
+		}
+		if response.Interrupted > 0 && response.Failed == 0 && response.Canceled == 0 {
+			return "interrupted"
+		}
+		return "failed"
+	}
+	if response.Succeeded == response.Total {
+		return "succeeded"
+	}
+	return response.Status
 }

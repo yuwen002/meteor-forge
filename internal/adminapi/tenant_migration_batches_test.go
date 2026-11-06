@@ -172,7 +172,7 @@ func TestTenantMigrationBatchPersistsSubmissionFailuresWithoutChildTasks(t *test
 	}
 	var summary tenantMigrationBatchResponse
 	if err := json.Unmarshal(getRec.Body.Bytes(), &summary); err != nil { t.Fatal(err) }
-	if summary.Total != 1 || summary.Failed != 1 || summary.SubmissionFailed != 1 || len(summary.Tasks) != 0 || len(summary.Failures) != 1 {
+	if summary.Total != 1 || summary.Status != "failed" || summary.Failed != 1 || summary.SubmissionFailed != 1 || len(summary.Tasks) != 0 || len(summary.Failures) != 1 {
 		t.Fatalf("failed submission batch was not recoverable: %+v", summary)
 	}
 	if len(summary.AuditEvents) != 2 || summary.Actor != "local-api" {
