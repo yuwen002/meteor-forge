@@ -17,6 +17,8 @@ func TestRoleAuthorizationRegisteredRouteMatrix(t *testing.T) {
 		{http.MethodGet, "/api/v1/datasources/d1/migrations/status", map[string]bool{"viewer": true, "migration_operator": true, "shard_operator": true}},
 		{http.MethodGet, "/api/v1/tenants", map[string]bool{"viewer": true, "migration_operator": true, "shard_operator": true}},
 		{http.MethodGet, "/api/v1/tenants/tenant-1/audit", map[string]bool{"viewer": true, "migration_operator": true, "shard_operator": true}},
+		{http.MethodGet, "/api/v1/tenant-discovery/preview", map[string]bool{}},
+		{http.MethodPost, "/api/v1/tenant-discovery/sync", map[string]bool{}},
 		{http.MethodGet, "/api/v1/migration-tasks/t1/audit", map[string]bool{"viewer": true, "migration_operator": true, "shard_operator": true}},
 		{http.MethodGet, "/api/v1/tenant-migration-batches/b1", map[string]bool{"viewer": true, "migration_operator": true, "shard_operator": true}},
 		{http.MethodGet, "/api/v1/shard-rules/r1/tables", map[string]bool{"viewer": true, "migration_operator": true, "shard_operator": true}},
