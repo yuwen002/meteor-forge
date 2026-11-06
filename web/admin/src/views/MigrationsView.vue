@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
+import { useAdminPermissions } from '../permissions'
 
 interface DataSource { id: string; name: string; driver: string }
 interface MigrationStatusItem { version: string; description: string; is_applied: boolean }
@@ -23,6 +24,8 @@ interface MigrationPreviewResponse {
   items: MigrationPlanItem[]
   change_count: number
 }
+
+const { canRunMigrations, canRollbackMigrations, canCancelMigrationTask } = useAdminPermissions()
 
 const dataSources = ref<DataSource[]>([])
 const selectedID = ref('')
@@ -132,6 +135,7 @@ async function waitForTask(id: string) {
 
 async function submitTask(action: 'up' | 'down' | 'down_steps' | 'to_version') {
   if (!selectedID.value || submittingTask.value || taskActive.value) return
+  if (!canRunMigrations.value || (action !== 'up' && !canRollbackMigrations.value)) return
   if (action !== 'up') {
     const detail = action === 'down' ? '回滚最近一次迁移' :
       action === 'down_steps' ? '连续回滚最近 ' + rollbackSteps.value + ' 次迁移' :
@@ -170,7 +174,7 @@ async function submitTask(action: 'up' | 'down' | 'down_steps' | 'to_version') {
 }
 
 async function cancelTask() {
-  if (!currentTask.value || !taskActive.value) return
+  if (!currentTask.value || !taskActive.value || !canCancelMigrationTask(currentTask.value.action)) return
   try {
     await ElMessageBox.confirm('取消不会自动撤销已经完成的迁移步骤，是否继续？', '取消迁移任务', { type: 'warning' })
     await api.post('/migration-tasks/' + currentTask.value.id + '/cancel')
@@ -181,7 +185,7 @@ async function cancelTask() {
 }
 
 async function createPreview() {
-  if (!selectedID.value) return
+  if (!selectedID.value || !canRunMigrations.value) return
   previewing.value = true
   try {
     const { data } = await api.post<MigrationPreviewResponse>('/datasources/' + selectedID.value + '/migrations/preview')
@@ -276,7 +280,7 @@ onMounted(() => { void loadSources(); void loadTasks() })
           <strong>迁移计划预览</strong>
           <span>核对脚本校验和后列出待执行版本</span>
         </div>
-        <el-button type="primary" :disabled="!status" :loading="previewing" @click="createPreview">生成 Dry Run</el-button>
+        <el-button v-if="canRunMigrations" type="primary" :disabled="!status" :loading="previewing" @click="createPreview">生成 Dry Run</el-button>
       </div>
       <el-table v-if="preview" :data="preview.items" empty-text="没有待执行迁移">
         <el-table-column prop="version" label="版本" width="160" />
@@ -296,15 +300,15 @@ onMounted(() => { void loadSources(); void loadTasks() })
           <div><strong>迁移执行</strong><span>后台执行耗时任务；同一数据源的任务会串行运行</span></div>
           <el-tag v-if="taskActive" type="warning" effect="plain">任务执行中</el-tag>
         </div>
-        <el-alert title="执行前请确认目标数据库已备份" description="Up 执行待处理 SQL；Down 和版本跳转可能改变数据库结构。当前管理 API 尚无用户认证/授权，只能在可信本机环境使用。" type="warning" :closable="false" show-icon class="migration-alert" />
+        <el-alert title="执行前请确认目标数据库已备份" description="Up 执行待处理 SQL；Down 和版本跳转仅限管理员。服务端会校验登录会话与角色，前端按权限显示可用操作。" type="warning" :closable="false" show-icon class="migration-alert" />
         <div class="execution-actions">
-          <el-button type="primary" :disabled="!preview || preview.change_count === 0 || !!taskActive" :loading="submittingTask" @click="submitTask('up')">执行全部 Up</el-button>
-          <el-button type="danger" plain :disabled="!status?.applied_count || !!taskActive" :loading="submittingTask" @click="submitTask('down')">回滚最近一次</el-button>
-          <div class="inline-action">
+          <el-button v-if="canRunMigrations" type="primary" :disabled="!preview || preview.change_count === 0 || !!taskActive" :loading="submittingTask" @click="submitTask('up')">执行全部 Up</el-button>
+          <el-button v-if="canRollbackMigrations" type="danger" plain :disabled="!status?.applied_count || !!taskActive" :loading="submittingTask" @click="submitTask('down')">回滚最近一次</el-button>
+          <div v-if="canRollbackMigrations" class="inline-action">
             <el-input-number v-model="rollbackSteps" :min="1" :max="100" :disabled="!!taskActive" />
             <el-button plain :disabled="!status?.applied_count || !!taskActive" :loading="submittingTask" @click="submitTask('down_steps')">回滚指定步数</el-button>
           </div>
-          <div class="inline-action">
+          <div v-if="canRollbackMigrations" class="inline-action">
             <el-input v-model="targetVersion" placeholder="目标版本，0 表示全部回滚" :disabled="!!taskActive" />
             <el-button plain :disabled="!!taskActive" :loading="submittingTask" @click="submitTask('to_version')">跳转版本</el-button>
           </div>
@@ -324,7 +328,7 @@ onMounted(() => { void loadSources(); void loadTasks() })
             </div>
           </div>
           <p>{{ currentTask.message || '任务已排队' }}</p>
-          <el-button v-if="taskActive" size="small" type="danger" plain @click="cancelTask">取消任务</el-button>
+          <el-button v-if="taskActive && currentTask && canCancelMigrationTask(currentTask.action)" size="small" type="danger" plain @click="cancelTask">取消任务</el-button>
         </div>
         <div class="section-heading task-history-heading">
           <div><strong>最近任务</strong><span>最多显示最近 50 条</span></div>

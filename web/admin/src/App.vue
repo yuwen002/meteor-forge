@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, provide, ref, watch } from 'vue'
 import { getAdminSession, logoutAdmin } from './api'
+import { adminRoleKey, type AdminRole } from './permissions'
 import { useRoute, useRouter } from 'vue-router'
 import {
   DataAnalysis, Connection, Files, OfficeBuilding, Grid, List, Document,
@@ -10,10 +11,21 @@ import {
 const route = useRoute()
 const router = useRouter()
 const currentTitle = computed(() => String(route.meta.title ?? '管理后台'))
-const isAdministrator = ref(false)
-onMounted(async () => {
-  try { isAdministrator.value = (await getAdminSession()).role === 'administrator' } catch { isAdministrator.value = false }
-})
+const sessionRole = ref<AdminRole | null>(null)
+const isAdministrator = computed(() => sessionRole.value === 'administrator')
+const roleLabels: Record<AdminRole, string> = {
+  administrator: '管理员', viewer: '只读查看者',
+  migration_operator: '迁移操作员', shard_operator: '分片操作员',
+}
+const roleLabel = computed(() => sessionRole.value ? roleLabels[sessionRole.value] : '未登录')
+provide(adminRoleKey, sessionRole)
+
+async function refreshSession() {
+  try { sessionRole.value = (await getAdminSession()).role }
+  catch { sessionRole.value = null }
+}
+onMounted(() => { void refreshSession() })
+watch(() => route.fullPath, () => { void refreshSession() })
 
 async function handleLogout() {
   try { await logoutAdmin() } finally { await router.replace({ name: 'login' }) }
@@ -82,6 +94,7 @@ const navigation = [
         <div class="topbar-meta">
           <span class="status-dot"></span>
           <span>本地管理服务</span>
+          <el-tag size="small" effect="plain" type="info">{{ roleLabel }}</el-tag>
           <el-tag size="small" effect="plain" type="info">0.1.0-dev</el-tag>
           <el-button link type="primary" @click="handleLogout">退出登录</el-button>
         </div>

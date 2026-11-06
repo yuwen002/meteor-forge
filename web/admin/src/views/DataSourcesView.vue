@@ -2,6 +2,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
+import { useAdminPermissions } from '../permissions'
 
 interface DataSource {
   id: string
@@ -15,6 +16,8 @@ interface DataSourceInput {
   driver: DataSource['driver']
   dsn: string
 }
+
+const { canManageDataSources, canTestConnections } = useAdminPermissions()
 
 const items = ref<DataSource[]>([])
 const loading = ref(false)
@@ -114,7 +117,7 @@ onMounted(load)
       <h1>数据源管理</h1>
       <p>登记需要由 meteor-forge 管理的数据库连接。连接凭据在服务端加密保存，不会通过列表接口返回。</p>
     </div>
-    <el-button type="primary" @click="openCreate">添加数据源</el-button>
+    <el-button v-if="canManageDataSources" type="primary" @click="openCreate">添加数据源</el-button>
   </div>
 
   <el-alert
@@ -147,11 +150,11 @@ onMounted(load)
       <el-table-column prop="updated_at" label="最近更新" min-width="190">
         <template #default="{ row }">{{ new Date(row.updated_at).toLocaleString() }}</template>
       </el-table-column>
-      <el-table-column label="操作" fixed="right" width="230">
+      <el-table-column v-if="canManageDataSources || canTestConnections" label="操作" fixed="right" width="230">
         <template #default="{ row }">
-          <el-button link type="primary" :loading="testingID === row.id" @click="testConnection(row)">测试连接</el-button>
-          <el-button link @click="openEdit(row)">编辑</el-button>
-          <el-button link type="danger" @click="remove(row)">删除</el-button>
+          <el-button v-if="canTestConnections" link type="primary" :loading="testingID === row.id" @click="testConnection(row)">测试连接</el-button>
+          <el-button v-if="canManageDataSources" link @click="openEdit(row)">编辑</el-button>
+          <el-button v-if="canManageDataSources" link type="danger" @click="remove(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
