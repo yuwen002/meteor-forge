@@ -43,6 +43,23 @@ func TestTenantManagementAPI(t *testing.T) {
 		t.Fatalf("tenant response must not expose connection credentials: %s", created.Body.String())
 	}
 
+	readAudit := func() ([]adminstore.TenantAuditEvent, int) {
+		t.Helper()
+		rec := request(http.MethodGet, "/api/v1/tenants/"+tenant.ID+"/audit?limit=20", "")
+		if rec.Code != http.StatusOK { t.Fatalf("tenant audit status=%d body=%s", rec.Code, rec.Body.String()) }
+		var result struct {
+			Items []adminstore.TenantAuditEvent `json:"items"`
+			Total int `json:"total"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil { t.Fatal(err) }
+		return result.Items, result.Total
+	}
+	createdEvents, createdTotal := readAudit()
+	if createdTotal != 1 || len(createdEvents) != 1 || createdEvents[0].Action != "created" ||
+		createdEvents[0].Actor != "local-api" || createdEvents[0].After == nil {
+		t.Fatalf("tenant create audit missing: total=%d events=%+v", createdTotal, createdEvents)
+	}
+
 	listed := request(http.MethodGet, "/api/v1/tenants", "")
 	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), tenant.ID) {
 		t.Fatalf("list status=%d body=%s", listed.Code, listed.Body.String())
@@ -89,8 +106,19 @@ func TestTenantManagementAPI(t *testing.T) {
 	if update.Code != http.StatusOK || !strings.Contains(update.Body.String(), `"status":"suspended"`) {
 		t.Fatalf("tenant update status=%d body=%s", update.Code, update.Body.String())
 	}
+	updatedEvents, updatedTotal := readAudit()
+	if updatedTotal != 2 || len(updatedEvents) != 2 || updatedEvents[0].Action != "updated" ||
+		updatedEvents[0].Before == nil || updatedEvents[0].After == nil ||
+		updatedEvents[0].Before.Status != "active" || updatedEvents[0].After.Status != "suspended" {
+		t.Fatalf("tenant update audit missing: total=%d events=%+v", updatedTotal, updatedEvents)
+	}
 	removed := request(http.MethodDelete, "/api/v1/tenants/"+tenant.ID, "")
 	if removed.Code != http.StatusNoContent { t.Fatalf("tenant delete status=%d body=%s", removed.Code, removed.Body.String()) }
+	deletedEvents, deletedTotal := readAudit()
+	if deletedTotal != 3 || len(deletedEvents) != 3 || deletedEvents[0].Action != "deleted" ||
+		deletedEvents[0].Before == nil || deletedEvents[0].After != nil {
+		t.Fatalf("tenant delete audit history missing after deletion: total=%d events=%+v", deletedTotal, deletedEvents)
+	}
 	if rec := request(http.MethodDelete, "/api/v1/datasources/"+source.ID, ""); rec.Code != http.StatusNoContent {
 		t.Fatalf("data source delete after tenant removal status=%d body=%s", rec.Code, rec.Body.String())
 	}
