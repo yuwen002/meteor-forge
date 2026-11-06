@@ -53,7 +53,6 @@ var (
 	gotoVersion string
 	dbDriver    string
 	metadataBackupPath string
-	metadataBackupPath string
 )
 
 const (
