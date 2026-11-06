@@ -81,12 +81,8 @@ func(s *Server) loginHandler(w http.ResponseWriter,r *http.Request){
   }
   writeJSON(w,http.StatusUnauthorized,map[string]string{"error":"invalid username or password"});return
  }
- token,expires,err:=s.authStore.CreateAdminSession(r.Context(),admin.ID,adminSessionLifetime)
- if err!=nil{writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to create session"});return}
- if auditErr:=s.authStore.RecordSecurityAuditEvent(r.Context(),adminstore.SecurityAuditEvent{Actor:admin.Username,Subject:admin.Username,Action:"login",Outcome:"succeeded",RequestSource:requestSourceForAudit(r),Details:"administrator authenticated"});auditErr!=nil{
-  _ = s.authStore.RevokeAdminSession(r.Context(),token)
-  writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to record authentication event"});return
- }
+ token,expires,err:=s.authStore.CreateAdminSessionWithAudit(r.Context(),admin.ID,adminSessionLifetime,adminstore.SecurityAuditEvent{Actor:admin.Username,Subject:admin.Username,Action:"login",Outcome:"succeeded",RequestSource:requestSourceForAudit(r),Details:"administrator authenticated"})
+ if err!=nil{writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to create authenticated session"});return}
  s.loginLimiter.success(key)
  http.SetCookie(w,&http.Cookie{Name:adminSessionCookie,Value:token,Path:apiPrefix,HttpOnly:true,Secure:r.TLS!=nil,SameSite:http.SameSiteStrictMode,Expires:expires,MaxAge:int(adminSessionLifetime.Seconds())})
  writeJSON(w,http.StatusOK,map[string]any{"username":admin.Username,"role":admin.Role,"expires_at":expires.Format(time.RFC3339)})
@@ -98,8 +94,10 @@ func(s *Server) sessionHandler(w http.ResponseWriter,r *http.Request){
 func(s *Server) logoutHandler(w http.ResponseWriter,r *http.Request){
  if !requireAuthJSON(w,r){return}
  cookie,_:=r.Cookie(adminSessionCookie)
+ token:=""
+ if cookie!=nil { token=cookie.Value }
  session,_:=adminSessionFromRequest(r)
- if err:=s.authStore.RevokeAdminSessionWithAudit(r.Context(),cookie.Value,adminstore.SecurityAuditEvent{Actor:session.Admin.Username,Subject:session.Admin.Username,Action:"logout",Outcome:"succeeded",RequestSource:requestSourceForAudit(r),Details:"administrator logged out"});err!=nil{writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to revoke session or record logout event"});return}
+ if err:=s.authStore.RevokeAdminSessionWithAudit(r.Context(),token,adminstore.SecurityAuditEvent{Actor:session.Admin.Username,Subject:session.Admin.Username,Action:"logout",Outcome:"succeeded",RequestSource:requestSourceForAudit(r),Details:"administrator logged out"});err!=nil{writeJSON(w,http.StatusInternalServerError,map[string]string{"error":"unable to revoke session or record logout event"});return}
  clearAdminCookie(w,r);w.WriteHeader(http.StatusNoContent)
 }
 func(s *Server) passwordHandler(w http.ResponseWriter,r *http.Request){

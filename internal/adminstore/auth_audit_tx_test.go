@@ -11,9 +11,14 @@ func TestAdminMutationsRollbackWhenSecurityAuditInsertFails(t *testing.T) {
  store,err:=Open(ctx,":memory:",authTestKey);if err!=nil{t.Fatal(err)};defer store.Close()
  root,err:=store.BootstrapAdmin(ctx,"root","a-strong-password-123");if err!=nil{t.Fatal(err)}
  target,err:=store.CreateAdminUser(ctx,"target","a-target-password-123","viewer");if err!=nil{t.Fatal(err)}
+ existingToken,_,err:=store.CreateAdminSession(ctx,root.ID,time.Hour);if err!=nil{t.Fatal(err)}
  _,err=store.db.Exec("CREATE TRIGGER reject_security_audit BEFORE INSERT ON admin_security_audit_events BEGIN SELECT RAISE(ABORT,'audit unavailable'); END")
  if err!=nil{t.Fatal(err)}
  event:=func(action,subject string) SecurityAuditEvent{return SecurityAuditEvent{Actor:"root",Subject:subject,Action:action,Outcome:"succeeded",Details:"test"}}
+
+ if token,_,sessionErr:=store.CreateAdminSessionWithAudit(ctx,root.ID,time.Hour,event("login","root"));sessionErr==nil || token!="" { t.Fatalf("session was persisted despite audit failure: token=%q err=%v",token,sessionErr) }
+ if err=store.RevokeAdminSessionWithAudit(ctx,existingToken,event("logout","root"));err==nil { t.Fatal("expected logout audit failure") }
+ if _,err=store.GetAdminSession(ctx,existingToken);err!=nil { t.Fatalf("logout was not rolled back: %v",err) }
 
  if _,err=store.CreateAdminUserWithAudit(ctx,"created","a-created-password-123","viewer",event("admin_create","created"));err==nil{t.Fatal("expected create audit failure")}
  if _,err=store.AuthenticateAdmin(ctx,"created","a-created-password-123");!errors.Is(err,ErrInvalidCredentials){t.Fatalf("account creation was not rolled back: %v",err)}
