@@ -86,6 +86,10 @@ func TestTenantManagementAPI(t *testing.T) {
 	if activeDelete.Code != http.StatusConflict || !strings.Contains(activeDelete.Body.String(), "tenant_has_active_migration") {
 		t.Fatalf("tenant delete during migration status=%d body=%s", activeDelete.Code, activeDelete.Body.String())
 	}
+	blockedEvents, blockedTotal := readAudit()
+	if blockedTotal != 1 || len(blockedEvents) != 1 {
+		t.Fatalf("rejected tenant mutations must not create success audit events: total=%d events=%+v", blockedTotal, blockedEvents)
+	}
 	finished := time.Now().UTC()
 	if err := store.UpdateMigrationTask(context.Background(), "tenant-api-active-task", "canceled", "canceled", nil, &finished); err != nil {
 		t.Fatal(err)
