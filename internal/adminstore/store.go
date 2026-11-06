@@ -25,6 +25,7 @@ var (
 	ErrInvalidInput = errors.New("invalid data source input")
 	ErrActiveTasks = errors.New("data source has active migration tasks")
 	ErrActiveShardDDLTasks = errors.New("data source has active shard DDL tasks")
+	ErrDataSourceHasShardRules = errors.New("data source is referenced by shard rules")
 )
 
 // DataSource contains only fields safe to return to API clients.
