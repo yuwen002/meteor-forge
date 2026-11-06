@@ -105,7 +105,7 @@ func (s *Store) CreateTenantWithAudit(ctx context.Context, raw TenantInput, acto
 		if strings.Contains(message, tenantActiveMigrationConstraint) { return Tenant{}, ErrTenantActiveMigration }
 		return Tenant{}, fmt.Errorf("create tenant: %w", err)
 	}
-	after := TenantAuditSnapshot{Name: input.Name, Code: input.Code, DataSourceID: input.DataSourceID, Status: input.Status}
+	after := TenantAuditSnapshot(input)
 	if err := insertTenantAuditEvent(ctx, tx, id, "created", actor, requestSource, nil, &after, now); err != nil {
 		return Tenant{}, err
 	}
@@ -199,7 +199,7 @@ func (s *Store) UpdateTenantWithAudit(ctx context.Context, id string, raw Tenant
 	affected, err := result.RowsAffected()
 	if err != nil { return Tenant{}, err }
 	if affected == 0 { return Tenant{}, ErrTenantNotFound }
-	after := TenantAuditSnapshot{Name: input.Name, Code: input.Code, DataSourceID: input.DataSourceID, Status: input.Status}
+	after := TenantAuditSnapshot(input)
 	if err := insertTenantAuditEvent(ctx, tx, id, "updated", actor, requestSource, &before, &after, time.Now().UTC()); err != nil {
 		return Tenant{}, err
 	}
