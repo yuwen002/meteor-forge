@@ -281,3 +281,24 @@ func TestTenantHealthSchedulerRefreshDisablesPendingRound(t *testing.T) {
 	}
 }
 
+
+func TestTenantHealthSchedulerSettingsForDueRoundReloadsDisabledSetting(t *testing.T) {
+	var loads atomic.Int32
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			if loads.Add(1) == 1 {
+				return adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 30}, nil
+			}
+			return adminstore.TenantHealthSettings{Enabled: false, IntervalSeconds: 30}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error { return nil },
+		func(context.Context, int) error { return nil },
+	)
+	settings, enabled, err := scheduler.settingsForDueRound(context.Background())
+	if err != nil { t.Fatal(err) }
+	if !settings.Enabled || !enabled { t.Fatalf("first due settings should be enabled: %+v enabled=%v", settings, enabled) }
+	settings, enabled, err = scheduler.settingsForDueRound(context.Background())
+	if err != nil { t.Fatal(err) }
+	if settings.Enabled || enabled { t.Fatalf("fresh disabled settings must skip the due round: %+v enabled=%v", settings, enabled) }
+	if got := loads.Load(); got != 2 { t.Fatalf("settings loads=%d, want 2", got) }
+}

@@ -126,6 +126,18 @@ func (s *tenantHealthScheduler) loop(ctx context.Context) {
 		case <-timer.C:
 		}
 
+		// Always re-read persisted settings after the timer fires. If Refresh and
+		// the timer become ready together, select may choose the timer; the fresh
+		// read prevents a disabled or updated configuration from running stale.
+		dueSettings, enabled, settingsErr := s.settingsForDueRound(ctx)
+		if settingsErr != nil {
+			if ctx.Err() != nil { return }
+			s.reportError(fmt.Errorf("reload tenant health settings before round: %w", settingsErr))
+			continue
+		}
+		if !enabled { continue }
+		settings = dueSettings
+
 		// The loop runs each round synchronously, so two rounds can never overlap.
 		if ctx.Err() != nil {
 			return
@@ -146,6 +158,23 @@ func (s *tenantHealthScheduler) loop(ctx context.Context) {
 	}
 }
 
+
+// settingsForDueRound re-reads persisted configuration after the timer fires.
+// This closes the race where a timer and a Refresh notification become ready
+// together and select chooses the timer even though the setting was disabled.
+func (s *tenantHealthScheduler) settingsForDueRound(ctx context.Context) (adminstore.TenantHealthSettings, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return adminstore.TenantHealthSettings{}, false, err
+	}
+	settings, err := s.loadSettings(ctx)
+	if err != nil {
+		return adminstore.TenantHealthSettings{}, false, err
+	}
+	if !settings.Enabled {
+		return settings, false, nil
+	}
+	return settings, true, nil
+}
 
 // cleanupTenantHealthHistory drains expired rows in bounded batches. The caller
 // supplies a short-lived context so a large backlog cannot block shutdown.
