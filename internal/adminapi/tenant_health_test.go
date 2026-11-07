@@ -1,7 +1,6 @@
 package adminapi
 
 import (
-	"fmt"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -133,7 +132,7 @@ func TestTenantHealthSettingsAndHistoryAPI(t *testing.T) {
 	server.Handler().ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/api/v1/tenant-health/settings", nil))
 	if get.Code != http.StatusOK { t.Fatalf("settings status=%d body=%s", get.Code, get.Body.String()) }
 
-	body := fmt.Sprintf(`{"enabled":true,"interval_seconds":60,"timeout_seconds":10,"history_retention_days":14}`)
+	body := `{"enabled":true,"interval_seconds":60,"timeout_seconds":10,"history_retention_days":14}`
 	putReq := httptest.NewRequest(http.MethodPut, "/api/v1/tenant-health/settings", strings.NewReader(body))
 	putReq.Header.Set("Content-Type", "application/json")
 	put := httptest.NewRecorder()
