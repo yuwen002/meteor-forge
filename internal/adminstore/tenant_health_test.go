@@ -120,3 +120,38 @@ func TestTenantHealthHistoryCursorUsesIDForEqualTimestamps(t *testing.T) {
 		t.Fatalf("cursor skipped or duplicated equal-timestamp rows: first=%+v second=%+v", first, second)
 	}
 }
+
+
+func TestTenantHealthHistoryTimeRangeIsInclusiveAndValidatesBounds(t *testing.T) {
+	store, err := Open(context.Background(), ":memory:", testKey)
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	tenant := newTenantForHealthTest(t, store, "time-range")
+	base := time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC)
+	for i := 0; i < 3; i++ {
+		if err := store.RecordTenantConnectionHealthWithSource(context.Background(), TenantConnectionHealth{
+			TenantID: tenant.ID, Status: []string{"healthy", "unhealthy", "healthy"}[i],
+			CheckedAt: base.Add(time.Duration(i)*time.Minute), Message: "connection result",
+		}, []string{"manual", "scheduled", "manual"}[i]); err != nil { t.Fatal(err) }
+	}
+	from, to := base.Add(time.Minute), base.Add(2*time.Minute)
+	page, err := store.ListTenantConnectionHealthHistory(context.Background(), TenantHealthHistoryFilter{
+		TenantID: tenant.ID, From: &from, To: &to, Status: "healthy", Source: "manual", Limit: 10,
+	})
+	if err != nil { t.Fatal(err) }
+	if len(page.Items) != 1 || !page.Items[0].CheckedAt.Equal(to) {
+		t.Fatalf("inclusive time range/filter mismatch: %+v", page.Items)
+	}
+	if _, err := store.ListTenantConnectionHealthHistory(context.Background(), TenantHealthHistoryFilter{From: &to, To: &from}); err == nil {
+		t.Fatal("expected reversed time range to be rejected")
+	}
+	for _, raw := range []string{
+		base64.RawURLEncoding.EncodeToString([]byte("not-a-time\\n1")),
+		base64.RawURLEncoding.EncodeToString([]byte(base.Format(time.RFC3339Nano)+"\\n0")),
+		base64.RawURLEncoding.EncodeToString([]byte(base.Format(time.RFC3339Nano)+"\\n-1")),
+	} {
+		if _, err := store.ListTenantConnectionHealthHistory(context.Background(), TenantHealthHistoryFilter{Cursor: raw}); err == nil {
+			t.Errorf("expected malformed cursor %q to be rejected", raw)
+		}
+	}
+}
