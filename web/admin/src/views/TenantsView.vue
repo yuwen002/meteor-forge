@@ -385,26 +385,34 @@ async function saveHealthSettings() {
   }
 }
 
+let healthHistoryRequestID = 0
+
 async function loadHealthHistory(next = false) {
+  if (next && (healthHistoryLoading.value || !healthHistoryNext.value)) return
+  const requestID = ++healthHistoryRequestID
+  const query = {
+    limit: 20,
+    source: healthHistorySource.value || undefined,
+    status: healthHistoryStatus.value || undefined,
+    tenant_id: healthHistoryTenant.value || undefined,
+    from: healthHistoryTimeRange.value?.[0]?.toISOString(),
+    to: healthHistoryTimeRange.value?.[1]?.toISOString(),
+    cursor: next ? healthHistoryNext.value : undefined,
+  }
   healthHistoryLoading.value = true
   try {
     const { data } = await api.get<{ items: TenantHealthHistory[]; next_cursor?: string }>('/tenant-health/history', {
-      params: {
-        limit: 20,
-        source: healthHistorySource.value || undefined,
-        status: healthHistoryStatus.value || undefined,
-        tenant_id: healthHistoryTenant.value || undefined,
-        from: healthHistoryTimeRange.value?.[0]?.toISOString(),
-        to: healthHistoryTimeRange.value?.[1]?.toISOString(),
-        cursor: next ? healthHistoryNext.value : undefined,
-      },
+      params: query,
     })
+    // Filters may change while a request is in flight. Only the newest request
+    // may update the list or cursor, otherwise stale results can overwrite it.
+    if (requestID !== healthHistoryRequestID) return
     healthHistory.value = next ? [...healthHistory.value, ...data.items] : data.items
     healthHistoryNext.value = data.next_cursor ?? ''
   } catch {
-    ElMessage.error('读取巡检历史失败')
+    if (requestID === healthHistoryRequestID) ElMessage.error('读取巡检历史失败')
   } finally {
-    healthHistoryLoading.value = false
+    if (requestID === healthHistoryRequestID) healthHistoryLoading.value = false
   }
 }
 
