@@ -119,7 +119,7 @@ func (s *Store) RecordTenantConnectionHealthWithSource(ctx context.Context, item
 		return ErrTenantHealthInvalidInput
 	}
 	item.Message = normalizeTenantHealthMessage(item.Message)
-	checkedAt := item.CheckedAt.UTC().Format(time.RFC3339Nano)
+	checkedAt := formatTenantHealthTime(item.CheckedAt)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tenant health result transaction: %w", err)
@@ -202,8 +202,8 @@ func (s *Store) ListTenantConnectionHealthHistory(ctx context.Context, filter Te
 	if filter.TenantID != "" { conditions = append(conditions, "tenant_id = ?"); args = append(args, filter.TenantID) }
 	if filter.Status != "" { conditions = append(conditions, "status = ?"); args = append(args, filter.Status) }
 	if filter.Source != "" { conditions = append(conditions, "source = ?"); args = append(args, filter.Source) }
-	if filter.From != nil { conditions = append(conditions, "checked_at >= ?"); args = append(args, filter.From.UTC().Format(time.RFC3339Nano)) }
-	if filter.To != nil { conditions = append(conditions, "checked_at <= ?"); args = append(args, filter.To.UTC().Format(time.RFC3339Nano)) }
+	if filter.From != nil { conditions = append(conditions, "checked_at >= ?"); args = append(args, formatTenantHealthTime(*filter.From)) }
+	if filter.To != nil { conditions = append(conditions, "checked_at <= ?"); args = append(args, formatTenantHealthTime(*filter.To)) }
 	if filter.Cursor != "" {
 		raw, err := base64.RawURLEncoding.DecodeString(filter.Cursor)
 		if err != nil { return TenantHealthHistoryPage{}, ErrTenantHealthInvalidInput }
@@ -214,7 +214,7 @@ func (s *Store) ListTenantConnectionHealthHistory(ctx context.Context, filter Te
 		cursorID, err := strconv.ParseInt(parts[1], 10, 64)
 		if err != nil || cursorID <= 0 { return TenantHealthHistoryPage{}, ErrTenantHealthInvalidInput }
 		conditions = append(conditions, "(checked_at < ? OR (checked_at = ? AND id < ?))")
-		stamp := cursorTime.UTC().Format(time.RFC3339Nano)
+		stamp := formatTenantHealthTime(cursorTime)
 		args = append(args, stamp, stamp, cursorID)
 	}
 	query := "SELECT id, tenant_id, source, status, checked_at, duration_ms, message FROM admin_tenant_connection_health_history"
@@ -240,7 +240,7 @@ func (s *Store) ListTenantConnectionHealthHistory(ctx context.Context, filter Te
 	if len(items) > limit {
 		last := items[limit-1]
 		page.Items = items[:limit]
-		cursor := last.CheckedAt.UTC().Format(time.RFC3339Nano) + "\n" + strconv.FormatInt(last.ID, 10)
+		cursor := formatTenantHealthTime(last.CheckedAt) + "\n" + strconv.FormatInt(last.ID, 10)
 		page.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(cursor))
 	}
 	return page, nil
@@ -254,9 +254,15 @@ func (s *Store) DeleteExpiredTenantConnectionHealthHistory(ctx context.Context, 
 	result, err := s.db.ExecContext(ctx, `DELETE FROM admin_tenant_connection_health_history
 		WHERE id IN (SELECT id FROM admin_tenant_connection_health_history
 			WHERE checked_at < ? ORDER BY checked_at ASC, id ASC LIMIT ?)`,
-		before.UTC().Format(time.RFC3339Nano), limit)
+		formatTenantHealthTime(before), limit)
 	if err != nil { return 0, fmt.Errorf("delete expired tenant health history: %w", err) }
 	affected, err := result.RowsAffected()
 	if err != nil { return 0, fmt.Errorf("count deleted tenant health history: %w", err) }
 	return affected, nil
+}
+
+
+// formatTenantHealthTime uses fixed-width UTC precision so lexical ordering matches chronological ordering.
+func formatTenantHealthTime(value time.Time) string {
+	return value.UTC().Format("2006-01-02T15:04:05.000000000Z")
 }
