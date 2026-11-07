@@ -573,4 +573,4 @@ GET /api/v1/tenant-discovery/preview?data_source_id=control-source-id
 
 ### GET /tenant-health/history
 
-查询巡检历史，所有已认证角色可读取。支持 `tenant_id`、`status`（healthy/unhealthy）、`source`（manual/scheduled）、`from`、`to`（RFC3339）、`limit`（1–100，默认 50）和 `cursor`。结果按 `checked_at DESC, id DESC` 稳定分页，响应包含 `items` 和 `next_cursor`。
+查询巡检历史，所有已认证角色可读取。支持 `tenant_id`、`status`（healthy/unhealthy）、`source`（manual/scheduled）、`from`、`to`（RFC3339，起止边界均包含）、`limit`（1–100，默认 50）和 `cursor`。结果按 `checked_at DESC, id DESC` 稳定分页，响应包含 `items` 和可选的 `next_cursor`；游标为不透明值，应原样传回，不要自行解码或构造。非法筛选、反向时间范围或非法游标返回 HTTP 400。

@@ -233,3 +233,51 @@ func TestTenantHealthSchedulerStartAndCloseAreIdempotent(t *testing.T) {
 		t.Fatalf("settings loaded %d times after duplicate Start, want 1", got)
 	}
 }
+
+func TestTenantHealthSchedulerRefreshDisablesPendingRound(t *testing.T) {
+	var enabled atomic.Bool
+	enabled.Store(true)
+	var loads, runs atomic.Int32
+	loaded := make(chan struct{}, 4)
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			loads.Add(1)
+			select {
+			case loaded <- struct{}{}:
+			default:
+			}
+			return adminstore.TenantHealthSettings{
+				Enabled: enabled.Load(), IntervalSeconds: 30, HistoryRetentionDays: 30,
+			}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error {
+			runs.Add(1)
+			return nil
+		},
+		func(context.Context, int) error { return nil },
+	)
+	scheduler.Start(context.Background())
+	select {
+	case <-loaded:
+	case <-time.After(time.Second):
+		t.Fatal("scheduler did not load its initial settings")
+	}
+
+	enabled.Store(false)
+	scheduler.Refresh()
+	select {
+	case <-loaded:
+	case <-time.After(time.Second):
+		t.Fatal("scheduler did not reload settings after refresh")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	scheduler.Close()
+	if got := runs.Load(); got != 0 {
+		t.Fatalf("scheduler ran %d rounds after being disabled, want 0", got)
+	}
+	if got := loads.Load(); got < 2 {
+		t.Fatalf("settings loaded %d times, want at least 2", got)
+	}
+}
+
