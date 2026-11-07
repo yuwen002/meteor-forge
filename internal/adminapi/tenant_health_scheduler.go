@@ -17,7 +17,9 @@ type tenantHealthScheduler struct {
 	cancel       context.CancelFunc
 	done         chan struct{}
 	onError      func(error)
-	closeOnce    sync.Once
+	lifecycleMu sync.Mutex
+	started     bool
+	closed      bool
 }
 
 func newTenantHealthScheduler(
@@ -42,8 +44,15 @@ func newTenantHealthScheduler(
 
 // Start launches one scheduler loop. A disabled or unreadable setting never starts a check.
 func (s *tenantHealthScheduler) Start(parent context.Context) {
+	s.lifecycleMu.Lock()
+	if s.closed || s.started {
+		s.lifecycleMu.Unlock()
+		return
+	}
+	s.started = true
 	ctx, cancel := context.WithCancel(parent)
 	s.cancel = cancel
+	s.lifecycleMu.Unlock()
 	go s.loop(ctx)
 }
 
@@ -63,11 +72,18 @@ func (s *tenantHealthScheduler) Refresh() {
 
 // Close cancels the current round and waits until the scheduler exits.
 func (s *tenantHealthScheduler) Close() {
-	s.closeOnce.Do(func() {
-		if s.cancel != nil {
-			s.cancel()
+	s.lifecycleMu.Lock()
+	if !s.closed {
+		s.closed = true
+		if s.started {
+			if s.cancel != nil {
+				s.cancel()
+			}
+		} else {
+			close(s.done)
 		}
-	})
+	}
+	s.lifecycleMu.Unlock()
 	<-s.done
 }
 

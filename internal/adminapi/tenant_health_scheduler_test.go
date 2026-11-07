@@ -174,3 +174,62 @@ func TestCleanupTenantHealthHistoryStopsWhenContextIsCanceled(t *testing.T) {
 		t.Fatalf("cleanup error=%v calls=%d, want canceled without starting a batch", err, calls)
 	}
 }
+
+
+func TestTenantHealthSchedulerCloseBeforeStart(t *testing.T) {
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			return adminstore.TenantHealthSettings{}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error { return nil },
+		func(context.Context, int) error { return nil },
+	)
+
+	closed := make(chan struct{})
+	go func() {
+		scheduler.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("closing a scheduler before start should not block")
+	}
+
+	// A closed scheduler must not be restarted.
+	scheduler.Start(context.Background())
+	select {
+	case <-scheduler.done:
+	case <-time.After(time.Second):
+		t.Fatal("closed scheduler unexpectedly restarted")
+	}
+}
+
+func TestTenantHealthSchedulerStartAndCloseAreIdempotent(t *testing.T) {
+	var loads atomic.Int32
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			loads.Add(1)
+			return adminstore.TenantHealthSettings{Enabled: false}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error { return nil },
+		func(context.Context, int) error { return nil },
+	)
+
+	scheduler.Start(context.Background())
+	scheduler.Start(context.Background())
+	deadline := time.After(time.Second)
+	for loads.Load() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("scheduler loop did not start")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	scheduler.Close()
+	scheduler.Close()
+	if got := loads.Load(); got != 1 {
+		t.Fatalf("settings loaded %d times after duplicate Start, want 1", got)
+	}
+}
