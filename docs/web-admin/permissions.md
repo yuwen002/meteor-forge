@@ -59,4 +59,4 @@
 | `GET /api/v1/auth/security-events` | administrator |
 | `GET /api/v1/health` | 公开，只返回最小存活信息 |
 
-完整接口定义见 [API 文档](api.md)，认证机制见 [认证与安全说明](authentication.md)。
+完整接口定义见 [API 文档](../api/README.md)，认证机制见 [认证与安全说明](authentication.md)。
