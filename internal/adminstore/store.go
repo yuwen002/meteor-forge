@@ -519,6 +519,45 @@ func (s *Store) migrate(ctx context.Context) error {
 		VALUES (15, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("record tenant connection health schema version: %w", err)
 	}
+
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admin_tenant_health_settings (
+		id INTEGER PRIMARY KEY CHECK(id = 1),
+		enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+		interval_seconds INTEGER NOT NULL DEFAULT 300 CHECK(interval_seconds BETWEEN 30 AND 86400),
+		timeout_seconds INTEGER NOT NULL DEFAULT 5 CHECK(timeout_seconds BETWEEN 1 AND 30),
+		history_retention_days INTEGER NOT NULL DEFAULT 30 CHECK(history_retention_days BETWEEN 1 AND 365),
+		updated_at TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("create tenant health settings table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_tenant_health_settings
+		(id, enabled, interval_seconds, timeout_seconds, history_retention_days, updated_at)
+		VALUES (1, 0, 300, 5, 30, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("initialize tenant health settings: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admin_tenant_connection_health_history (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		tenant_id TEXT NOT NULL,
+		source TEXT NOT NULL CHECK(source IN ('manual','scheduled')),
+		status TEXT NOT NULL CHECK(status IN ('healthy','unhealthy')),
+		checked_at TEXT NOT NULL,
+		duration_ms INTEGER NOT NULL DEFAULT 0 CHECK(duration_ms >= 0),
+		message TEXT NOT NULL DEFAULT ''
+	)`); err != nil {
+		return fmt.Errorf("create tenant connection health history table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_admin_tenant_health_history_tenant_time
+		ON admin_tenant_connection_health_history(tenant_id, checked_at DESC, id DESC)`); err != nil {
+		return fmt.Errorf("index tenant connection health history by tenant: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_admin_tenant_health_history_time
+		ON admin_tenant_connection_health_history(checked_at DESC, id DESC)`); err != nil {
+		return fmt.Errorf("index tenant connection health history by time: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
+		VALUES (16, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("record tenant health scheduling schema version: %w", err)
+	}
 	return tx.Commit()
 }
 
