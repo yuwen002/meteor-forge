@@ -116,6 +116,8 @@ const healthHistoryLoading = ref(false)
 const healthHistoryCursor = ref("")
 const healthHistoryNext = ref("")
 const healthHistorySource = ref("")
+const healthHistoryStatus = ref("")
+const healthHistoryTenant = ref("")
 const loading = ref(false)
 const healthBatching = ref(false)
 const saving = ref(false)
@@ -387,7 +389,7 @@ async function loadHealthHistory(next = false) {
   healthHistoryLoading.value = true
   try {
     const { data } = await api.get<{ items: TenantHealthHistory[]; next_cursor?: string }>('/tenant-health/history', {
-      params: { limit: 20, source: healthHistorySource.value || undefined, cursor: next ? healthHistoryNext.value : undefined },
+      params: { limit: 20, source: healthHistorySource.value || undefined, status: healthHistoryStatus.value || undefined, tenant_id: healthHistoryTenant.value || undefined, cursor: next ? healthHistoryNext.value : undefined },
     })
     healthHistory.value = next ? [...healthHistory.value, ...data.items] : data.items
     healthHistoryNext.value = data.next_cursor ?? ''
@@ -530,6 +532,13 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthHistory
     <div class="table-toolbar">
       <div><strong>历史记录</strong><span>按检查时间倒序</span></div>
       <div class="toolbar-actions">
+        <el-select v-model="healthHistoryTenant" clearable filterable placeholder="全部租户" style="width: 180px" @change="loadHealthHistory()">
+          <el-option v-for="tenant in items" :key="tenant.id" :label="tenant.name + '（' + tenant.code + '）'" :value="tenant.id" />
+        </el-select>
+        <el-select v-model="healthHistoryStatus" clearable placeholder="全部结果" style="width: 120px" @change="loadHealthHistory()">
+          <el-option label="正常" value="healthy" />
+          <el-option label="异常" value="unhealthy" />
+        </el-select>
         <el-select v-model="healthHistorySource" clearable placeholder="全部来源" style="width: 130px" @change="loadHealthHistory()">
           <el-option label="手动巡检" value="manual" />
           <el-option label="定时巡检" value="scheduled" />
