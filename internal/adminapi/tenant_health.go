@@ -3,6 +3,7 @@ package adminapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"strconv"
@@ -172,31 +173,67 @@ func (s *Server) runTenantHealthCheckWithOptions(ctx context.Context, tenantID s
 
 func (s *Server) runScheduledTenantHealthChecks(ctx context.Context, settings adminstore.TenantHealthSettings) error {
 	tenants, err := s.tenants.ListTenants(ctx)
-	if err != nil { return err }
+	if err != nil {
+		return fmt.Errorf("list tenants for scheduled health check: %w", err)
+	}
+	tenantIDs := make([]string, 0, len(tenants))
+	for _, item := range tenants {
+		if item.Status == "active" {
+			tenantIDs = append(tenantIDs, item.ID)
+		}
+	}
+	return runTenantHealthChecksConcurrently(ctx, tenantIDs, func(checkCtx context.Context, tenantID string) error {
+		_, err := s.runTenantHealthCheckWithOptions(checkCtx, tenantID, time.Duration(settings.TimeoutSeconds)*time.Second, "scheduled")
+		return err
+	})
+}
+
+// runTenantHealthChecksConcurrently keeps processing independent tenants after
+// an individual failure, while returning the collected errors to the caller.
+func runTenantHealthChecksConcurrently(ctx context.Context, tenantIDs []string, check func(context.Context, string) error) error {
+	if len(tenantIDs) == 0 {
+		return nil
+	}
+	workerCount := 4
+	if len(tenantIDs) < workerCount {
+		workerCount = len(tenantIDs)
+	}
 	jobs := make(chan string)
+	checkErrors := make(chan error, len(tenantIDs))
 	var wg sync.WaitGroup
-	for worker := 0; worker < 4; worker++ {
+	for worker := 0; worker < workerCount; worker++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for tenantID := range jobs {
-				if ctx.Err() != nil { return }
-				_, _ = s.runTenantHealthCheckWithOptions(ctx, tenantID, time.Duration(settings.TimeoutSeconds)*time.Second, "scheduled")
+				if ctx.Err() != nil {
+					return
+				}
+				if err := check(ctx, tenantID); err != nil && ctx.Err() == nil {
+					checkErrors <- fmt.Errorf("tenant %s: %w", tenantID, err)
+				}
 			}
 		}()
 	}
 feed:
-	for _, item := range tenants {
-		if item.Status != "active" { continue }
+	for _, tenantID := range tenantIDs {
 		select {
-		case jobs <- item.ID:
+		case jobs <- tenantID:
 		case <-ctx.Done():
 			break feed
 		}
 	}
 	close(jobs)
 	wg.Wait()
-	return ctx.Err()
+	close(checkErrors)
+	var collected []error
+	for err := range checkErrors {
+		collected = append(collected, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return errors.Join(collected...)
 }
 
 func (s *Server) batchTenantHealthCheck(w http.ResponseWriter, r *http.Request) {

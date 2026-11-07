@@ -3,6 +3,7 @@ package adminapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -161,5 +162,40 @@ func TestTenantHealthSettingsRBAC(t *testing.T) {
 	}
 	if !authorizeAdminRole("administrator", http.MethodPut, "/api/v1/tenant-health/settings") {
 		t.Fatal("administrator should update health settings")
+	}
+}
+
+
+func TestRunTenantHealthChecksConcurrentlyCollectsErrorsAndContinues(t *testing.T) {
+	wantErr := errors.New("connection metadata unavailable")
+	var checked atomic.Int32
+	err := runTenantHealthChecksConcurrently(context.Background(), []string{"tenant-a", "tenant-b", "tenant-c"}, func(_ context.Context, tenantID string) error {
+		checked.Add(1)
+		if tenantID == "tenant-b" {
+			return wantErr
+		}
+		return nil
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected tenant error to be returned, got %v", err)
+	}
+	if got := checked.Load(); got != 3 {
+		t.Fatalf("checked tenants=%d, want all 3 tenants checked", got)
+	}
+}
+
+func TestRunTenantHealthChecksConcurrentlyHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var checked atomic.Int32
+	err := runTenantHealthChecksConcurrently(ctx, []string{"tenant-a", "tenant-b"}, func(context.Context, string) error {
+		checked.Add(1)
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+	if got := checked.Load(); got != 0 {
+		t.Fatalf("checked tenants after cancellation=%d, want 0", got)
 	}
 }
