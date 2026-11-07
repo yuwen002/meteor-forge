@@ -86,6 +86,20 @@ interface TenantHealthSettings {
   history_retention_days: number
   updated_at: string
 }
+interface TenantHealthSchedulerSnapshot {
+  enabled: boolean
+  running: boolean
+  interval_seconds: number
+  total_runs: number
+  success_count: number
+  failure_count: number
+  last_started_at: string | null
+  last_finished_at: string | null
+  last_success_at: string | null
+  next_run_at: string | null
+  last_duration_ms: number
+  last_error?: string
+}
 interface TenantHealthHistory {
   id: number
   tenant_id: string
@@ -110,6 +124,12 @@ const items = ref<Tenant[]>([])
 const dataSources = ref<DataSource[]>([])
 const healthByTenant = ref<Record<string, TenantHealth>>({})
 const healthSettings = reactive<TenantHealthSettings>({ enabled: false, interval_seconds: 300, timeout_seconds: 5, history_retention_days: 30, updated_at: "" })
+const healthScheduler = reactive<TenantHealthSchedulerSnapshot>({
+  enabled: false, running: false, interval_seconds: 300, total_runs: 0,
+  success_count: 0, failure_count: 0, last_started_at: null, last_finished_at: null,
+  last_success_at: null, next_run_at: null, last_duration_ms: 0,
+})
+const healthSchedulerLoading = ref(false)
 const healthSettingsLoading = ref(false)
 const healthSettingsSaving = ref(false)
 const healthHistory = ref<TenantHealthHistory[]>([])
@@ -371,6 +391,18 @@ async function loadHealthSettings() {
   }
 }
 
+async function loadHealthScheduler() {
+  healthSchedulerLoading.value = true
+  try {
+    const { data } = await api.get<TenantHealthSchedulerSnapshot>('/tenant-health/scheduler')
+    Object.assign(healthScheduler, data)
+  } catch {
+    ElMessage.error('读取巡检运行状态失败')
+  } finally {
+    healthSchedulerLoading.value = false
+  }
+}
+
 async function saveHealthSettings() {
   if (!canManageTenants.value || healthSettingsSaving.value) return
   healthSettingsSaving.value = true
@@ -378,6 +410,7 @@ async function saveHealthSettings() {
     const payload = { ...healthSettings }
     const { data } = await api.put<TenantHealthSettings>('/tenant-health/settings', payload)
     Object.assign(healthSettings, data)
+    await loadHealthScheduler()
     ElMessage.success(data.enabled ? '定时巡检已启用' : '定时巡检已关闭')
   } catch (error: unknown) {
     const response = (error as { response?: { data?: { message?: string } } })?.response
@@ -426,7 +459,7 @@ function auditSnapshotLabel(snapshot?: TenantAuditSnapshot | null): string {
   return `${snapshot.name}（${snapshot.code}） · ${snapshot.data_source_id} · ${snapshot.status}`
 }
 
-onMounted(() => { void load(); void loadHealthSettings(); void loadHealthHistory() })
+onMounted(() => { void load(); void loadHealthSettings(); void loadHealthScheduler(); void loadHealthHistory() })
 </script>
 
 <template>
@@ -528,6 +561,16 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthHistory
       </div>
       <el-tag :type="healthSettings.enabled ? 'success' : 'info'">{{ healthSettings.enabled ? '已启用' : '已关闭' }}</el-tag>
     </div>
+    <div v-loading="healthSchedulerLoading" class="health-scheduler-overview">
+      <div><span>进程内轮次</span><strong>{{ healthScheduler.total_runs }}</strong></div>
+      <div><span>成功 / 失败</span><strong>{{ healthScheduler.success_count }} / {{ healthScheduler.failure_count }}</strong></div>
+      <div><span>最近开始</span><strong>{{ healthScheduler.last_started_at ? new Date(healthScheduler.last_started_at).toLocaleString() : '尚未执行' }}</strong></div>
+      <div><span>最近成功</span><strong>{{ healthScheduler.last_success_at ? new Date(healthScheduler.last_success_at).toLocaleString() : '尚无成功记录' }}</strong></div>
+      <div><span>下次执行</span><strong>{{ healthScheduler.running ? '正在执行' : healthScheduler.next_run_at ? new Date(healthScheduler.next_run_at).toLocaleString() : '未安排' }}</strong></div>
+      <div><span>最近耗时</span><strong>{{ healthScheduler.last_duration_ms }} ms</strong></div>
+      <div class="scheduler-refresh"><el-button text :loading="healthSchedulerLoading" @click="loadHealthScheduler">刷新运行状态</el-button></div>
+    </div>
+    <el-alert v-if="healthScheduler.last_error" :title="healthScheduler.last_error" type="warning" :closable="false" show-icon class="scheduler-error" />
     <el-form v-loading="healthSettingsLoading" label-position="top" class="health-settings-form">
       <el-form-item label="定时巡检">
         <el-switch v-model="healthSettings.enabled" :disabled="!canManageTenants || healthSettingsSaving" active-text="启用" inactive-text="关闭" />
@@ -706,11 +749,18 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthHistory
 .tenant-card { border: 1px solid #e8edf4; border-radius: 12px; }
 .tenant-alert { margin-bottom: 20px; }
 .health-schedule-card { margin-top: 18px; }
+.health-scheduler-overview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 4px 0 18px; }
+.health-scheduler-overview > div { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 12px; border: 1px solid #e8edf4; border-radius: 8px; }
+.health-scheduler-overview span { color: #98a2b3; font-size: 11px; }
+.health-scheduler-overview strong { overflow-wrap: anywhere; color: #34445d; font-size: 13px; font-weight: 600; }
+.health-scheduler-overview .scheduler-refresh { justify-content: center; align-items: flex-start; }
+.scheduler-error { margin-bottom: 14px; }
 .health-settings-form { display: flex; flex-wrap: wrap; gap: 0 24px; align-items: flex-end; }
 .health-settings-form :deep(.el-form-item) { min-width: 170px; }
 .history-more { display: flex; justify-content: center; padding-top: 14px; }
 .history-toolbar .toolbar-actions { flex-wrap: wrap; justify-content: flex-end; }
 @media (max-width: 900px) {
+  .health-scheduler-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .table-toolbar { align-items: flex-start; flex-direction: column; gap: 12px; }
   .history-toolbar .toolbar-actions { width: 100%; justify-content: flex-start; }
   .history-toolbar .toolbar-actions :deep(.el-date-editor) { max-width: 100%; }
