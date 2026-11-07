@@ -1,6 +1,6 @@
 # 租户定时健康巡检设计
 
-> 状态：Schema v16、Store、调度器核心和 Server 生命周期已实现；配置/历史 API 已接入，前端与最终验收待完成  
+> 状态：Schema v16、Store、调度器、Server 生命周期、配置/历史 API 与前端配置/历史页面已实现；PR #13 最新提交 CI 全部通过，待进一步边界验收  
 > 前置分支：`feat/tenant-connection-health-check`（PR #12）  
 > 目标分支：`main`
 
@@ -63,7 +63,7 @@
 - `tenant_id`：租户 ID。
 - `source`：`manual` 或 `scheduled`。
 - `status`：`healthy` 或 `unhealthy`。
-- `checked_at`、`duration_ms`、`message)：仅保存标准化信息。
+- `checked_at`、`duration_ms`、`message`：仅保存标准化信息。
 
 索引建议：`(tenant_id, checked_at DESC, id DESC)` 与 `(checked_at DESC, id DESC)`。租户删除后的历史数据处理策略需与现有外键/审计保留约定一致；优先保留租户 ID 快照，不因租户删除而级联清空运维证据。
 
@@ -107,7 +107,7 @@
 
 - 租户健康页增加“定时巡检”开关、间隔、超时、保留天数配置。
 - 显示最近一次巡检时间和状态；区分手动与定时来源。
-- 历史列表支持租户、状态、来源、时间范围筛选和分页。
+- 历史列表支持租户、状态、来源、时间范围筛选和游标分页。\n- 时间范围按 RFC3339（UTC ISO 8601）传给 API；切换筛选条件后从第一页重新查询。\n- 窄屏下筛选控件允许换行，避免挤压历史表格。
 - 禁用状态明确显示“定时巡检未启用”，不将“没有历史记录”误显示为健康。
 - 保存配置失败时保留用户输入并展示后端校验错误；保存成功后刷新当前配置。
 

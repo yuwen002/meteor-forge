@@ -113,11 +113,11 @@ const healthSettingsLoading = ref(false)
 const healthSettingsSaving = ref(false)
 const healthHistory = ref<TenantHealthHistory[]>([])
 const healthHistoryLoading = ref(false)
-const healthHistoryCursor = ref("")
 const healthHistoryNext = ref("")
 const healthHistorySource = ref("")
 const healthHistoryStatus = ref("")
 const healthHistoryTenant = ref("")
+const healthHistoryTimeRange = ref<[Date, Date] | null>(null)
 const loading = ref(false)
 const healthBatching = ref(false)
 const saving = ref(false)
@@ -389,7 +389,15 @@ async function loadHealthHistory(next = false) {
   healthHistoryLoading.value = true
   try {
     const { data } = await api.get<{ items: TenantHealthHistory[]; next_cursor?: string }>('/tenant-health/history', {
-      params: { limit: 20, source: healthHistorySource.value || undefined, status: healthHistoryStatus.value || undefined, tenant_id: healthHistoryTenant.value || undefined, cursor: next ? healthHistoryNext.value : undefined },
+      params: {
+        limit: 20,
+        source: healthHistorySource.value || undefined,
+        status: healthHistoryStatus.value || undefined,
+        tenant_id: healthHistoryTenant.value || undefined,
+        from: healthHistoryTimeRange.value?.[0]?.toISOString(),
+        to: healthHistoryTimeRange.value?.[1]?.toISOString(),
+        cursor: next ? healthHistoryNext.value : undefined,
+      },
     })
     healthHistory.value = next ? [...healthHistory.value, ...data.items] : data.items
     healthHistoryNext.value = data.next_cursor ?? ''
@@ -689,7 +697,7 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthHistory
 .health-schedule-card { margin-top: 18px; }
 .health-settings-form { display: flex; flex-wrap: wrap; gap: 0 24px; align-items: flex-end; }
 .health-settings-form :deep(.el-form-item) { min-width: 170px; }
-.history-more { display: flex; justify-content: center; padding-top: 14px; }
+.history-more { display: flex; justify-content: center; padding-top: 14px; }\n.history-toolbar .toolbar-actions { flex-wrap: wrap; justify-content: flex-end; }\n@media (max-width: 900px) {\n  .table-toolbar { align-items: flex-start; flex-direction: column; gap: 12px; }\n  .history-toolbar .toolbar-actions { width: 100%; justify-content: flex-start; }\n  .history-toolbar .toolbar-actions :deep(.el-date-editor) { max-width: 100%; }\n}
 .batch-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; font-size: 12px; }
 .batch-summary span { margin-right: 8px; color: #667085; }
 .batch-alert { margin-top: 14px; }
