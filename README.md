@@ -352,7 +352,7 @@ cd examples/demo && go run main.go
 - [x] 精细化版本控制（up --to / down --steps 单锁批量原子退档 / goto --version 双向精准对齐，0 = 回滚全部）
 - [x] 动态租户发现（tenants-sync：Control DB + t_tenants 表，SaaS 扩容免改配置）
 - [x] 分库分表与分布式 ID（合并 GoShard：Sonyflake / 7 种分片策略 / 跨片查询 / 定时建表，并修复其位段解析、周/季度表名一致性、范围枚举漏表等 5 处 bug）
-- [ ] CLI 支持 --driver 参数切换数据库类型（目前 CLI 面向 MySQL）
+- [x] CLI 支持 --driver 参数切换数据库类型（mysql / postgres / sqlite / clickhouse）
 - [ ] CI 流水线与覆盖率徽章
 
 ## 🤝 贡献指南
@@ -371,7 +371,7 @@ cd examples/demo && go run main.go
 
 ## 🖥️ Web 管理后台
 
-项目正在建设独立的 Web 管理后台，用于统一管理数据源、Schema Migration、多租户和分库分表。管理后台通过 Go HTTP API 调用现有核心包，不会把 Web 依赖引入 `pkg/`。
+Web 管理后台已实现数据源管理、认证与 RBAC、租户管理与发现导入、迁移任务、分片规则与结构克隆、操作/安全审计及管理元数据库备份。它通过 Go HTTP API 调用现有核心包，不会把 Web 依赖引入 `pkg/`。完整操作流程请从 [中文用户手册](docs/web-admin/user-guide.md) 开始。
 
 ### 本地启动
 
@@ -406,9 +406,9 @@ npm run dev
 
 可通过 `METEOR_ADMIN_ADDR` 修改 API 监听地址，但当前只接受 `localhost`、`127.0.0.1` 或 `::1`；非 loopback 地址会导致启动失败。打开 Vite 提示的本地地址（默认 `http://127.0.0.1:5173`）。前端通过保留 Host 的开发代理访问 Go API。
 
-详细架构、阶段计划和安全边界见 [Web 管理后台架构文档](docs/web-admin/architecture.md)，[管理 API 文档](docs/web-admin/api.md)，前端开发说明见 [web/admin/README.md](web/admin/README.md)。
+文档入口：[中文用户手册](docs/web-admin/user-guide.md) · [部署与运维](docs/web-admin/deployment.md) · [API 说明](docs/web-admin/api.md) · [角色权限矩阵](docs/web-admin/permissions.md) · [认证与安全](docs/web-admin/authentication.md) · [文档目录](docs/web-admin/README.md)。架构设计见 [architecture.md](docs/web-admin/architecture.md)，前端开发说明见 [web/admin/README.md](web/admin/README.md)。
 
-> 当前已接入数据源管理、Migration、租户、分片规则、执行任务中心、操作审计和安全审计，并实现管理员登录、会话校验、CSRF/Origin 防护及后端 RBAC。管理 API 启动时会强制要求首次管理员初始化，并拒绝非 loopback 监听地址。CI 覆盖 Go 单元测试、数据库驱动集成测试、前端类型检查/构建和 golangci-lint；请继续保持本机访问，不要通过公网或未受信任的反向代理暴露服务。
+> 当前管理后台已具备核心管理流程。租户连接测试为按需单次测试，定时/批量健康巡检尚未实现；管理 API 仅允许 loopback 监听。部署前请阅读中文用户手册、部署运维手册和认证安全说明。
 
 
 ### 数据源管理进度
