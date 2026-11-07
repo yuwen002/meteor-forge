@@ -443,4 +443,20 @@ ID 策略支持单点或闭区间预览：
 
 ## 当前不提供的 API
 
-当前没有租户定时/批量连接健康巡检 API、巡检历史查询 API、自动停用租户 API 或自动恢复 API。现有 `POST /tenants/{id}/test` 是管理员按需触发的单租户连接测试，超时 5 秒，不会改变租户状态。
+### 租户连接健康巡检
+
+| 方法 | 路径 | 权限 | 说明 |
+|---|---|---|---|
+| GET | `/api/v1/tenant-health` | 所有已认证角色 | 查询每个租户最近一次巡检结果 |
+| POST | `/api/v1/tenants/{id}/health-check` | administrator | 巡检单个租户连接 |
+| POST | `/api/v1/tenant-health-checks` | administrator | 批量巡检，`tenant_ids` 必须为 1–100 个唯一租户 ID |
+
+批量请求示例：
+
+```json
+{"tenant_ids":["tenant-id-1","tenant-id-2"]}
+```
+
+巡检最多 4 个并发，每个连接检查最多 5 秒。结果包含 `tenant_id`、`status`（healthy/unhealthy）、`checked_at`、`duration_ms` 和脱敏后的 `message`。管理元数据库只保留每个租户最近一次结果；暂不提供历史趋势和定时调度。
+
+原有 `POST /api/v1/tenants/{id}/test` 保持兼容，现同样会记录最近一次巡检结果。巡检失败不会自动停用租户、修改租户配置或触发修复。原始驱动错误、DSN 和密码不会写入响应或巡检记录。

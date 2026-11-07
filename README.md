@@ -408,7 +408,7 @@ npm run dev
 
 文档入口：[中文用户手册](docs/web-admin/user-guide.md) · [部署与运维](docs/web-admin/deployment.md) · [API 说明](docs/web-admin/api.md) · [角色权限矩阵](docs/web-admin/permissions.md) · [认证与安全](docs/web-admin/authentication.md) · [文档目录](docs/web-admin/README.md)。架构设计见 [architecture.md](docs/web-admin/architecture.md)，前端开发说明见 [web/admin/README.md](web/admin/README.md)。
 
-> 当前管理后台已具备核心管理流程。租户连接测试为按需单次测试，定时/批量健康巡检尚未实现；管理 API 仅允许 loopback 监听。部署前请阅读中文用户手册、部署运维手册和认证安全说明。
+> 当前管理后台已具备核心管理流程，支持租户单个/批量连接健康巡检和最近状态展示；暂不提供定时巡检调度、历史趋势或自动故障隔离。管理 API 仅允许 loopback 监听。部署前请阅读中文用户手册、部署运维手册和认证安全说明。
 
 
 ### 数据源管理进度
