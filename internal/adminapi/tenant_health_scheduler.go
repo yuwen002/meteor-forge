@@ -110,3 +110,30 @@ func (s *tenantHealthScheduler) loop(ctx context.Context) {
 		cleanupCancel()
 	}
 }
+
+
+// cleanupTenantHealthHistory drains expired rows in bounded batches. The caller
+// supplies a short-lived context so a large backlog cannot block shutdown.
+func cleanupTenantHealthHistory(
+	ctx context.Context,
+	deleteBatch func(context.Context, time.Time, int) (int64, error),
+	retentionDays int,
+) error {
+	if retentionDays < 1 {
+		return adminstore.ErrTenantHealthInvalidInput
+	}
+	before := time.Now().UTC().Add(-time.Duration(retentionDays) * 24 * time.Hour)
+	const batchSize = 500
+	for {
+		deleted, err := deleteBatch(ctx, before, batchSize)
+		if err != nil {
+			return err
+		}
+		if deleted < batchSize {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+}

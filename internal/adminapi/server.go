@@ -112,8 +112,7 @@ func newServerWithMigrationDir(store *adminstore.Store, migrationDir string, enf
 			store.GetTenantHealthSettings,
 			server.runScheduledTenantHealthChecks,
 			func(ctx context.Context, retentionDays int) error {
-				_, err := store.DeleteExpiredTenantConnectionHealthHistory(ctx, time.Now().UTC().Add(-time.Duration(retentionDays)*24*time.Hour), 500)
-				return err
+				return cleanupTenantHealthHistory(ctx, store.DeleteExpiredTenantConnectionHealthHistory, retentionDays)
 			},
 		)
 		server.healthScheduler.Start(context.Background())

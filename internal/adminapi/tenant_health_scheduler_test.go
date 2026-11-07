@@ -59,3 +59,39 @@ func TestTenantHealthSchedulerDoesNotOverlapRoundsAndStops(t *testing.T) {
 	close(release)
 	if got := maxActive.Load(); got != 1 { t.Fatalf("max active rounds=%d, want 1", got) }
 }
+
+
+func TestCleanupTenantHealthHistoryDrainsBatchesAndStopsOnError(t *testing.T) {
+	calls := 0
+	err := cleanupTenantHealthHistory(context.Background(), func(_ context.Context, before time.Time, limit int) (int64, error) {
+		calls++
+		if before.IsZero() || limit != 500 {
+			t.Fatalf("unexpected cleanup arguments: before=%v limit=%d", before, limit)
+		}
+		switch calls {
+		case 1, 2:
+			return 500, nil
+		case 3:
+			return 17, nil
+		default:
+			t.Fatalf("unexpected extra cleanup call: %d", calls)
+			return 0, nil
+		}
+	}, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 {
+		t.Fatalf("cleanup batches=%d, want 3", calls)
+	}
+
+	wantErr := context.DeadlineExceeded
+	calls = 0
+	err = cleanupTenantHealthHistory(context.Background(), func(context.Context, time.Time, int) (int64, error) {
+		calls++
+		return 0, wantErr
+	}, 30)
+	if err != wantErr || calls != 1 {
+		t.Fatalf("cleanup error=%v calls=%d, want %v and one call", err, calls, wantErr)
+	}
+}
