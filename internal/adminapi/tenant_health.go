@@ -36,7 +36,11 @@ func (s *Server) listTenantHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
-func (s *Server) runTenantHealthCheck(ctx context.Context, tenantID string) (tenant.HealthResult, error) {\n\treturn s.runTenantHealthCheckWithOptions(ctx, tenantID, 5*time.Second, "manual")\n}\n\nfunc (s *Server) runTenantHealthCheckWithOptions(ctx context.Context, tenantID string, timeout time.Duration, source string) (tenant.HealthResult, error) {
+func (s *Server) runTenantHealthCheck(ctx context.Context, tenantID string) (tenant.HealthResult, error) {
+\treturn s.runTenantHealthCheckWithOptions(ctx, tenantID, 5*time.Second, "manual")
+}
+
+func (s *Server) runTenantHealthCheckWithOptions(ctx context.Context, tenantID string, timeout time.Duration, source string) (tenant.HealthResult, error) {
 	item, err := s.tenants.GetTenant(ctx, tenantID)
 	if err != nil {
 		return tenant.HealthResult{}, err
@@ -82,7 +86,7 @@ func (s *Server) runTenantHealthCheck(ctx context.Context, tenantID string) (ten
 		CheckedAt: result.CheckedAt,
 		DurationMS: result.DurationMS,
 		Message: result.Message,
-	})
+	}, source)
 	if err != nil {
 		return tenant.HealthResult{}, errors.New("unable to persist tenant connection health")
 	}
@@ -93,28 +97,28 @@ func (s *Server) runTenantHealthCheck(ctx context.Context, tenantID string) (ten
 func (s *Server) runScheduledTenantHealthChecks(ctx context.Context, settings adminstore.TenantHealthSettings) error {
 	tenants, err := s.tenants.ListTenants(ctx)
 	if err != nil { return err }
-	workers := make(chan struct{}, 4)
+	jobs := make(chan string)
 	var wg sync.WaitGroup
+	for worker := 0; worker < 4; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for tenantID := range jobs {
+				if ctx.Err() != nil { return }
+				_, _ = s.runTenantHealthCheckWithOptions(ctx, tenantID, time.Duration(settings.TimeoutSeconds)*time.Second, "scheduled")
+			}
+		}()
+	}
+feed:
 	for _, item := range tenants {
 		if item.Status != "active" { continue }
 		select {
+		case jobs <- item.ID:
 		case <-ctx.Done():
-			wg.Wait()
-			return ctx.Err()
-		default:
+			break feed
 		}
-		wg.Add(1)
-		go func(tenantID string) {
-			defer wg.Done()
-			select {
-			case workers <- struct{}{}:
-				defer func(){ <-workers }()
-			case <-ctx.Done():
-				return
-			}
-			_, _ = s.runTenantHealthCheckWithOptions(ctx, tenantID, time.Duration(settings.TimeoutSeconds)*time.Second, "scheduled")
-		}(item.ID)
 	}
+	close(jobs)
 	wg.Wait()
 	return ctx.Err()
 }

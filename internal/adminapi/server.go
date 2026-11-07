@@ -31,6 +31,7 @@ type Server struct {
 	tasks        *MigrationTaskManager
 	shardDDL     *shardDDLTaskManager
 	healthChecker *tenant.HealthChecker
+	healthScheduler *tenantHealthScheduler
 	migrationDir string
 }
 
@@ -106,7 +107,16 @@ func newServerWithMigrationDir(store *adminstore.Store, migrationDir string, enf
 	if store != nil {
 		server.registerDataSourceRoutes(mux)
 		server.registerTenantRoutes(mux)
-		server.registerTenantHealthRoutes(mux)\n\t\tserver.healthScheduler = newTenantHealthScheduler(\n\t\t\tstore.GetTenantHealthSettings,\n\t\t\tserver.runScheduledTenantHealthChecks,\n\t\t\tfunc(ctx context.Context, retentionDays int) error {\n\t\t\t\t_, err := store.DeleteExpiredTenantConnectionHealthHistory(ctx, time.Now().UTC().Add(-time.Duration(retentionDays)*24*time.Hour), 500)\n\t\t\t\treturn err\n\t\t\t},\n\t\t)\n\t\tserver.healthScheduler.Start(context.Background())
+		server.registerTenantHealthRoutes(mux)
+\t\tserver.healthScheduler = newTenantHealthScheduler(
+\t\t\tstore.GetTenantHealthSettings,
+\t\t\tserver.runScheduledTenantHealthChecks,
+\t\t\tfunc(ctx context.Context, retentionDays int) error {
+\t\t\t\t_, err := store.DeleteExpiredTenantConnectionHealthHistory(ctx, time.Now().UTC().Add(-time.Duration(retentionDays)*24*time.Hour), 500)
+\t\t\t\treturn err
+\t\t\t},
+\t\t)
+\t\tserver.healthScheduler.Start(context.Background())
 		server.registerTenantDiscoveryRoutes(mux)
 		server.registerMigrationRoutes(mux)
 		server.registerShardingRoutes(mux)
@@ -125,8 +135,9 @@ func newServerWithMigrationDir(store *adminstore.Store, migrationDir string, enf
 // Handler returns the HTTP handler. It is exposed to support embedding and tests.
 func (s *Server) Handler() http.Handler { return s.handler }
 
-// Close releases all cached target database pools owned by the API server.
+// Close stops background work before releasing cached target database pools.
 func (s *Server) Close() error {
+	if s.healthScheduler != nil { s.healthScheduler.Close() }
 	if s.shardDDL != nil {
 		if err := s.shardDDL.Close(); err != nil { return err }
 	}

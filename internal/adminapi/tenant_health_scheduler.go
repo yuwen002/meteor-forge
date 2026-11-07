@@ -67,7 +67,11 @@ func (s *tenantHealthScheduler) loop(ctx context.Context) {
 	}()
 	for {
 		settings, err := s.loadSettings(ctx)
-		if err != nil || !settings.Enabled {
+		if err != nil {
+			if timer == nil { timer = time.NewTimer(30 * time.Second) } else { timer.Reset(30 * time.Second) }
+			select { case <-ctx.Done(): return; case <-s.notify: continue; case <-timer.C: continue }
+		}
+		if !settings.Enabled {
 			select {
 			case <-ctx.Done():
 				return
