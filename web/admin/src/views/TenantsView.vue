@@ -77,7 +77,24 @@ interface TenantInput {
   data_source_id: string
   status: 'active' | 'suspended'
 }
-interface TenantHealth {
+
+interface TenantHealthSettings {
+  enabled: boolean
+  interval_seconds: number
+  timeout_seconds: number
+  history_retention_days: number
+  updated_at: string
+}
+interface TenantHealthHistory {
+  id: number
+  tenant_id: string
+  source: 'manual' | 'scheduled'
+  status: 'healthy' | 'unhealthy'
+  checked_at: string
+  duration_ms: number
+  message: string
+}
+\ninterface TenantHealth {
   tenant_id: string
   status: 'healthy' | 'unhealthy'
   checked_at: string
@@ -89,7 +106,7 @@ const { canManageTenants, canTestConnections, canRunMigrations } = useAdminPermi
 
 const items = ref<Tenant[]>([])
 const dataSources = ref<DataSource[]>([])
-const healthByTenant = ref<Record<string, TenantHealth>>({})
+const healthByTenant = ref<Record<string, TenantHealth>>({})\nconst healthSettings = reactive<TenantHealthSettings>({ enabled: false, interval_seconds: 300, timeout_seconds: 5, history_retention_days: 30, updated_at: "" })\nconst healthSettingsLoading = ref(false)\nconst healthSettingsSaving = ref(false)\nconst healthHistory = ref<TenantHealthHistory[]>([])\nconst healthHistoryLoading = ref(false)\nconst healthHistoryCursor = ref("")\nconst healthHistoryNext = ref("")\nconst healthHistorySource = ref("")
 const loading = ref(false)
 const healthBatching = ref(false)
 const saving = ref(false)
@@ -329,6 +346,49 @@ async function viewAudit(item: Tenant) {
     auditLoading.value = false
   }
 }
+
+async function loadHealthSettings() {
+  healthSettingsLoading.value = true
+  try {
+    const { data } = await api.get<TenantHealthSettings>('/tenant-health/settings')
+    Object.assign(healthSettings, data)
+  } catch {
+    ElMessage.error('读取定时巡检配置失败')
+  } finally {
+    healthSettingsLoading.value = false
+  }
+}
+
+async function saveHealthSettings() {
+  if (!canManageTenants.value) return
+  healthSettingsSaving.value = true
+  try {
+    const { data } = await api.put<TenantHealthSettings>('/tenant-health/settings', healthSettings)
+    Object.assign(healthSettings, data)
+    ElMessage.success(data.enabled ? '定时巡检已启用' : '定时巡检已关闭')
+  } catch (error: unknown) {
+    const response = (error as { response?: { data?: { message?: string } } })?.response
+    ElMessage.error(response?.data?.message ?? '保存定时巡检配置失败')
+  } finally {
+    healthSettingsSaving.value = false
+  }
+}
+
+async function loadHealthHistory(next = false) {
+  healthHistoryLoading.value = true
+  try {
+    const { data } = await api.get<{ items: TenantHealthHistory[]; next_cursor?: string }>('/tenant-health/history', {
+      params: { limit: 20, source: healthHistorySource.value || undefined, cursor: next ? healthHistoryNext.value : undefined },
+    })
+    healthHistory.value = next ? [...healthHistory.value, ...data.items] : data.items
+    healthHistoryNext.value = data.next_cursor ?? ''
+  } catch {
+    ElMessage.error('读取巡检历史失败')
+  } finally {
+    healthHistoryLoading.value = false
+  }
+}
+
 function auditActionLabel(action: TenantAuditEvent['action']): string {
   return action === 'created' ? '创建租户' : action === 'updated' ? '修改租户' : '删除租户'
 }
@@ -337,7 +397,7 @@ function auditSnapshotLabel(snapshot?: TenantAuditSnapshot | null): string {
   return `${snapshot.name}（${snapshot.code}） · ${snapshot.data_source_id} · ${snapshot.status}`
 }
 
-onMounted(load)
+onMounted(() => { void load(); void loadHealthSettings(); void loadHealthHistory() })
 </script>
 
 <template>
@@ -430,7 +490,63 @@ onMounted(load)
     </el-table>
   </el-card>
 
-  <el-dialog v-model="batchDialogVisible" title="批量迁移进度" width="760px">
+
+  <el-card shadow="never" class="tenant-card health-schedule-card">
+    <div class="table-toolbar">
+      <div>
+        <strong>定时连接巡检</strong>
+        <span>默认关闭，仅巡检运行中的租户</span>
+      </div>
+      <el-tag :type="healthSettings.enabled ? 'success' : 'info'">{{ healthSettings.enabled ? '已启用' : '已关闭' }}</el-tag>
+    </div>
+    <el-form v-loading="healthSettingsLoading" label-position="top" class="health-settings-form">
+      <el-form-item label="定时巡检">
+        <el-switch v-model="healthSettings.enabled" :disabled="!canManageTenants" active-text="启用" inactive-text="关闭" />
+      </el-form-item>
+      <el-form-item label="巡检间隔（秒）">
+        <el-input-number v-model="healthSettings.interval_seconds" :min="30" :max="86400" :step="30" :disabled="!canManageTenants" />
+      </el-form-item>
+      <el-form-item label="单租户超时（秒）">
+        <el-input-number v-model="healthSettings.timeout_seconds" :min="1" :max="30" :disabled="!canManageTenants" />
+      </el-form-item>
+      <el-form-item label="历史保留天数">
+        <el-input-number v-model="healthSettings.history_retention_days" :min="1" :max="365" :disabled="!canManageTenants" />
+      </el-form-item>
+      <el-form-item>
+        <el-button v-if="canManageTenants" type="primary" :loading="healthSettingsSaving" @click="saveHealthSettings">保存配置</el-button>
+        <span class="field-hint">最多 4 个并发；停用租户会自动跳过。修改配置后调度器会重新加载。</span>
+      </el-form-item>
+    </el-form>
+    <el-divider content-position="left">巡检历史</el-divider>
+    <div class="table-toolbar">
+      <div><strong>历史记录</strong><span>按检查时间倒序</span></div>
+      <div class="toolbar-actions">
+        <el-select v-model="healthHistorySource" clearable placeholder="全部来源" style="width: 130px" @change="loadHealthHistory()">
+          <el-option label="手动巡检" value="manual" />
+          <el-option label="定时巡检" value="scheduled" />
+        </el-select>
+        <el-button text :loading="healthHistoryLoading" @click="loadHealthHistory()">刷新</el-button>
+      </div>
+    </div>
+    <el-table :data="healthHistory" v-loading="healthHistoryLoading" size="small" empty-text="暂无巡检历史">
+      <el-table-column prop="tenant_id" label="租户 ID" min-width="190" />
+      <el-table-column label="来源" width="110">
+        <template #default="{ row }">{{ row.source === 'scheduled' ? '定时巡检' : '手动巡检' }}</template>
+      </el-table-column>
+      <el-table-column label="结果" width="100">
+        <template #default="{ row }"><el-tag :type="row.status === 'healthy' ? 'success' : 'danger'">{{ row.status === 'healthy' ? '正常' : '异常' }}</el-tag></template>
+      </el-table-column>
+      <el-table-column prop="duration_ms" label="耗时（ms）" width="110" />
+      <el-table-column label="检查时间" min-width="190">
+        <template #default="{ row }">{{ new Date(row.checked_at).toLocaleString() }}</template>
+      </el-table-column>
+      <el-table-column prop="message" label="结果摘要" min-width="220" show-overflow-tooltip />
+    </el-table>
+    <div v-if="healthHistoryNext" class="history-more">
+      <el-button plain :loading="healthHistoryLoading" @click="loadHealthHistory(true)">加载更多历史</el-button>
+    </div>
+  </el-card>
+\n  <el-dialog v-model="batchDialogVisible" title="批量迁移进度" width="760px">
     <template v-if="batch">
       <div class="batch-summary">
         <span>批次：{{ batch.id }}</span>
@@ -550,7 +666,7 @@ onMounted(load)
 <style scoped>
 .heading-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .tenant-card { border: 1px solid #e8edf4; border-radius: 12px; }
-.tenant-alert { margin-bottom: 20px; }
+.tenant-alert { margin-bottom: 20px; }\n.health-schedule-card { margin-top: 18px; }\n.health-settings-form { display: flex; flex-wrap: wrap; gap: 0 24px; align-items: flex-end; }\n.health-settings-form :deep(.el-form-item) { min-width: 170px; }\n.history-more { display: flex; justify-content: center; padding-top: 14px; }
 .batch-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; font-size: 12px; }
 .batch-summary span { margin-right: 8px; color: #667085; }
 .batch-alert { margin-top: 14px; }
