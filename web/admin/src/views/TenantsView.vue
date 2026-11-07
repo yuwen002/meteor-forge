@@ -395,7 +395,13 @@ async function loadHealthScheduler() {
   healthSchedulerLoading.value = true
   try {
     const { data } = await api.get<TenantHealthSchedulerSnapshot>('/tenant-health/scheduler')
-    Object.assign(healthScheduler, data)
+    Object.assign(healthScheduler, data, {
+      last_started_at: data.last_started_at ?? null,
+      last_finished_at: data.last_finished_at ?? null,
+      last_success_at: data.last_success_at ?? null,
+      next_run_at: data.next_run_at ?? null,
+      last_error: data.last_error ?? '',
+    })
   } catch {
     ElMessage.error('读取巡检运行状态失败')
   } finally {
