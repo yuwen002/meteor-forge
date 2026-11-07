@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"net/http"
 	"time"
@@ -113,6 +114,9 @@ func newServerWithMigrationDir(store *adminstore.Store, migrationDir string, enf
 			server.runScheduledTenantHealthChecks,
 			func(ctx context.Context, retentionDays int) error {
 				return cleanupTenantHealthHistory(ctx, store.DeleteExpiredTenantConnectionHealthHistory, retentionDays)
+			},
+			func(err error) {
+				log.Printf("tenant health scheduler: %v", err)
 			},
 		)
 		server.healthScheduler.Start(context.Background())

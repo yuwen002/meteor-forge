@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -15,6 +16,7 @@ type tenantHealthScheduler struct {
 	notify       chan struct{}
 	cancel       context.CancelFunc
 	done         chan struct{}
+	onError      func(error)
 	closeOnce    sync.Once
 }
 
@@ -22,8 +24,14 @@ func newTenantHealthScheduler(
 	loadSettings func(context.Context) (adminstore.TenantHealthSettings, error),
 	run func(context.Context, adminstore.TenantHealthSettings) error,
 	cleanup func(context.Context, int) error,
+	errorHandlers ...func(error),
 ) *tenantHealthScheduler {
+	var onError func(error)
+	if len(errorHandlers) > 0 {
+		onError = errorHandlers[0]
+	}
 	return &tenantHealthScheduler{
+		onError: onError,
 		loadSettings: loadSettings,
 		run: run,
 		cleanup: cleanup,
@@ -37,6 +45,12 @@ func (s *tenantHealthScheduler) Start(parent context.Context) {
 	ctx, cancel := context.WithCancel(parent)
 	s.cancel = cancel
 	go s.loop(ctx)
+}
+
+func (s *tenantHealthScheduler) reportError(err error) {
+	if err != nil && s.onError != nil {
+		s.onError(err)
+	}
 }
 
 // Refresh asks the loop to reload settings. Notifications are coalesced.
@@ -68,6 +82,7 @@ func (s *tenantHealthScheduler) loop(ctx context.Context) {
 	for {
 		settings, err := s.loadSettings(ctx)
 		if err != nil {
+			s.reportError(fmt.Errorf("load tenant health settings: %w", err))
 			if timer == nil { timer = time.NewTimer(30 * time.Second) } else { timer.Reset(30 * time.Second) }
 			select { case <-ctx.Done(): return; case <-s.notify: continue; case <-timer.C: continue }
 		}
@@ -100,13 +115,17 @@ func (s *tenantHealthScheduler) loop(ctx context.Context) {
 			return
 		}
 		roundCtx, cancel := context.WithCancel(ctx)
-		_ = s.run(roundCtx, settings)
+		if err := s.run(roundCtx, settings); err != nil && ctx.Err() == nil {
+			s.reportError(fmt.Errorf("run scheduled tenant health checks: %w", err))
+		}
 		cancel()
 		if ctx.Err() != nil {
 			return
 		}
 		cleanupCtx, cleanupCancel := context.WithTimeout(ctx, 5*time.Second)
-		_ = s.cleanup(cleanupCtx, settings.HistoryRetentionDays)
+		if err := s.cleanup(cleanupCtx, settings.HistoryRetentionDays); err != nil && ctx.Err() == nil {
+			s.reportError(fmt.Errorf("cleanup tenant health history: %w", err))
+		}
 		cleanupCancel()
 	}
 }

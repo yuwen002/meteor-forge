@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -94,4 +95,33 @@ func TestCleanupTenantHealthHistoryDrainsBatchesAndStopsOnError(t *testing.T) {
 	if err != wantErr || calls != 1 {
 		t.Fatalf("cleanup error=%v calls=%d, want %v and one call", err, calls, wantErr)
 	}
+}
+
+
+func TestTenantHealthSchedulerReportsRunAndCleanupErrors(t *testing.T) {
+	runErr := errors.New("tenant checks failed")
+	cleanupErr := errors.New("history cleanup failed")
+	reported := make(chan error, 2)
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			return adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 30, HistoryRetentionDays: 30}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error { return runErr },
+		func(context.Context, int) error { return cleanupErr },
+		func(err error) { reported <- err },
+	)
+	scheduler.Start(context.Background())
+	select {
+	case err := <-reported:
+		if !errors.Is(err, runErr) { t.Fatalf("reported run error=%v", err) }
+	case <-time.After(2 * time.Second):
+		t.Fatal("scheduled run error was not reported")
+	}
+	select {
+	case err := <-reported:
+		if !errors.Is(err, cleanupErr) { t.Fatalf("reported cleanup error=%v", err) }
+	case <-time.After(2 * time.Second):
+		t.Fatal("cleanup error was not reported")
+	}
+	scheduler.Close()
 }
