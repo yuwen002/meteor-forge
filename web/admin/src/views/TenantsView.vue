@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
 import { useAdminPermissions } from '../permissions'
 import TenantDiscoveryDialog from '../components/TenantDiscoveryDialog.vue'
+import { canLoadNextPage, createRequestSequence } from '../utils/requestSequence'
 
 interface DataSource {
   id: string
@@ -371,10 +372,11 @@ async function loadHealthSettings() {
 }
 
 async function saveHealthSettings() {
-  if (!canManageTenants.value) return
+  if (!canManageTenants.value || healthSettingsSaving.value) return
   healthSettingsSaving.value = true
   try {
-    const { data } = await api.put<TenantHealthSettings>('/tenant-health/settings', healthSettings)
+    const payload = { ...healthSettings }
+    const { data } = await api.put<TenantHealthSettings>('/tenant-health/settings', payload)
     Object.assign(healthSettings, data)
     ElMessage.success(data.enabled ? '定时巡检已启用' : '定时巡检已关闭')
   } catch (error: unknown) {
@@ -385,11 +387,11 @@ async function saveHealthSettings() {
   }
 }
 
-let healthHistoryRequestID = 0
+const healthHistoryRequests = createRequestSequence()
 
 async function loadHealthHistory(next = false) {
-  if (next && (healthHistoryLoading.value || !healthHistoryNext.value)) return
-  const requestID = ++healthHistoryRequestID
+  if (next && !canLoadNextPage(healthHistoryLoading.value, healthHistoryNext.value)) return
+  const requestID = healthHistoryRequests.begin()
   const query = {
     limit: 20,
     source: healthHistorySource.value || undefined,
@@ -406,13 +408,13 @@ async function loadHealthHistory(next = false) {
     })
     // Filters may change while a request is in flight. Only the newest request
     // may update the list or cursor, otherwise stale results can overwrite it.
-    if (requestID !== healthHistoryRequestID) return
+    if (!healthHistoryRequests.isCurrent(requestID)) return
     healthHistory.value = next ? [...healthHistory.value, ...data.items] : data.items
     healthHistoryNext.value = data.next_cursor ?? ''
   } catch {
-    if (requestID === healthHistoryRequestID) ElMessage.error('读取巡检历史失败')
+    if (healthHistoryRequests.isCurrent(requestID)) ElMessage.error('读取巡检历史失败')
   } finally {
-    if (requestID === healthHistoryRequestID) healthHistoryLoading.value = false
+    if (healthHistoryRequests.isCurrent(requestID)) healthHistoryLoading.value = false
   }
 }
 
@@ -528,16 +530,16 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthHistory
     </div>
     <el-form v-loading="healthSettingsLoading" label-position="top" class="health-settings-form">
       <el-form-item label="定时巡检">
-        <el-switch v-model="healthSettings.enabled" :disabled="!canManageTenants" active-text="启用" inactive-text="关闭" />
+        <el-switch v-model="healthSettings.enabled" :disabled="!canManageTenants || healthSettingsSaving" active-text="启用" inactive-text="关闭" />
       </el-form-item>
       <el-form-item label="巡检间隔（秒）">
-        <el-input-number v-model="healthSettings.interval_seconds" :min="30" :max="86400" :step="30" :disabled="!canManageTenants" />
+        <el-input-number v-model="healthSettings.interval_seconds" :min="30" :max="86400" :step="30" :disabled="!canManageTenants || healthSettingsSaving" />
       </el-form-item>
       <el-form-item label="单租户超时（秒）">
-        <el-input-number v-model="healthSettings.timeout_seconds" :min="1" :max="30" :disabled="!canManageTenants" />
+        <el-input-number v-model="healthSettings.timeout_seconds" :min="1" :max="30" :disabled="!canManageTenants || healthSettingsSaving" />
       </el-form-item>
       <el-form-item label="历史保留天数">
-        <el-input-number v-model="healthSettings.history_retention_days" :min="1" :max="365" :disabled="!canManageTenants" />
+        <el-input-number v-model="healthSettings.history_retention_days" :min="1" :max="365" :disabled="!canManageTenants || healthSettingsSaving" />
       </el-form-item>
       <el-form-item>
         <el-button v-if="canManageTenants" type="primary" :loading="healthSettingsSaving" @click="saveHealthSettings">保存配置</el-button>
