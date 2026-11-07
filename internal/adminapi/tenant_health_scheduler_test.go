@@ -125,3 +125,52 @@ func TestTenantHealthSchedulerReportsRunAndCleanupErrors(t *testing.T) {
 	}
 	scheduler.Close()
 }
+
+
+func TestTenantHealthSchedulerReloadsSettingsAfterReadFailure(t *testing.T) {
+	var loads atomic.Int32
+	loadErr := errors.New("metadata database temporarily unavailable")
+	reported := make(chan error, 1)
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			if loads.Add(1) == 1 {
+				return adminstore.TenantHealthSettings{}, loadErr
+			}
+			return adminstore.TenantHealthSettings{Enabled: false, IntervalSeconds: 300, HistoryRetentionDays: 30}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error { return nil },
+		func(context.Context, int) error { return nil },
+		func(err error) { reported <- err },
+	)
+	scheduler.Start(context.Background())
+	select {
+	case err := <-reported:
+		if !errors.Is(err, loadErr) { t.Fatalf("reported settings error=%v", err) }
+	case <-time.After(time.Second):
+		t.Fatal("settings load failure was not reported")
+	}
+	scheduler.Refresh()
+	deadline := time.After(time.Second)
+	for loads.Load() < 2 {
+		select {
+		case <-deadline:
+			t.Fatal("scheduler did not reload settings after refresh")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	scheduler.Close()
+}
+
+func TestCleanupTenantHealthHistoryStopsWhenContextIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	calls := 0
+	err := cleanupTenantHealthHistory(ctx, func(callCtx context.Context, _ time.Time, _ int) (int64, error) {
+		calls++
+		return 0, callCtx.Err()
+	}, 30)
+	if !errors.Is(err, context.Canceled) || calls != 1 {
+		t.Fatalf("cleanup error=%v calls=%d, want canceled after one batch", err, calls)
+	}
+}

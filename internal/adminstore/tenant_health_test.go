@@ -96,3 +96,27 @@ func TestTenantHealthHistoryRejectsInvalidCursorAndFilters(t *testing.T) {
 		t.Fatal("expected invalid source rejection")
 	}
 }
+
+
+func TestTenantHealthHistoryCursorUsesIDForEqualTimestamps(t *testing.T) {
+	store, err := Open(context.Background(), ":memory:", testKey)
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	tenant := newTenantForHealthTest(t, store, "same-timestamp")
+	stamp := time.Date(2026, 11, 8, 1, 2, 3, 0, time.UTC)
+	for i := 0; i < 3; i++ {
+		if err := store.RecordTenantConnectionHealthWithSource(context.Background(), TenantConnectionHealth{
+			TenantID: tenant.ID, Status: "healthy", CheckedAt: stamp, Message: "connection successful",
+		}, "manual"); err != nil { t.Fatal(err) }
+	}
+	first, err := store.ListTenantConnectionHealthHistory(context.Background(), TenantHealthHistoryFilter{Limit: 2})
+	if err != nil { t.Fatal(err) }
+	if len(first.Items) != 2 || first.NextCursor == "" || first.Items[0].ID <= first.Items[1].ID {
+		t.Fatalf("equal timestamp order is unstable: %+v", first)
+	}
+	second, err := store.ListTenantConnectionHealthHistory(context.Background(), TenantHealthHistoryFilter{Limit: 2, Cursor: first.NextCursor})
+	if err != nil { t.Fatal(err) }
+	if len(second.Items) != 1 || second.Items[0].ID >= first.Items[1].ID {
+		t.Fatalf("cursor skipped or duplicated equal-timestamp rows: first=%+v second=%+v", first, second)
+	}
+}
