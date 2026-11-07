@@ -540,6 +540,7 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthHistory
     <div class="table-toolbar">
       <div><strong>历史记录</strong><span>按检查时间倒序</span></div>
       <div class="toolbar-actions">
+        <el-date-picker v-model="healthHistoryTimeRange" type="datetimerange" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" clearable style="width: 330px" @change="loadHealthHistory()" />
         <el-select v-model="healthHistoryTenant" clearable filterable placeholder="全部租户" style="width: 180px" @change="loadHealthHistory()">
           <el-option v-for="tenant in items" :key="tenant.id" :label="tenant.name + '（' + tenant.code + '）'" :value="tenant.id" />
         </el-select>
@@ -697,7 +698,19 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthHistory
 .health-schedule-card { margin-top: 18px; }
 .health-settings-form { display: flex; flex-wrap: wrap; gap: 0 24px; align-items: flex-end; }
 .health-settings-form :deep(.el-form-item) { min-width: 170px; }
-.history-more { display: flex; justify-content: center; padding-top: 14px; }\n.history-toolbar .toolbar-actions { flex-wrap: wrap; justify-content: flex-end; }\n@media (max-width: 900px) {\n  .table-toolbar { align-items: flex-start; flex-direction: column; gap: 12px; }\n  .history-toolbar .toolbar-actions { width: 100%; justify-content: flex-start; }\n  .history-toolbar .toolbar-actions :deep(.el-date-editor) { max-width: 100%; }\n}
+.history-more { display: flex; justify-content: center; padding-top: 14px; }
+.history-toolbar .toolbar-actions { flex-wrap: wrap; justify-content: flex-end; }
+@media (max-width: 900px) {
+  .table-toolbar { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .history-toolbar .toolbar-actions { width: 100%; justify-content: flex-start; }
+  .history-toolbar .toolbar-actions :deep(.el-date-editor) { max-width: 100%; }
+}
+.history-toolbar .toolbar-actions { flex-wrap: wrap; justify-content: flex-end; }
+@media (max-width: 900px) {
+  .table-toolbar { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .history-toolbar .toolbar-actions { width: 100%; justify-content: flex-start; }
+  .history-toolbar .toolbar-actions :deep(.el-date-editor) { max-width: 100%; }
+}
 .batch-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; font-size: 12px; }
 .batch-summary span { margin-right: 8px; color: #667085; }
 .batch-alert { margin-top: 14px; }
