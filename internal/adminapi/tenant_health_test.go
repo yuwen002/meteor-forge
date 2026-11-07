@@ -66,3 +66,50 @@ func TestTenantHealthListReturnsPersistedMetadata(t *testing.T) {
 		t.Fatalf("unexpected health payload: %+v",payload.Items)
 	}
 }
+
+func TestTenantHealthCheckPersistsSingleTenantResult(t *testing.T) {
+	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	source, err := store.Create(context.Background(), adminstore.DataSourceInput{
+		Name: "health-check-source", Driver: "sqlite", DSN: ":memory:",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateTenant(context.Background(), adminstore.TenantInput{
+		Name: "Health tenant", Code: "health-tenant", DataSourceID: source.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := newTestServerWithStore(store)
+	defer server.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tenants/"+item.ID+"/health-check", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var result struct {
+		TenantID string `json:"tenant_id"`
+		Status string `json:"status"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.TenantID != item.ID || result.Status != "healthy" || result.Message != "connection successful" {
+		t.Fatalf("unexpected health check result: %+v", result)
+	}
+	persisted, err := store.ListTenantConnectionHealth(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted) != 1 || persisted[0].TenantID != item.ID || persisted[0].Status != "healthy" {
+		t.Fatalf("health result was not persisted: %+v", persisted)
+	}
+}
