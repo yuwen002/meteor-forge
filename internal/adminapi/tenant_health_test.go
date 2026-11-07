@@ -200,3 +200,38 @@ func TestRunTenantHealthChecksConcurrentlyHonorsCancellation(t *testing.T) {
 		t.Fatalf("checked tenants after cancellation=%d, want 0", got)
 	}
 }
+
+
+func TestTenantHealthEndpointsRejectAnonymousRequests(t *testing.T) {
+	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	server := NewServerWithStore(store)
+	defer server.Close()
+
+	cases := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodGet, path: "/api/v1/tenant-health"},
+		{method: http.MethodGet, path: "/api/v1/tenant-health/settings"},
+		{method: http.MethodGet, path: "/api/v1/tenant-health/history"},
+		{method: http.MethodPut, path: "/api/v1/tenant-health/settings", body: `{"enabled":true,"interval_seconds":300,"timeout_seconds":5,"history_retention_days":30}`},
+	}
+
+	for _, tc := range cases {
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		if tc.body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s status=%d body=%s, want %d", tc.method, tc.path, rec.Code, rec.Body.String(), http.StatusUnauthorized)
+		}
+	}
+}
