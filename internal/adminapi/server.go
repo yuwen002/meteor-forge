@@ -30,6 +30,7 @@ type Server struct {
 	pools        *PoolManager
 	tasks        *MigrationTaskManager
 	shardDDL     *shardDDLTaskManager
+	healthChecker *tenant.HealthChecker
 	migrationDir string
 }
 
@@ -53,7 +54,8 @@ func NewServerWithMigrationDir(store *adminstore.Store, migrationDir string) *Se
 func newServerWithMigrationDir(store *adminstore.Store, migrationDir string, enforceAuthentication bool) *Server {
 	if migrationDir == "" { migrationDir = "migrations" }
 	mux := http.NewServeMux()
-	server := &Server{pools: NewPoolManager(), migrationDir: migrationDir, authStore: store, loginLimiter: newLoginLimiter()}
+	healthChecker, _ := tenant.NewHealthChecker(5*time.Second, 4)
+	server := &Server{pools: NewPoolManager(), migrationDir: migrationDir, authStore: store, loginLimiter: newLoginLimiter(), healthChecker: healthChecker}
 	if store != nil {
 		server.store = store
 		server.tenants = store
@@ -104,6 +106,7 @@ func newServerWithMigrationDir(store *adminstore.Store, migrationDir string, enf
 	if store != nil {
 		server.registerDataSourceRoutes(mux)
 		server.registerTenantRoutes(mux)
+		server.registerTenantHealthRoutes(mux)
 		server.registerTenantDiscoveryRoutes(mux)
 		server.registerMigrationRoutes(mux)
 		server.registerShardingRoutes(mux)
