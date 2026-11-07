@@ -94,7 +94,8 @@ interface TenantHealthHistory {
   duration_ms: number
   message: string
 }
-\ninterface TenantHealth {
+
+interface TenantHealth {
   tenant_id: string
   status: 'healthy' | 'unhealthy'
   checked_at: string
@@ -106,7 +107,15 @@ const { canManageTenants, canTestConnections, canRunMigrations } = useAdminPermi
 
 const items = ref<Tenant[]>([])
 const dataSources = ref<DataSource[]>([])
-const healthByTenant = ref<Record<string, TenantHealth>>({})\nconst healthSettings = reactive<TenantHealthSettings>({ enabled: false, interval_seconds: 300, timeout_seconds: 5, history_retention_days: 30, updated_at: "" })\nconst healthSettingsLoading = ref(false)\nconst healthSettingsSaving = ref(false)\nconst healthHistory = ref<TenantHealthHistory[]>([])\nconst healthHistoryLoading = ref(false)\nconst healthHistoryCursor = ref("")\nconst healthHistoryNext = ref("")\nconst healthHistorySource = ref("")
+const healthByTenant = ref<Record<string, TenantHealth>>({})
+const healthSettings = reactive<TenantHealthSettings>({ enabled: false, interval_seconds: 300, timeout_seconds: 5, history_retention_days: 30, updated_at: "" })
+const healthSettingsLoading = ref(false)
+const healthSettingsSaving = ref(false)
+const healthHistory = ref<TenantHealthHistory[]>([])
+const healthHistoryLoading = ref(false)
+const healthHistoryCursor = ref("")
+const healthHistoryNext = ref("")
+const healthHistorySource = ref("")
 const loading = ref(false)
 const healthBatching = ref(false)
 const saving = ref(false)
@@ -546,7 +555,8 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthHistory
       <el-button plain :loading="healthHistoryLoading" @click="loadHealthHistory(true)">加载更多历史</el-button>
     </div>
   </el-card>
-\n  <el-dialog v-model="batchDialogVisible" title="批量迁移进度" width="760px">
+
+  <el-dialog v-model="batchDialogVisible" title="批量迁移进度" width="760px">
     <template v-if="batch">
       <div class="batch-summary">
         <span>批次：{{ batch.id }}</span>
@@ -666,7 +676,11 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthHistory
 <style scoped>
 .heading-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .tenant-card { border: 1px solid #e8edf4; border-radius: 12px; }
-.tenant-alert { margin-bottom: 20px; }\n.health-schedule-card { margin-top: 18px; }\n.health-settings-form { display: flex; flex-wrap: wrap; gap: 0 24px; align-items: flex-end; }\n.health-settings-form :deep(.el-form-item) { min-width: 170px; }\n.history-more { display: flex; justify-content: center; padding-top: 14px; }
+.tenant-alert { margin-bottom: 20px; }
+.health-schedule-card { margin-top: 18px; }
+.health-settings-form { display: flex; flex-wrap: wrap; gap: 0 24px; align-items: flex-end; }
+.health-settings-form :deep(.el-form-item) { min-width: 170px; }
+.history-more { display: flex; justify-content: center; padding-top: 14px; }
 .batch-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; font-size: 12px; }
 .batch-summary span { margin-right: 8px; color: #667085; }
 .batch-alert { margin-top: 14px; }
