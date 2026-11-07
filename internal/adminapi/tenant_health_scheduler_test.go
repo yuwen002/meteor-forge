@@ -166,11 +166,11 @@ func TestCleanupTenantHealthHistoryStopsWhenContextIsCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	calls := 0
-	err := cleanupTenantHealthHistory(ctx, func(callCtx context.Context, _ time.Time, _ int) (int64, error) {
+	err := cleanupTenantHealthHistory(ctx, func(context.Context, time.Time, int) (int64, error) {
 		calls++
-		return 0, callCtx.Err()
+		return 0, nil
 	}, 30)
-	if !errors.Is(err, context.Canceled) || calls != 1 {
-		t.Fatalf("cleanup error=%v calls=%d, want canceled after one batch", err, calls)
+	if !errors.Is(err, context.Canceled) || calls != 0 {
+		t.Fatalf("cleanup error=%v calls=%d, want canceled without starting a batch", err, calls)
 	}
 }

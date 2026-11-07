@@ -144,6 +144,9 @@ func cleanupTenantHealthHistory(
 	before := time.Now().UTC().Add(-time.Duration(retentionDays) * 24 * time.Hour)
 	const batchSize = 500
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		deleted, err := deleteBatch(ctx, before, batchSize)
 		if err != nil {
 			return err
