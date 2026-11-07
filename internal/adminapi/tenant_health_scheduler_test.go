@@ -104,7 +104,7 @@ func TestTenantHealthSchedulerReportsRunAndCleanupErrors(t *testing.T) {
 	reported := make(chan error, 2)
 	scheduler := newTenantHealthScheduler(
 		func(context.Context) (adminstore.TenantHealthSettings, error) {
-			return adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 30, HistoryRetentionDays: 30}, nil
+			return adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 1, HistoryRetentionDays: 30}, nil
 		},
 		func(context.Context, adminstore.TenantHealthSettings) error { return runErr },
 		func(context.Context, int) error { return cleanupErr },
