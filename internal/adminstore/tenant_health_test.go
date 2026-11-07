@@ -146,9 +146,9 @@ func TestTenantHealthHistoryTimeRangeIsInclusiveAndValidatesBounds(t *testing.T)
 		t.Fatal("expected reversed time range to be rejected")
 	}
 	for _, raw := range []string{
-		base64.RawURLEncoding.EncodeToString([]byte("not-a-time\\n1")),
-		base64.RawURLEncoding.EncodeToString([]byte(base.Format(time.RFC3339Nano)+"\\n0")),
-		base64.RawURLEncoding.EncodeToString([]byte(base.Format(time.RFC3339Nano)+"\\n-1")),
+		base64.RawURLEncoding.EncodeToString([]byte("not-a-time\n1")),
+		base64.RawURLEncoding.EncodeToString([]byte(base.Format(time.RFC3339Nano)+"\n0")),
+		base64.RawURLEncoding.EncodeToString([]byte(base.Format(time.RFC3339Nano)+"\n-1")),
 	} {
 		if _, err := store.ListTenantConnectionHealthHistory(context.Background(), TenantHealthHistoryFilter{Cursor: raw}); err == nil {
 			t.Errorf("expected malformed cursor %q to be rejected", raw)
