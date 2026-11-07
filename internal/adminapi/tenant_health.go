@@ -143,6 +143,9 @@ func (s *Server) runTenantHealthCheckWithOptions(ctx context.Context, tenantID s
 			checker, checkerErr := tenant.NewHealthChecker(timeout, 1)
 			if checkerErr != nil { return tenant.HealthResult{}, checkerErr }
 			result = checker.Check(checkCtx, item.ID, db)
+			if err := ctx.Err(); err != nil {
+				return tenant.HealthResult{}, err
+			}
 			if result.Status == tenant.HealthStatusUnhealthy {
 				s.pools.InvalidateIfCurrent(item.DataSourceID, db)
 			}
@@ -154,6 +157,11 @@ func (s *Server) runTenantHealthCheckWithOptions(ctx context.Context, tenantID s
 				result.Message = "connection check canceled"
 			}
 		}
+	}
+	// A canceled request or scheduler shutdown is not a failed health result.
+	// Do not let cancellation overwrite the latest healthy status or pollute history.
+	if err := ctx.Err(); err != nil {
+		return tenant.HealthResult{}, err
 	}
 	persistCtx, persistCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer persistCancel()

@@ -235,3 +235,51 @@ func TestTenantHealthEndpointsRejectAnonymousRequests(t *testing.T) {
 		}
 	}
 }
+
+
+func TestTenantHealthCheckCancellationDoesNotPersistResult(t *testing.T) {
+	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	source, err := store.Create(context.Background(), adminstore.DataSourceInput{
+		Name: "canceled-health-check", Driver: "sqlite", DSN: ":memory:",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateTenant(context.Background(), adminstore.TenantInput{
+		Name: "Canceled tenant", Code: "canceled-tenant", DataSourceID: source.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := newTestServerWithStore(store)
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := server.runTenantHealthCheckWithOptions(ctx, item.ID, time.Second, "scheduled"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled health check error=%v, want context.Canceled", err)
+	}
+
+	history, err := store.ListTenantConnectionHealthHistory(context.Background(), adminstore.TenantHealthHistoryFilter{
+		TenantID: item.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Items) != 0 {
+		t.Fatalf("canceled health check persisted %d history rows, want 0", len(history.Items))
+	}
+	latest, err := store.ListTenantConnectionHealth(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(latest) != 0 {
+		t.Fatalf("canceled health check changed latest health state: %+v", latest)
+	}
+}
+
