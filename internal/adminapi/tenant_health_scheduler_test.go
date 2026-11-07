@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync/atomic"
+	"strings"
 	"testing"
 	"time"
 
@@ -301,4 +302,63 @@ func TestTenantHealthSchedulerSettingsForDueRoundReloadsDisabledSetting(t *testi
 	if err != nil { t.Fatal(err) }
 	if settings.Enabled || enabled { t.Fatalf("fresh disabled settings must skip the due round: %+v enabled=%v", settings, enabled) }
 	if got := loads.Load(); got != 2 { t.Fatalf("settings loads=%d, want 2", got) }
+}
+
+
+func TestTenantHealthSchedulerSnapshotTracksRoundResults(t *testing.T) {
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			return adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 90}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error { return nil },
+		func(context.Context, int) error { return nil },
+	)
+	scheduler.updateSettings(adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 90})
+	next := time.Now().UTC().Add(90 * time.Second)
+	scheduler.setNextRun(&next)
+	started := scheduler.beginRound()
+	if snapshot := scheduler.Snapshot(); !snapshot.Running || snapshot.TotalRuns != 1 || snapshot.NextRunAt != nil {
+		t.Fatalf("unexpected running snapshot: %+v", snapshot)
+	}
+
+	scheduler.finishRound(started, nil)
+	snapshot := scheduler.Snapshot()
+	if snapshot.Running || snapshot.TotalRuns != 1 || snapshot.SuccessCount != 1 || snapshot.FailureCount != 0 {
+		t.Fatalf("unexpected successful snapshot: %+v", snapshot)
+	}
+	if snapshot.LastStartedAt == nil || snapshot.LastFinishedAt == nil || snapshot.LastSuccessAt == nil {
+		t.Fatalf("round timestamps were not recorded: %+v", snapshot)
+	}
+	if snapshot.LastDurationMS < 0 {
+		t.Fatalf("negative round duration: %+v", snapshot)
+	}
+
+	started = scheduler.beginRound()
+	scheduler.finishRound(started, errors.New("sensitive database driver detail"))
+	snapshot = scheduler.Snapshot()
+	if snapshot.TotalRuns != 2 || snapshot.SuccessCount != 1 || snapshot.FailureCount != 1 {
+		t.Fatalf("unexpected failed snapshot counters: %+v", snapshot)
+	}
+	if snapshot.LastError != "巡检执行失败" || strings.Contains(snapshot.LastError, "sensitive") {
+		t.Fatalf("snapshot leaked raw error: %+v", snapshot)
+	}
+}
+
+func TestTenantHealthSchedulerSnapshotClearsNextRunWhenDisabled(t *testing.T) {
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			return adminstore.TenantHealthSettings{}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error { return nil },
+		func(context.Context, int) error { return nil },
+	)
+	scheduler.updateSettings(adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 120})
+	next := time.Now().UTC().Add(2 * time.Minute)
+	scheduler.setNextRun(&next)
+	scheduler.updateSettings(adminstore.TenantHealthSettings{Enabled: false, IntervalSeconds: 120})
+
+	snapshot := scheduler.Snapshot()
+	if snapshot.Enabled || snapshot.NextRunAt != nil {
+		t.Fatalf("disabled scheduler should clear next run: %+v", snapshot)
+	}
 }
