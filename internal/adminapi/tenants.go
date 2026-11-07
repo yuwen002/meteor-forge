@@ -128,26 +128,31 @@ func tenantRequestSource(r *http.Request) string {
 }
 
 func (s *Server) testTenantConnection(w http.ResponseWriter, r *http.Request) {
-	if !s.requireTenantStore(w) || s.store == nil { return }
-	item, err := s.tenants.GetTenant(r.Context(), r.PathValue("id"))
-	if err != nil { writeTenantStoreError(w, err); return }
-
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-	db, err := s.pools.Get(ctx, item.DataSourceID, func(ctx context.Context, id string) (string, string, error) {
-		driver, dsn, err := s.store.ConnectionConfig(ctx, id)
-		if err != nil { return "", "", err }
-		driverName := map[string]string{"mysql": "mysql", "postgres": "pgx", "sqlite": "sqlite", "clickhouse": "clickhouse"}[driver]
-		if driverName == "" { return "", "", errors.New("unsupported database driver") }
-		return driverName, dsn, nil
-	})
-	if err == nil { err = db.PingContext(ctx) }
-	if err != nil {
-		if db != nil { s.pools.InvalidateIfCurrent(item.DataSourceID, db) }
-		writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "connection failed; verify the tenant data source"})
+	if !s.requireTenantStore(w) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "tenant data source connection successful"})
+	result, err := s.runTenantHealthCheck(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeTenantStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": result.Status == tenant.HealthStatusHealthy,
+		"message": result.Message,
+		"result": result,
+	})
+}
+
+func (s *Server) checkTenantHealth(w http.ResponseWriter, r *http.Request) {
+	if !s.requireTenantStore(w) {
+		return
+	}
+	result, err := s.runTenantHealthCheck(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeTenantStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func writeTenantStoreError(w http.ResponseWriter, err error) {
