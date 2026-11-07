@@ -36,7 +36,7 @@ func (s *Server) listTenantHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
-func (s *Server) runTenantHealthCheck(ctx context.Context, tenantID string) (tenant.HealthResult, error) {
+func (s *Server) runTenantHealthCheck(ctx context.Context, tenantID string) (tenant.HealthResult, error) {\n\treturn s.runTenantHealthCheckWithOptions(ctx, tenantID, 5*time.Second, "manual")\n}\n\nfunc (s *Server) runTenantHealthCheckWithOptions(ctx context.Context, tenantID string, timeout time.Duration, source string) (tenant.HealthResult, error) {
 	item, err := s.tenants.GetTenant(ctx, tenantID)
 	if err != nil {
 		return tenant.HealthResult{}, err
@@ -51,7 +51,7 @@ func (s *Server) runTenantHealthCheck(ctx context.Context, tenantID string) (ten
 	if s.healthChecker == nil || s.pools == nil || s.store == nil {
 		result.Message = "connection check is unavailable"
 	} else {
-		checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		checkCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		db, openErr := s.pools.Get(checkCtx, item.DataSourceID, func(ctx context.Context, id string) (string, string, error) {
 			driver, dsn, err := s.store.ConnectionConfig(ctx, id)
@@ -76,7 +76,7 @@ func (s *Server) runTenantHealthCheck(ctx context.Context, tenantID string) (ten
 	}
 	persistCtx, persistCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer persistCancel()
-	err = s.authStore.RecordTenantConnectionHealth(persistCtx, adminstore.TenantConnectionHealth{
+	err = s.authStore.RecordTenantConnectionHealthWithSource(persistCtx, adminstore.TenantConnectionHealth{
 		TenantID: result.TenantID,
 		Status: string(result.Status),
 		CheckedAt: result.CheckedAt,
@@ -87,6 +87,36 @@ func (s *Server) runTenantHealthCheck(ctx context.Context, tenantID string) (ten
 		return tenant.HealthResult{}, errors.New("unable to persist tenant connection health")
 	}
 	return result, nil
+}
+
+
+func (s *Server) runScheduledTenantHealthChecks(ctx context.Context, settings adminstore.TenantHealthSettings) error {
+	tenants, err := s.tenants.ListTenants(ctx)
+	if err != nil { return err }
+	workers := make(chan struct{}, 4)
+	var wg sync.WaitGroup
+	for _, item := range tenants {
+		if item.Status != "active" { continue }
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			return ctx.Err()
+		default:
+		}
+		wg.Add(1)
+		go func(tenantID string) {
+			defer wg.Done()
+			select {
+			case workers <- struct{}{}:
+				defer func(){ <-workers }()
+			case <-ctx.Done():
+				return
+			}
+			_, _ = s.runTenantHealthCheckWithOptions(ctx, tenantID, time.Duration(settings.TimeoutSeconds)*time.Second, "scheduled")
+		}(item.ID)
+	}
+	wg.Wait()
+	return ctx.Err()
 }
 
 func (s *Server) batchTenantHealthCheck(w http.ResponseWriter, r *http.Request) {

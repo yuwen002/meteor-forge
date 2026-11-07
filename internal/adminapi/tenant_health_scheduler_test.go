@@ -1,0 +1,61 @@
+package adminapi
+
+import (
+	"context"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/yuwen002/meteor-forge/internal/adminstore"
+)
+
+func TestTenantHealthSchedulerDisabledUntilEnabled(t *testing.T) {
+	var enabled atomic.Bool
+	var runs atomic.Int32
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			return adminstore.TenantHealthSettings{Enabled: enabled.Load(), IntervalSeconds: 1, HistoryRetentionDays: 30}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error { runs.Add(1); return nil },
+		func(context.Context, int) error { return nil },
+	)
+	scheduler.Start(context.Background())
+	time.Sleep(30 * time.Millisecond)
+	if got := runs.Load(); got != 0 { t.Fatalf("disabled scheduler ran %d times", got) }
+	enabled.Store(true)
+	scheduler.Refresh()
+	time.Sleep(1100 * time.Millisecond)
+	scheduler.Close()
+	if got := runs.Load(); got != 1 { t.Fatalf("enabled scheduler ran %d times, want 1", got) }
+}
+
+func TestTenantHealthSchedulerDoesNotOverlapRoundsAndStops(t *testing.T) {
+	var active, maxActive, runs atomic.Int32
+	started := make(chan struct{}, 4)
+	release := make(chan struct{})
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			return adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 1, HistoryRetentionDays: 30}, nil
+		},
+		func(ctx context.Context, _ adminstore.TenantHealthSettings) error {
+			current := active.Add(1)
+			for {
+				old := maxActive.Load()
+				if current <= old || maxActive.CompareAndSwap(old, current) { break }
+			}
+			runs.Add(1)
+			started <- struct{}{}
+			defer active.Add(-1)
+			select { case <-release: return nil; case <-ctx.Done(): return ctx.Err() }
+		},
+		func(context.Context, int) error { return nil },
+	)
+	scheduler.Start(context.Background())
+	select { case <-started: case <-time.After(1500*time.Millisecond): t.Fatal("first round did not start") }
+	time.Sleep(1100*time.Millisecond)
+	if got := runs.Load(); got != 1 { t.Fatalf("overlapping round started: runs=%d", got) }
+	scheduler.Close()
+	if got := active.Load(); got != 0 { t.Fatalf("scheduler close returned with %d active rounds", got) }
+	close(release)
+	if got := maxActive.Load(); got != 1 { t.Fatalf("max active rounds=%d, want 1", got) }
+}
