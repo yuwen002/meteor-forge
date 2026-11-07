@@ -9,6 +9,21 @@ import (
 	"github.com/yuwen002/meteor-forge/internal/adminstore"
 )
 
+type tenantHealthSchedulerSnapshot struct {
+	Enabled bool `json:"enabled"`
+	Running bool `json:"running"`
+	IntervalSeconds int `json:"interval_seconds"`
+	TotalRuns uint64 `json:"total_runs"`
+	SuccessCount uint64 `json:"success_count"`
+	FailureCount uint64 `json:"failure_count"`
+	LastStartedAt *time.Time `json:"last_started_at,omitempty"`
+	LastFinishedAt *time.Time `json:"last_finished_at,omitempty"`
+	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
+	NextRunAt *time.Time `json:"next_run_at,omitempty"`
+	LastDurationMS int64 `json:"last_duration_ms"`
+	LastError string `json:"last_error,omitempty"`
+}
+
 type tenantHealthScheduler struct {
 	loadSettings func(context.Context) (adminstore.TenantHealthSettings, error)
 	run          func(context.Context, adminstore.TenantHealthSettings) error
@@ -20,6 +35,8 @@ type tenantHealthScheduler struct {
 	lifecycleMu sync.Mutex
 	started     bool
 	closed      bool
+	snapshotMu sync.RWMutex
+	snapshot tenantHealthSchedulerSnapshot
 }
 
 func newTenantHealthScheduler(
@@ -54,6 +71,60 @@ func (s *tenantHealthScheduler) Start(parent context.Context) {
 	s.cancel = cancel
 	s.lifecycleMu.Unlock()
 	go s.loop(ctx)
+}
+
+func (s *tenantHealthScheduler) Snapshot() tenantHealthSchedulerSnapshot {
+	s.snapshotMu.RLock()
+	defer s.snapshotMu.RUnlock()
+	return s.snapshot
+}
+
+func (s *tenantHealthScheduler) updateSettings(settings adminstore.TenantHealthSettings) {
+	s.snapshotMu.Lock()
+	s.snapshot.Enabled = settings.Enabled
+	s.snapshot.IntervalSeconds = settings.IntervalSeconds
+	if !settings.Enabled { s.snapshot.NextRunAt = nil }
+	s.snapshotMu.Unlock()
+}
+
+func (s *tenantHealthScheduler) setNextRun(at *time.Time) {
+	s.snapshotMu.Lock()
+	s.snapshot.NextRunAt = at
+	s.snapshotMu.Unlock()
+}
+
+func (s *tenantHealthScheduler) beginRound() time.Time {
+	now := time.Now().UTC()
+	s.snapshotMu.Lock()
+	s.snapshot.Running = true
+	s.snapshot.NextRunAt = nil
+	s.snapshot.TotalRuns++
+	s.snapshot.LastStartedAt = &now
+	s.snapshotMu.Unlock()
+	return now
+}
+
+func (s *tenantHealthScheduler) finishRound(started time.Time, runErr error) {
+	now := time.Now().UTC()
+	s.snapshotMu.Lock()
+	s.snapshot.Running = false
+	s.snapshot.LastFinishedAt = &now
+	s.snapshot.LastDurationMS = now.Sub(started).Milliseconds()
+	if runErr == nil {
+		s.snapshot.SuccessCount++
+		s.snapshot.LastSuccessAt = &now
+		s.snapshot.LastError = ""
+	} else {
+		s.snapshot.FailureCount++
+		s.snapshot.LastError = "巡检执行失败"
+	}
+	s.snapshotMu.Unlock()
+}
+
+func (s *tenantHealthScheduler) setSnapshotError(message string) {
+	s.snapshotMu.Lock()
+	s.snapshot.LastError = message
+	s.snapshotMu.Unlock()
 }
 
 func (s *tenantHealthScheduler) reportError(err error) {
@@ -98,10 +169,12 @@ func (s *tenantHealthScheduler) loop(ctx context.Context) {
 	for {
 		settings, err := s.loadSettings(ctx)
 		if err != nil {
+			s.setSnapshotError("读取巡检配置失败")
 			s.reportError(fmt.Errorf("load tenant health settings: %w", err))
 			if timer == nil { timer = time.NewTimer(30 * time.Second) } else { timer.Reset(30 * time.Second) }
 			select { case <-ctx.Done(): return; case <-s.notify: continue; case <-timer.C: continue }
 		}
+		s.updateSettings(settings)
 		if !settings.Enabled {
 			select {
 			case <-ctx.Done():
@@ -115,15 +188,19 @@ func (s *tenantHealthScheduler) loop(ctx context.Context) {
 		} else {
 			timer.Reset(time.Duration(settings.IntervalSeconds) * time.Second)
 		}
+		nextRun := time.Now().UTC().Add(time.Duration(settings.IntervalSeconds) * time.Second)
+		s.setNextRun(&nextRun)
 		select {
 		case <-ctx.Done():
 			return
 		case <-s.notify:
+			s.setNextRun(nil)
 			if !timer.Stop() {
 				select { case <-timer.C: default: }
 			}
 			continue
 		case <-timer.C:
+			s.setNextRun(nil)
 		}
 
 		// Always re-read persisted settings after the timer fires. If Refresh and
@@ -132,26 +209,34 @@ func (s *tenantHealthScheduler) loop(ctx context.Context) {
 		dueSettings, enabled, settingsErr := s.settingsForDueRound(ctx)
 		if settingsErr != nil {
 			if ctx.Err() != nil { return }
+			s.setSnapshotError("重新读取巡检配置失败")
 			s.reportError(fmt.Errorf("reload tenant health settings before round: %w", settingsErr))
 			continue
 		}
-		if !enabled { continue }
+		if !enabled { s.updateSettings(dueSettings); continue }
 		settings = dueSettings
+		s.updateSettings(settings)
 
 		// The loop runs each round synchronously, so two rounds can never overlap.
 		if ctx.Err() != nil {
 			return
 		}
+		roundStarted := s.beginRound()
 		roundCtx, cancel := context.WithCancel(ctx)
-		if err := s.run(roundCtx, settings); err != nil && ctx.Err() == nil {
-			s.reportError(fmt.Errorf("run scheduled tenant health checks: %w", err))
+		runErr := s.run(roundCtx, settings)
+		if runErr != nil && ctx.Err() == nil {
+			s.reportError(fmt.Errorf("run scheduled tenant health checks: %w", runErr))
 		}
 		cancel()
+		if ctx.Err() == nil { s.finishRound(roundStarted, runErr) } else {
+			s.snapshotMu.Lock(); s.snapshot.Running = false; s.snapshotMu.Unlock()
+		}
 		if ctx.Err() != nil {
 			return
 		}
 		cleanupCtx, cleanupCancel := context.WithTimeout(ctx, 5*time.Second)
 		if err := s.cleanup(cleanupCtx, settings.HistoryRetentionDays); err != nil && ctx.Err() == nil {
+			s.setSnapshotError("清理巡检历史失败")
 			s.reportError(fmt.Errorf("cleanup tenant health history: %w", err))
 		}
 		cleanupCancel()

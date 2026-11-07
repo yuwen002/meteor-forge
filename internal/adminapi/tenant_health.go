@@ -23,6 +23,7 @@ type tenantHealthCheckRequest struct {
 func (s *Server) registerTenantHealthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+apiPrefix+"/tenant-health", s.listTenantHealth)
 	mux.HandleFunc("GET "+apiPrefix+"/tenant-health/settings", s.getTenantHealthSettings)
+	mux.HandleFunc("GET "+apiPrefix+"/tenant-health/scheduler", s.getTenantHealthScheduler)
 	mux.HandleFunc("PUT "+apiPrefix+"/tenant-health/settings", s.updateTenantHealthSettings)
 	mux.HandleFunc("GET "+apiPrefix+"/tenant-health/history", s.listTenantHealthHistory)
 	mux.HandleFunc("POST "+apiPrefix+"/tenant-health-checks", s.batchTenantHealthCheck)
@@ -41,6 +42,14 @@ func (s *Server) listTenantHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+
+func (s *Server) getTenantHealthScheduler(w http.ResponseWriter, r *http.Request) {
+	if s.healthScheduler == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "tenant_health_scheduler_unavailable", "tenant health scheduler is unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.healthScheduler.Snapshot())
+}
 
 func (s *Server) getTenantHealthSettings(w http.ResponseWriter, r *http.Request) {
 	item, err := s.authStore.GetTenantHealthSettings(r.Context())

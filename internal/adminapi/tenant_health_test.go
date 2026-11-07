@@ -284,3 +284,34 @@ func TestTenantHealthCheckCancellationDoesNotPersistResult(t *testing.T) {
 	}
 }
 
+
+func TestTenantHealthSchedulerSnapshotAPI(t *testing.T) {
+	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	server := newTestServerWithStore(store)
+	defer server.Close()
+	if server.healthScheduler == nil { t.Fatal("health scheduler was not initialized") }
+	server.healthScheduler.updateSettings(adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 90})
+	next := time.Date(2026, 11, 8, 1, 2, 3, 0, time.UTC)
+	server.healthScheduler.setNextRun(&next)
+	started := time.Date(2026, 11, 8, 1, 0, 0, 0, time.UTC)
+	server.healthScheduler.snapshotMu.Lock()
+	server.healthScheduler.snapshot.TotalRuns = 3
+	server.healthScheduler.snapshot.SuccessCount = 2
+	server.healthScheduler.snapshot.FailureCount = 1
+	server.healthScheduler.snapshot.LastStartedAt = &started
+	server.healthScheduler.snapshot.LastError = "巡检执行失败"
+	server.healthScheduler.snapshotMu.Unlock()
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/tenant-health/scheduler", nil))
+	if rec.Code != http.StatusOK { t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String()) }
+	var got tenantHealthSchedulerSnapshot
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil { t.Fatal(err) }
+	if !got.Enabled || got.IntervalSeconds != 90 || got.TotalRuns != 3 || got.SuccessCount != 2 || got.FailureCount != 1 {
+		t.Fatalf("unexpected scheduler snapshot: %+v", got)
+	}
+	if got.LastError != "巡检执行失败" || got.NextRunAt == nil || !got.NextRunAt.Equal(next) {
+		t.Fatalf("unexpected scheduler details: %+v", got)
+	}
+}

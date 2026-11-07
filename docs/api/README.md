@@ -571,6 +571,23 @@ GET /api/v1/tenant-discovery/preview?data_source_id=control-source-id
 - `history_retention_days`：1–365。
 - 默认关闭定时巡检；更新成功后调度器立即重新加载配置。
 
+
+### GET /tenant-health/scheduler
+
+读取当前 API 进程内的定时巡检运行快照，所有已认证角色可读取。响应字段：
+
+| 字段 | 说明 |
+|---|---|
+| `enabled` / `running` | 当前配置是否启用、是否正在执行巡检轮次 |
+| `interval_seconds` | 最近一次成功读取的巡检间隔（秒） |
+| `total_runs` / `success_count` / `failure_count` | 当前进程启动以来的轮次总数、成功数和失败数 |
+| `last_started_at` / `last_finished_at` / `last_success_at` | 最近轮次开始、结束和成功时间；尚无记录时省略 |
+| `next_run_at` | 当前预计下一轮开始时间；禁用、运行中或尚未安排时省略 |
+| `last_duration_ms` | 最近一轮巡检执行耗时（毫秒） |
+| `last_error` | 最近一次调度错误的固定脱敏摘要，不包含数据库驱动原始错误或连接凭据 |
+
+统计仅在当前进程内维护，服务重启后归零；不代表多实例全局统计。当前调度器仅支持单实例运行，未实现分布式选主。配置读取或历史清理错误可能更新 `last_error`，但不会计入巡检轮次失败数。
+
 ### GET /tenant-health/history
 
 查询巡检历史，所有已认证角色可读取。支持 `tenant_id`、`status`（healthy/unhealthy）、`source`（manual/scheduled）、`from`、`to`（RFC3339，起止边界均包含）、`limit`（1–100，默认 50）和 `cursor`。结果按 `checked_at DESC, id DESC` 稳定分页，响应包含 `items` 和可选的 `next_cursor`；游标为不透明值，应原样传回，不要自行解码或构造。非法筛选、反向时间范围或非法游标返回 HTTP 400。
