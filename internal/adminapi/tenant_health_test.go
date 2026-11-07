@@ -1,6 +1,7 @@
 package adminapi
 
 import (
+	"fmt"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -111,5 +112,55 @@ func TestTenantHealthCheckPersistsSingleTenantResult(t *testing.T) {
 	}
 	if len(persisted) != 1 || persisted[0].TenantID != item.ID || persisted[0].Status != "healthy" {
 		t.Fatalf("health result was not persisted: %+v", persisted)
+	}
+}
+
+func TestTenantHealthSettingsAndHistoryAPI(t *testing.T) {
+	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	source, err := store.Create(context.Background(), adminstore.DataSourceInput{Name:"api-health", Driver:"sqlite", DSN:":memory:"})
+	if err != nil { t.Fatal(err) }
+	item, err := store.CreateTenant(context.Background(), adminstore.TenantInput{Name:"API tenant", Code:"api-tenant", DataSourceID:source.ID})
+	if err != nil { t.Fatal(err) }
+	if err := store.RecordTenantConnectionHealth(context.Background(), adminstore.TenantConnectionHealth{
+		TenantID:item.ID, Status:"healthy", CheckedAt:item.CreatedAt, DurationMS:2, Message:"connection successful",
+	}); err != nil { t.Fatal(err) }
+	server := newTestServerWithStore(store)
+	defer server.Close()
+
+	get := httptest.NewRecorder()
+	server.Handler().ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/api/v1/tenant-health/settings", nil))
+	if get.Code != http.StatusOK { t.Fatalf("settings status=%d body=%s", get.Code, get.Body.String()) }
+
+	body := fmt.Sprintf(`{"enabled":true,"interval_seconds":60,"timeout_seconds":10,"history_retention_days":14}`)
+	putReq := httptest.NewRequest(http.MethodPut, "/api/v1/tenant-health/settings", strings.NewReader(body))
+	putReq.Header.Set("Content-Type", "application/json")
+	put := httptest.NewRecorder()
+	server.Handler().ServeHTTP(put, putReq)
+	if put.Code != http.StatusOK { t.Fatalf("update settings status=%d body=%s", put.Code, put.Body.String()) }
+	if server.healthScheduler == nil { t.Fatal("health scheduler was not initialized") }
+
+	history := httptest.NewRecorder()
+	server.Handler().ServeHTTP(history, httptest.NewRequest(http.MethodGet, "/api/v1/tenant-health/history?tenant_id="+item.ID+"&source=manual&limit=10", nil))
+	if history.Code != http.StatusOK { t.Fatalf("history status=%d body=%s", history.Code, history.Body.String()) }
+	var page adminstore.TenantHealthHistoryPage
+	if err := json.Unmarshal(history.Body.Bytes(), &page); err != nil { t.Fatal(err) }
+	if len(page.Items) != 1 || page.Items[0].Source != "manual" { t.Fatalf("unexpected history: %+v", page) }
+
+	invalid := httptest.NewRecorder()
+	server.Handler().ServeHTTP(invalid, httptest.NewRequest(http.MethodGet, "/api/v1/tenant-health/history?limit=101", nil))
+	if invalid.Code != http.StatusBadRequest { t.Fatalf("invalid limit status=%d", invalid.Code) }
+}
+
+func TestTenantHealthSettingsRBAC(t *testing.T) {
+	if !authorizeAdminRole("viewer", http.MethodGet, "/api/v1/tenant-health/settings") {
+		t.Fatal("viewer should read health settings")
+	}
+	if authorizeAdminRole("viewer", http.MethodPut, "/api/v1/tenant-health/settings") {
+		t.Fatal("viewer must not update health settings")
+	}
+	if !authorizeAdminRole("administrator", http.MethodPut, "/api/v1/tenant-health/settings") {
+		t.Fatal("administrator should update health settings")
 	}
 }

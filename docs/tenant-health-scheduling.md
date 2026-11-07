@@ -1,6 +1,6 @@
 # 租户定时健康巡检设计
 
-> 状态：开发方案，待实现与评审  
+> 状态：Schema v16、Store、调度器核心和 Server 生命周期已实现；配置/历史 API 已接入，前端与最终验收待完成  
 > 前置分支：`feat/tenant-connection-health-check`（PR #12）  
 > 目标分支：`main`
 

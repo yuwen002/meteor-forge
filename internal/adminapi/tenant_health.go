@@ -20,6 +20,9 @@ type tenantHealthCheckRequest struct {
 
 func (s *Server) registerTenantHealthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+apiPrefix+"/tenant-health", s.listTenantHealth)
+	mux.HandleFunc("GET "+apiPrefix+"/tenant-health/settings", s.getTenantHealthSettings)
+	mux.HandleFunc("PUT "+apiPrefix+"/tenant-health/settings", s.updateTenantHealthSettings)
+	mux.HandleFunc("GET "+apiPrefix+"/tenant-health/history", s.listTenantHealthHistory)
 	mux.HandleFunc("POST "+apiPrefix+"/tenant-health-checks", s.batchTenantHealthCheck)
 }
 
@@ -34,6 +37,76 @@ func (s *Server) listTenantHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+
+func (s *Server) getTenantHealthSettings(w http.ResponseWriter, r *http.Request) {
+	item, err := s.authStore.GetTenantHealthSettings(r.Context())
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "tenant_health_settings_failed", "unable to read tenant health settings")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) updateTenantHealthSettings(w http.ResponseWriter, r *http.Request) {
+	var input adminstore.TenantHealthSettings
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	item, err := s.authStore.UpdateTenantHealthSettings(r.Context(), input)
+	if errors.Is(err, adminstore.ErrTenantHealthInvalidInput) {
+		writeAPIError(w, http.StatusBadRequest, "invalid_tenant_health_settings", "interval_seconds, timeout_seconds or history_retention_days is outside the supported range")
+		return
+	}
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "tenant_health_settings_failed", "unable to update tenant health settings")
+		return
+	}
+	if s.healthScheduler != nil { s.healthScheduler.Refresh() }
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) listTenantHealthHistory(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	filter := adminstore.TenantHealthHistoryFilter{
+		TenantID: strings.TrimSpace(query.Get("tenant_id")),
+		Status: strings.TrimSpace(query.Get("status")),
+		Source: strings.TrimSpace(query.Get("source")),
+		Cursor: strings.TrimSpace(query.Get("cursor")),
+	}
+	if raw := query.Get("limit"); raw != "" {
+		limit, err := strconv.Atoi(raw)
+		if err != nil || limit < 1 || limit > 100 {
+			writeAPIError(w, http.StatusBadRequest, "invalid_history_limit", "limit must be between 1 and 100")
+			return
+		}
+		filter.Limit = limit
+	}
+	for _, item := range []struct{name string; target **time.Time}{
+		{name:"from", target:&filter.From},
+		{name:"to", target:&filter.To},
+	} {
+		if raw := query.Get(item.name); raw != "" {
+			value, err := time.Parse(time.RFC3339, raw)
+			if err != nil {
+				writeAPIError(w, http.StatusBadRequest, "invalid_history_time", "from and to must be RFC3339 timestamps")
+				return
+			}
+			*item.target = &value
+		}
+	}
+	page, err := s.authStore.ListTenantConnectionHealthHistory(r.Context(), filter)
+	if errors.Is(err, adminstore.ErrTenantHealthInvalidInput) {
+		writeAPIError(w, http.StatusBadRequest, "invalid_history_filter", "history filters or cursor are invalid")
+		return
+	}
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "tenant_health_history_failed", "unable to read tenant health history")
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
 }
 
 func (s *Server) runTenantHealthCheck(ctx context.Context, tenantID string) (tenant.HealthResult, error) {

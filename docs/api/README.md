@@ -550,6 +550,27 @@ GET /api/v1/tenant-discovery/preview?data_source_id=control-source-id
 {"tenant_ids":["tenant-id-1","tenant-id-2"]}
 ```
 
-巡检最多 4 个并发，每个连接检查最多 5 秒。结果包含 `tenant_id`、`status`（healthy/unhealthy）、`checked_at`、`duration_ms` 和脱敏后的 `message`。管理元数据库只保留每个租户最近一次结果；暂不提供历史趋势和定时调度。
+巡检最多 4 个并发，手动检查超时 5 秒。结果包含 `tenant_id`、`status`（healthy/unhealthy）、`checked_at`、`duration_ms` 和脱敏后的 `message`。管理元数据库保留最新状态，并追加每次巡检历史。
 
 原有 `POST /tenants/{id}/test` 保持兼容，现同样会记录最近一次巡检结果。巡检失败不会自动停用租户、修改租户配置或触发修复。原始驱动错误、DSN 和密码不会写入响应或巡检记录。
+
+### GET /tenant-health/settings
+
+读取定时巡检配置。所有已认证角色可读取。
+
+### PUT /tenant-health/settings
+
+更新完整配置，仅 administrator 可操作。请求示例：
+
+```json
+{"enabled":true,"interval_seconds":300,"timeout_seconds":5,"history_retention_days":30}
+```
+
+- `interval_seconds`：30–86400。
+- `timeout_seconds`：1–30。
+- `history_retention_days`：1–365。
+- 默认关闭定时巡检；更新成功后调度器立即重新加载配置。
+
+### GET /tenant-health/history
+
+查询巡检历史，所有已认证角色可读取。支持 `tenant_id`、`status`（healthy/unhealthy）、`source`（manual/scheduled）、`from`、`to`（RFC3339）、`limit`（1–100，默认 50）和 `cursor`。结果按 `checked_at DESC, id DESC` 稳定分页，响应包含 `items` 和 `next_cursor`。
