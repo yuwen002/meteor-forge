@@ -70,6 +70,14 @@ func NewHealthChecker(timeout time.Duration, concurrency int) (*HealthChecker, e
 // Check waits for an available worker slot, then performs one bounded ping.
 // Driver errors are deliberately normalized before they can reach an API client.
 func (c *HealthChecker) Check(ctx context.Context, tenantID string, db Pinger) HealthResult {
+	if c == nil {
+		return HealthResult{
+			TenantID: tenantID,
+			Status: HealthStatusUnhealthy,
+			CheckedAt: time.Now().UTC(),
+			Message: "connection check is unavailable",
+		}
+	}
 	started := c.now().UTC()
 	result := HealthResult{
 		TenantID: tenantID,
@@ -77,8 +85,12 @@ func (c *HealthChecker) Check(ctx context.Context, tenantID string, db Pinger) H
 		CheckedAt: started,
 		Message: "connection check failed; verify the registered data source",
 	}
-	if c == nil || db == nil {
+	if db == nil {
 		result.Message = "connection check is unavailable"
+		return result
+	}
+	if err := ctx.Err(); err != nil {
+		result.Message = "connection check canceled before it started"
 		return result
 	}
 	select {
