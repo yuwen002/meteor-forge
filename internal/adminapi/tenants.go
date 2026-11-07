@@ -32,6 +32,7 @@ func (s *Server) registerTenantRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE "+apiPrefix+"/tenants/{id}", s.deleteTenant)
 	mux.HandleFunc("GET "+apiPrefix+"/tenants/{id}/audit", s.listTenantAuditEvents)
 	mux.HandleFunc("POST "+apiPrefix+"/tenants/{id}/test", s.testTenantConnection)
+	mux.HandleFunc("POST "+apiPrefix+"/tenants/{id}/health-check", s.checkTenantHealth)
 }
 
 func (s *Server) requireTenantStore(w http.ResponseWriter) bool {
