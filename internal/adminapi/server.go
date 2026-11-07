@@ -108,15 +108,15 @@ func newServerWithMigrationDir(store *adminstore.Store, migrationDir string, enf
 		server.registerDataSourceRoutes(mux)
 		server.registerTenantRoutes(mux)
 		server.registerTenantHealthRoutes(mux)
-\t\tserver.healthScheduler = newTenantHealthScheduler(
-\t\t\tstore.GetTenantHealthSettings,
-\t\t\tserver.runScheduledTenantHealthChecks,
-\t\t\tfunc(ctx context.Context, retentionDays int) error {
-\t\t\t\t_, err := store.DeleteExpiredTenantConnectionHealthHistory(ctx, time.Now().UTC().Add(-time.Duration(retentionDays)*24*time.Hour), 500)
-\t\t\t\treturn err
-\t\t\t},
-\t\t)
-\t\tserver.healthScheduler.Start(context.Background())
+		server.healthScheduler = newTenantHealthScheduler(
+			store.GetTenantHealthSettings,
+			server.runScheduledTenantHealthChecks,
+			func(ctx context.Context, retentionDays int) error {
+				_, err := store.DeleteExpiredTenantConnectionHealthHistory(ctx, time.Now().UTC().Add(-time.Duration(retentionDays)*24*time.Hour), 500)
+				return err
+			},
+		)
+		server.healthScheduler.Start(context.Background())
 		server.registerTenantDiscoveryRoutes(mux)
 		server.registerMigrationRoutes(mux)
 		server.registerShardingRoutes(mux)

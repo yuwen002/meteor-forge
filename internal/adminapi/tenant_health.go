@@ -37,7 +37,7 @@ func (s *Server) listTenantHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runTenantHealthCheck(ctx context.Context, tenantID string) (tenant.HealthResult, error) {
-\treturn s.runTenantHealthCheckWithOptions(ctx, tenantID, 5*time.Second, "manual")
+	return s.runTenantHealthCheckWithOptions(ctx, tenantID, 5*time.Second, "manual")
 }
 
 func (s *Server) runTenantHealthCheckWithOptions(ctx context.Context, tenantID string, timeout time.Duration, source string) (tenant.HealthResult, error) {
@@ -65,7 +65,9 @@ func (s *Server) runTenantHealthCheckWithOptions(ctx context.Context, tenantID s
 			return driverName, dsn, nil
 		})
 		if openErr == nil {
-			result = s.healthChecker.Check(checkCtx, item.ID, db)
+			checker, checkerErr := tenant.NewHealthChecker(timeout, 1)
+			if checkerErr != nil { return tenant.HealthResult{}, checkerErr }
+			result = checker.Check(checkCtx, item.ID, db)
 			if result.Status == tenant.HealthStatusUnhealthy {
 				s.pools.InvalidateIfCurrent(item.DataSourceID, db)
 			}
