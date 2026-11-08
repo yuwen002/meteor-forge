@@ -74,6 +74,101 @@ type TenantHealthSummary struct {
 }
 
 // GetTenantHealthSummary returns current tenant status counts and check outcomes from the last 24 hours.
+// TenantHealthTrendBucket contains aggregated check outcomes for one time bucket.
+type TenantHealthTrendBucket struct {
+	BucketStart time.Time `json:"bucket_start"`
+	Checks int64 `json:"checks"`
+	Healthy int64 `json:"healthy"`
+	Unhealthy int64 `json:"unhealthy"`
+	SuccessRate float64 `json:"success_rate"`
+}
+
+// TenantHealthTrends is a bounded, zero-filled time series for the health dashboard.
+type TenantHealthTrends struct {
+	Range string `json:"range"`
+	WindowStartedAt time.Time `json:"window_started_at"`
+	WindowEndedAt time.Time `json:"window_ended_at"`
+	Buckets []TenantHealthTrendBucket `json:"buckets"`
+}
+
+// GetTenantHealthTrends returns zero-filled hourly (24h) or daily (7d) check aggregates.
+func (s *Store) GetTenantHealthTrends(ctx context.Context, now time.Time, rangeName string) (TenantHealthTrends, error) {
+	if now.IsZero() {
+		return TenantHealthTrends{}, ErrTenantHealthInvalidInput
+	}
+	now = now.UTC()
+	var bucketCount int
+	var bucketSize time.Duration
+	var start time.Time
+	var groupExpression string
+	switch rangeName {
+	case "24h":
+		bucketCount = 24
+		bucketSize = time.Hour
+		start = now.Add(-24 * time.Hour)
+		groupExpression = "substr(checked_at, 1, 13)"
+	case "7d":
+		bucketCount = 7
+		bucketSize = 24 * time.Hour
+		start = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -6)
+		groupExpression = "substr(checked_at, 1, 10)"
+	default:
+		return TenantHealthTrends{}, ErrTenantHealthInvalidInput
+	}
+
+	result := TenantHealthTrends{
+		Range: rangeName,
+		WindowStartedAt: start,
+		WindowEndedAt: now,
+		Buckets: make([]TenantHealthTrendBucket, bucketCount),
+	}
+	for i := range result.Buckets {
+		result.Buckets[i].BucketStart = start.Add(time.Duration(i) * bucketSize)
+	}
+	query := "SELECT " + groupExpression + ", COUNT(*), " +
+		"COALESCE(SUM(CASE WHEN status = 'healthy' THEN 1 ELSE 0 END), 0), " +
+		"COALESCE(SUM(CASE WHEN status = 'unhealthy' THEN 1 ELSE 0 END), 0) " +
+		"FROM admin_tenant_connection_health_history WHERE checked_at >= ? AND checked_at <= ? GROUP BY " + groupExpression
+	rows, err := s.db.QueryContext(ctx, query, formatTenantHealthTime(start), formatTenantHealthTime(now))
+	if err != nil {
+		return TenantHealthTrends{}, fmt.Errorf("query tenant health trends: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var checks, healthy, unhealthy int64
+		if err := rows.Scan(&key, &checks, &healthy, &unhealthy); err != nil {
+			return TenantHealthTrends{}, fmt.Errorf("scan tenant health trend bucket: %w", err)
+		}
+		layout := "2006-01-02T15"
+		if rangeName == "7d" {
+			layout = "2006-01-02"
+		}
+		stamp, err := time.ParseInLocation(layout, key, time.UTC)
+		if err != nil {
+			return TenantHealthTrends{}, fmt.Errorf("parse tenant health trend bucket: %w", err)
+		}
+		index := int(stamp.Sub(start) / bucketSize)
+		if index < 0 || index >= len(result.Buckets) {
+			continue
+		}
+		bucket := &result.Buckets[index]
+		bucket.Checks += checks
+		bucket.Healthy += healthy
+		bucket.Unhealthy += unhealthy
+	}
+	if err := rows.Err(); err != nil {
+		return TenantHealthTrends{}, fmt.Errorf("iterate tenant health trend buckets: %w", err)
+	}
+	for i := range result.Buckets {
+		bucket := &result.Buckets[i]
+		if bucket.Checks > 0 {
+			bucket.SuccessRate = float64(bucket.Healthy) / float64(bucket.Checks) * 100
+		}
+	}
+	return result, nil
+}
+
 func (s *Store) GetTenantHealthSummary(ctx context.Context, now time.Time) (TenantHealthSummary, error) {
 	if now.IsZero() {
 		return TenantHealthSummary{}, ErrTenantHealthInvalidInput
