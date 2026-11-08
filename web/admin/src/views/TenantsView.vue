@@ -453,7 +453,8 @@ async function loadHealthTrends() {
   }
 }
 
-function changeHealthTrendRange(value: '24h' | '7d') {
+function changeHealthTrendRange(value: string) {
+  if (value !== '24h' && value !== '7d') return
   healthTrendsRange.value = value
   void loadHealthTrends()
 }
