@@ -251,7 +251,8 @@ func TestTenantHealthTrendsUsesBoundedUTCZeroFilledBuckets(t *testing.T) {
 		t.Fatalf("unexpected daily window: %+v", daily)
 	}
 	if daily.Buckets[5].Checks != 2 || daily.Buckets[5].Healthy != 1 || daily.Buckets[5].Unhealthy != 1 ||
-		daily.Buckets[6].Checks != 1 || daily.Buckets[6].SuccessRate != 0 {
+		daily.Buckets[6].Checks != 2 || daily.Buckets[6].Healthy != 1 || daily.Buckets[6].Unhealthy != 1 ||
+		daily.Buckets[6].SuccessRate != 50 {
 		t.Fatalf("daily bucket aggregation mismatch: %+v", daily.Buckets)
 	}
 	if _, err := store.GetTenantHealthTrends(context.Background(), now, "30d"); err == nil {
