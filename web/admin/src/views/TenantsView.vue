@@ -79,6 +79,18 @@ interface TenantInput {
   status: 'active' | 'suspended'
 }
 
+interface TenantHealthSummary {
+  window_started_at: string
+  tenant_count: number
+  checked_tenant_count: number
+  healthy_tenant_count: number
+  unhealthy_tenant_count: number
+  unchecked_tenant_count: number
+  checks_last_24_hours: number
+  healthy_checks_last_24_hours: number
+  unhealthy_checks_last_24_hours: number
+  success_rate_last_24_hours: number
+}
 interface TenantHealthSettings {
   enabled: boolean
   interval_seconds: number
@@ -130,6 +142,13 @@ const healthScheduler = reactive<TenantHealthSchedulerSnapshot>({
   last_success_at: null, next_run_at: null, last_duration_ms: 0,
 })
 const healthSchedulerLoading = ref(false)
+const healthSummary = reactive<TenantHealthSummary>({
+  window_started_at: '', tenant_count: 0, checked_tenant_count: 0,
+  healthy_tenant_count: 0, unhealthy_tenant_count: 0, unchecked_tenant_count: 0,
+  checks_last_24_hours: 0, healthy_checks_last_24_hours: 0,
+  unhealthy_checks_last_24_hours: 0, success_rate_last_24_hours: 0,
+})
+const healthSummaryLoading = ref(false)
 const healthSettingsLoading = ref(false)
 const healthSettingsSaving = ref(false)
 const healthHistory = ref<TenantHealthHistory[]>([])
@@ -391,6 +410,18 @@ async function loadHealthSettings() {
   }
 }
 
+async function loadHealthSummary() {
+  healthSummaryLoading.value = true
+  try {
+    const { data } = await api.get<TenantHealthSummary>('/tenant-health/summary')
+    Object.assign(healthSummary, data)
+  } catch {
+    ElMessage.error('读取租户健康统计失败')
+  } finally {
+    healthSummaryLoading.value = false
+  }
+}
+
 async function loadHealthScheduler() {
   healthSchedulerLoading.value = true
   try {
@@ -465,7 +496,7 @@ function auditSnapshotLabel(snapshot?: TenantAuditSnapshot | null): string {
   return `${snapshot.name}（${snapshot.code}） · ${snapshot.data_source_id} · ${snapshot.status}`
 }
 
-onMounted(() => { void load(); void loadHealthSettings(); void loadHealthScheduler(); void loadHealthHistory() })
+onMounted(() => { void load(); void loadHealthSettings(); void loadHealthScheduler(); void loadHealthSummary(); void loadHealthHistory() })
 </script>
 
 <template>
@@ -567,6 +598,32 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
       </div>
       <el-tag :type="healthSettings.enabled ? 'success' : 'info'">{{ healthSettings.enabled ? '已启用' : '已关闭' }}</el-tag>
     </div>
+    <section v-loading="healthSummaryLoading" class="health-summary">
+      <div class="health-summary-heading">
+        <strong>健康统计概览</strong>
+        <el-button text :loading="healthSummaryLoading" @click="loadHealthSummary">刷新统计</el-button>
+      </div>
+      <div class="health-summary-group">
+        <span class="health-summary-label">当前租户状态</span>
+        <div class="health-summary-grid">
+          <div><span>租户总数</span><strong>{{ healthSummary.tenant_count }}</strong></div>
+          <div><span>已巡检</span><strong>{{ healthSummary.checked_tenant_count }}</strong></div>
+          <div><span>连接正常</span><strong>{{ healthSummary.healthy_tenant_count }}</strong></div>
+          <div><span>连接异常</span><strong>{{ healthSummary.unhealthy_tenant_count }}</strong></div>
+          <div><span>未巡检</span><strong>{{ healthSummary.unchecked_tenant_count }}</strong></div>
+        </div>
+      </div>
+      <div class="health-summary-group">
+        <span class="health-summary-label">最近 24 小时 · 检查次数</span>
+        <div class="health-summary-grid health-summary-grid-four">
+          <div><span>检查总次数</span><strong>{{ healthSummary.checks_last_24_hours }}</strong></div>
+          <div><span>正常次数</span><strong>{{ healthSummary.healthy_checks_last_24_hours }}</strong></div>
+          <div><span>异常次数</span><strong>{{ healthSummary.unhealthy_checks_last_24_hours }}</strong></div>
+          <div><span>成功率</span><strong>{{ healthSummary.success_rate_last_24_hours.toFixed(1) }}%</strong></div>
+        </div>
+      </div>
+      <span class="health-summary-hint">当前状态按每个租户最新结果统计；24 小时指标按巡检历史次数统计。</span>
+    </section>
     <div v-loading="healthSchedulerLoading" class="health-scheduler-overview">
       <div><span>进程内轮次</span><strong>{{ healthScheduler.total_runs }}</strong></div>
       <div><span>成功 / 失败</span><strong>{{ healthScheduler.success_count }} / {{ healthScheduler.failure_count }}</strong></div>
@@ -755,6 +812,16 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
 .tenant-card { border: 1px solid #e8edf4; border-radius: 12px; }
 .tenant-alert { margin-bottom: 20px; }
 .health-schedule-card { margin-top: 18px; }
+.health-summary { margin: 8px 0 18px; }
+.health-summary-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.health-summary-group + .health-summary-group { margin-top: 14px; }
+.health-summary-label { display: block; margin-bottom: 8px; color: #667085; font-size: 12px; font-weight: 600; }
+.health-summary-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.health-summary-grid-four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.health-summary-grid > div { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 12px; border: 1px solid #e8edf4; border-radius: 8px; }
+.health-summary-grid span { color: #98a2b3; font-size: 11px; }
+.health-summary-grid strong { color: #34445d; font-size: 18px; font-weight: 650; }
+.health-summary-hint { display: block; margin-top: 10px; color: #98a2b3; font-size: 11px; }
 .health-scheduler-overview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 4px 0 18px; }
 .health-scheduler-overview > div { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 12px; border: 1px solid #e8edf4; border-radius: 8px; }
 .health-scheduler-overview span { color: #98a2b3; font-size: 11px; }
@@ -766,6 +833,8 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
 .history-more { display: flex; justify-content: center; padding-top: 14px; }
 .history-toolbar .toolbar-actions { flex-wrap: wrap; justify-content: flex-end; }
 @media (max-width: 900px) {
+  .health-summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .health-summary-grid-four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .health-scheduler-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .table-toolbar { align-items: flex-start; flex-direction: column; gap: 12px; }
   .history-toolbar .toolbar-actions { width: 100%; justify-content: flex-start; }
