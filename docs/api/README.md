@@ -588,6 +588,14 @@ GET /api/v1/tenant-discovery/preview?data_source_id=control-source-id
 
 统计仅在当前进程内维护，服务重启后归零；不代表多实例全局统计。当前调度器仅支持单实例运行，未实现分布式选主。配置读取或历史清理错误可能更新 `last_error`，但不会计入巡检轮次失败数。
 
+### GET /tenant-health/summary
+
+读取租户健康概览，所有已认证角色可读。响应字段分为两组：
+- 当前状态：`tenant_count`、`checked_tenant_count`、`healthy_tenant_count`、`unhealthy_tenant_count`、`unchecked_tenant_count`。按每个租户最新状态统计；未检查租户计入 unchecked。
+- 最近 24 小时：`checks_last_24_hours`、`healthy_checks_last_24_hours`、`unhealthy_checks_last_24_hours`、`success_rate_last_24_hours`。按历史检查次数统计，窗口起点和终点均包含；成功率 = 正常检查次数 / 窗口内总检查次数 × 100。窗口内没有检查时成功率为 0。
+
+`window_started_at` 返回本次查询采用的 24 小时窗口起点。当前状态统计与历史窗口统计口径不同，不应将租户数量与检查次数混用。
+
 ### GET /tenant-health/history
 
 查询巡检历史，所有已认证角色可读取。支持 `tenant_id`、`status`（healthy/unhealthy）、`source`（manual/scheduled）、`from`、`to`（RFC3339，起止边界均包含）、`limit`（1–100，默认 50）和 `cursor`。结果按 `checked_at DESC, id DESC` 稳定分页，响应包含 `items` 和可选的 `next_cursor`；游标为不透明值，应原样传回，不要自行解码或构造。非法筛选、反向时间范围或非法游标返回 HTTP 400。

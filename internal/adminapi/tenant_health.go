@@ -22,6 +22,7 @@ type tenantHealthCheckRequest struct {
 
 func (s *Server) registerTenantHealthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+apiPrefix+"/tenant-health", s.listTenantHealth)
+	mux.HandleFunc("GET "+apiPrefix+"/tenant-health/summary", s.getTenantHealthSummary)
 	mux.HandleFunc("GET "+apiPrefix+"/tenant-health/settings", s.getTenantHealthSettings)
 	mux.HandleFunc("GET "+apiPrefix+"/tenant-health/scheduler", s.getTenantHealthScheduler)
 	mux.HandleFunc("PUT "+apiPrefix+"/tenant-health/settings", s.updateTenantHealthSettings)
@@ -42,6 +43,19 @@ func (s *Server) listTenantHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+
+func (s *Server) getTenantHealthSummary(w http.ResponseWriter, r *http.Request) {
+	if s.authStore == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "metadata_unavailable", "management metadata store is not configured")
+		return
+	}
+	summary, err := s.authStore.GetTenantHealthSummary(r.Context(), time.Now().UTC())
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "tenant_health_summary_failed", "unable to summarize tenant connection health")
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
+}
 
 func (s *Server) getTenantHealthScheduler(w http.ResponseWriter, r *http.Request) {
 	if s.healthScheduler == nil {

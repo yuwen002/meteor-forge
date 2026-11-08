@@ -59,6 +59,56 @@ type TenantHealthHistoryPage struct {
 	NextCursor string                          `json:"next_cursor,omitempty"`
 }
 
+// TenantHealthSummary combines the latest tenant state with the last 24 hours of checks.
+type TenantHealthSummary struct {
+	WindowStartedAt         time.Time `json:"window_started_at"`
+	TenantCount             int64     `json:"tenant_count"`
+	CheckedTenantCount      int64     `json:"checked_tenant_count"`
+	HealthyTenantCount      int64     `json:"healthy_tenant_count"`
+	UnhealthyTenantCount    int64     `json:"unhealthy_tenant_count"`
+	UncheckedTenantCount    int64     `json:"unchecked_tenant_count"`
+	ChecksLast24Hours       int64     `json:"checks_last_24_hours"`
+	HealthyChecksLast24Hours int64    `json:"healthy_checks_last_24_hours"`
+	UnhealthyChecksLast24Hours int64  `json:"unhealthy_checks_last_24_hours"`
+	SuccessRateLast24Hours  float64   `json:"success_rate_last_24_hours"`
+}
+
+// GetTenantHealthSummary returns current tenant status counts and check outcomes from the last 24 hours.
+func (s *Store) GetTenantHealthSummary(ctx context.Context, now time.Time) (TenantHealthSummary, error) {
+	if now.IsZero() {
+		return TenantHealthSummary{}, ErrTenantHealthInvalidInput
+	}
+	now = now.UTC()
+	windowStart := now.Add(-24 * time.Hour)
+	summary := TenantHealthSummary{WindowStartedAt: windowStart}
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*),
+		COALESCE(SUM(CASE WHEN h.tenant_id IS NOT NULL THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN h.status = 'healthy' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN h.status = 'unhealthy' THEN 1 ELSE 0 END), 0)
+		FROM admin_tenants t
+		LEFT JOIN admin_tenant_connection_health h ON h.tenant_id = t.id`).Scan(
+		&summary.TenantCount, &summary.CheckedTenantCount,
+		&summary.HealthyTenantCount, &summary.UnhealthyTenantCount,
+	)
+	if err != nil {
+		return TenantHealthSummary{}, fmt.Errorf("summarize latest tenant health: %w", err)
+	}
+	summary.UncheckedTenantCount = summary.TenantCount - summary.CheckedTenantCount
+	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*),
+		COALESCE(SUM(CASE WHEN status = 'healthy' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status = 'unhealthy' THEN 1 ELSE 0 END), 0)
+		FROM admin_tenant_connection_health_history WHERE checked_at >= ? AND checked_at <= ?`,
+		formatTenantHealthTime(windowStart), formatTenantHealthTime(now),
+	).Scan(&summary.ChecksLast24Hours, &summary.HealthyChecksLast24Hours, &summary.UnhealthyChecksLast24Hours)
+	if err != nil {
+		return TenantHealthSummary{}, fmt.Errorf("summarize tenant health history: %w", err)
+	}
+	if summary.ChecksLast24Hours > 0 {
+		summary.SuccessRateLast24Hours = float64(summary.HealthyChecksLast24Hours) / float64(summary.ChecksLast24Hours) * 100
+	}
+	return summary, nil
+}
+
 func validateTenantHealthSettings(item TenantHealthSettings) error {
 	if item.IntervalSeconds < 30 || item.IntervalSeconds > 86400 {
 		return fmt.Errorf("%w: interval_seconds must be between 30 and 86400", ErrTenantHealthInvalidInput)

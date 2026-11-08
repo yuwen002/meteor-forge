@@ -221,6 +221,7 @@ func TestTenantHealthEndpointsRejectAnonymousRequests(t *testing.T) {
 		{method: http.MethodGet, path: "/api/v1/tenant-health"},
 		{method: http.MethodGet, path: "/api/v1/tenant-health/settings"},
 		{method: http.MethodGet, path: "/api/v1/tenant-health/history"},
+		{method: http.MethodGet, path: "/api/v1/tenant-health/summary"},
 		{method: http.MethodPut, path: "/api/v1/tenant-health/settings", body: `{"enabled":true,"interval_seconds":300,"timeout_seconds":5,"history_retention_days":30}`},
 	}
 
@@ -313,5 +314,45 @@ func TestTenantHealthSchedulerSnapshotAPI(t *testing.T) {
 	}
 	if got.LastError != "巡检执行失败" || got.NextRunAt == nil || !got.NextRunAt.Equal(next) {
 		t.Fatalf("unexpected scheduler details: %+v", got)
+	}
+}
+
+
+func TestTenantHealthSummaryEndpointReturnsCurrentAndRecentCounts(t *testing.T) {
+	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	source, err := store.Create(context.Background(), adminstore.DataSourceInput{Name:"summary", Driver:"sqlite", DSN:":memory:"})
+	if err != nil { t.Fatal(err) }
+	healthy, err := store.CreateTenant(context.Background(), adminstore.TenantInput{Name:"Healthy", Code:"summary-healthy", DataSourceID:source.ID})
+	if err != nil { t.Fatal(err) }
+	unhealthy, err := store.CreateTenant(context.Background(), adminstore.TenantInput{Name:"Unhealthy", Code:"summary-unhealthy", DataSourceID:source.ID})
+	if err != nil { t.Fatal(err) }
+	_, err = store.CreateTenant(context.Background(), adminstore.TenantInput{Name:"Unchecked", Code:"summary-unchecked", DataSourceID:source.ID})
+	if err != nil { t.Fatal(err) }
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	for _, item := range []adminstore.TenantConnectionHealth{
+		{TenantID:healthy.ID, Status:"healthy", CheckedAt:now.Add(-time.Hour), Message:"connection successful"},
+		{TenantID:unhealthy.ID, Status:"unhealthy", CheckedAt:now.Add(-2*time.Hour), Message:"connection failed"},
+	} {
+		if err := store.RecordTenantConnectionHealthWithSource(context.Background(), item, "manual"); err != nil { t.Fatal(err) }
+	}
+	// An older event is excluded from the rolling 24-hour window.
+	if err := store.RecordTenantConnectionHealthWithSource(context.Background(), adminstore.TenantConnectionHealth{
+		TenantID:healthy.ID, Status:"healthy", CheckedAt:now.Add(-25*time.Hour), Message:"connection successful",
+	}, "scheduled"); err != nil { t.Fatal(err) }
+
+	server := newTestServerWithStore(store)
+	defer server.Close()
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/tenant-health/summary", nil))
+	if rec.Code != http.StatusOK { t.Fatalf("summary status=%d body=%s", rec.Code, rec.Body.String()) }
+	var got adminstore.TenantHealthSummary
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil { t.Fatal(err) }
+	if got.TenantCount != 3 || got.CheckedTenantCount != 2 || got.HealthyTenantCount != 1 || got.UnhealthyTenantCount != 1 || got.UncheckedTenantCount != 1 {
+		t.Fatalf("unexpected latest tenant counts: %+v", got)
+	}
+	if got.ChecksLast24Hours != 2 || got.HealthyChecksLast24Hours != 1 || got.UnhealthyChecksLast24Hours != 1 || got.SuccessRateLast24Hours != 50 {
+		t.Fatalf("unexpected 24-hour summary: %+v", got)
 	}
 }

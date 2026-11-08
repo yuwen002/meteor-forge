@@ -155,3 +155,37 @@ func TestTenantHealthHistoryTimeRangeIsInclusiveAndValidatesBounds(t *testing.T)
 		}
 	}
 }
+
+
+func TestTenantHealthSummaryUsesInclusiveRollingWindowAndEmptyRate(t *testing.T) {
+	store, err := Open(context.Background(), ":memory:", testKey)
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	tenant := newTenantForHealthTest(t, store, "summary-window")
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	for _, stamp := range []time.Time{now.Add(-24*time.Hour), now.Add(-24*time.Hour-time.Nanosecond)} {
+		if err := store.RecordTenantConnectionHealthWithSource(context.Background(), TenantConnectionHealth{
+			TenantID:tenant.ID, Status:"healthy", CheckedAt:stamp, Message:"connection successful",
+		}, "manual"); err != nil { t.Fatal(err) }
+	}
+	got, err := store.GetTenantHealthSummary(context.Background(), now)
+	if err != nil { t.Fatal(err) }
+	if got.TenantCount != 1 || got.CheckedTenantCount != 1 || got.HealthyTenantCount != 1 || got.UncheckedTenantCount != 0 {
+		t.Fatalf("unexpected current counts: %+v", got)
+	}
+	if got.ChecksLast24Hours != 1 || got.HealthyChecksLast24Hours != 1 || got.UnhealthyChecksLast24Hours != 0 || got.SuccessRateLast24Hours != 100 {
+		t.Fatalf("24-hour boundary was not inclusive: %+v", got)
+	}
+
+	emptyStore, err := Open(context.Background(), ":memory:", testKey)
+	if err != nil { t.Fatal(err) }
+	defer emptyStore.Close()
+	empty, err := emptyStore.GetTenantHealthSummary(context.Background(), now)
+	if err != nil { t.Fatal(err) }
+	if empty.ChecksLast24Hours != 0 || empty.SuccessRateLast24Hours != 0 {
+		t.Fatalf("empty summary should have a zero rate without NaN: %+v", empty)
+	}
+	if _, err := emptyStore.GetTenantHealthSummary(context.Background(), time.Time{}); err == nil {
+		t.Fatal("zero summary time should be rejected")
+	}
+}
