@@ -222,6 +222,7 @@ func TestTenantHealthEndpointsRejectAnonymousRequests(t *testing.T) {
 		{method: http.MethodGet, path: "/api/v1/tenant-health/settings"},
 		{method: http.MethodGet, path: "/api/v1/tenant-health/history"},
 		{method: http.MethodGet, path: "/api/v1/tenant-health/summary"},
+		{method: http.MethodGet, path: "/api/v1/tenant-health/trends"},
 		{method: http.MethodPut, path: "/api/v1/tenant-health/settings", body: `{"enabled":true,"interval_seconds":300,"timeout_seconds":5,"history_retention_days":30}`},
 	}
 
@@ -354,5 +355,44 @@ func TestTenantHealthSummaryEndpointReturnsCurrentAndRecentCounts(t *testing.T) 
 	}
 	if got.ChecksLast24Hours != 2 || got.HealthyChecksLast24Hours != 1 || got.UnhealthyChecksLast24Hours != 1 || got.SuccessRateLast24Hours != 50 {
 		t.Fatalf("unexpected 24-hour summary: %+v", got)
+	}
+}
+
+
+func TestTenantHealthTrendsAPIValidatesRangeAndReturnsBuckets(t *testing.T) {
+	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	server := newTestServerWithStore(store)
+	defer server.Close()
+
+	for _, tc := range []struct {
+		path string
+		want int
+		buckets int
+	}{
+		{path: "/api/v1/tenant-health/trends", want: http.StatusOK, buckets: 24},
+		{path: "/api/v1/tenant-health/trends?range=24h", want: http.StatusOK, buckets: 24},
+		{path: "/api/v1/tenant-health/trends?range=7d", want: http.StatusOK, buckets: 7},
+		{path: "/api/v1/tenant-health/trends?range=30d", want: http.StatusBadRequest},
+	} {
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.path, nil))
+		if rec.Code != tc.want {
+			t.Errorf("%s status=%d body=%s, want %d", tc.path, rec.Code, rec.Body.String(), tc.want)
+			continue
+		}
+		if tc.want == http.StatusOK {
+			var got adminstore.TenantHealthTrends
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Errorf("%s response decode failed: %v", tc.path, err)
+				continue
+			}
+			if len(got.Buckets) != tc.buckets {
+				t.Errorf("%s buckets=%d, want %d", tc.path, len(got.Buckets), tc.buckets)
+			}
+		}
 	}
 }
