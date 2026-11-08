@@ -294,6 +294,14 @@ func TestTenantHealthSchedulerSnapshotAPI(t *testing.T) {
 	server := newTestServerWithStore(store)
 	defer server.Close()
 	if server.healthScheduler == nil { t.Fatal("health scheduler was not initialized") }
+	// Wait for the scheduler's initial settings load before overriding its snapshot.
+	deadline := time.Now().Add(time.Second)
+	for server.healthScheduler.Snapshot().IntervalSeconds != 300 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := server.healthScheduler.Snapshot().IntervalSeconds; got != 300 {
+		t.Fatalf("scheduler did not finish initial settings load, interval=%d", got)
+	}
 	server.healthScheduler.updateSettings(adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 90})
 	next := time.Date(2026, 11, 8, 1, 2, 3, 0, time.UTC)
 	server.healthScheduler.setNextRun(&next)
