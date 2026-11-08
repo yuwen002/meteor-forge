@@ -7,6 +7,11 @@ describe('租户健康趋势交互布局', () => {
     expect(tenantView).toContain('@media (max-width: 460px)')
     expect(tenantView).toContain('.history-toolbar .toolbar-actions { align-items: stretch; flex-direction: column; }')
   })
+  it('保留 24 小时与 7 天范围切换入口', () => {
+    expect(tenantView).toContain('<el-radio-button label="24h">24 小时</el-radio-button>')
+    expect(tenantView).toContain('<el-radio-button label="7d">7 天</el-radio-button>')
+    expect(tenantView).toContain('@change="changeHealthTrendRange"')
+  })
   it('只为有异常的桶提供可访问的点击入口', () => {
     expect(tenantView).toContain(':disabled="!isTenantHealthTrendBucketSelectable(bucket)"')
     expect(tenantView).toContain('@click="selectHealthTrendBucket(bucket)"')
