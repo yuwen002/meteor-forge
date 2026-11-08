@@ -166,7 +166,7 @@ func isReadOnlyAdminRoute(path string) bool {
  case "tenants":
   return len(parts)==3 || (len(parts)==4 && nonEmpty(3)) || (len(parts)==5 && nonEmpty(3) && (parts[4]=="audit" || parts[4]=="health-check"))
  case "tenant-health":
-  return len(parts)==3 || (len(parts)==4 && (parts[3]=="settings" || parts[3]=="history" || parts[3]=="scheduler" || parts[3]=="summary"))
+  return len(parts)==3 || (len(parts)==4 && (parts[3]=="settings" || parts[3]=="history" || parts[3]=="scheduler" || parts[3]=="summary" || parts[3]=="trends"))
  case "tenant-migration-batches":
   return len(parts)==4 && nonEmpty(3)
  case "migration-tasks":
