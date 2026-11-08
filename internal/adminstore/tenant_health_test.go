@@ -189,3 +189,96 @@ func TestTenantHealthSummaryUsesInclusiveRollingWindowAndEmptyRate(t *testing.T)
 		t.Fatal("zero summary time should be rejected")
 	}
 }
+
+
+func TestTenantHealthTrendsUsesBoundedUTCZeroFilledBuckets(t *testing.T) {
+	store, err := Open(context.Background(), ":memory:", testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	tenant := newTenantForHealthTest(t, store, "trend")
+	now := time.Date(2026, 11, 8, 12, 34, 0, 0, time.UTC)
+	checks := []struct {
+		at time.Time
+		status string
+	}{
+		{at: time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC), status: "healthy"},
+		{at: time.Date(2026, 11, 7, 13, 15, 0, 0, time.UTC), status: "unhealthy"},
+		{at: time.Date(2026, 11, 8, 11, 59, 59, 999999999, time.UTC), status: "healthy"},
+		{at: time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC), status: "unhealthy"}, // current incomplete hour
+		{at: now.Add(time.Minute), status: "healthy"}, // future result
+	}
+	for _, check := range checks {
+		if err := store.RecordTenantConnectionHealthWithSource(context.Background(), TenantConnectionHealth{
+			TenantID: tenant.ID, Status: check.status, CheckedAt: check.at, Message: "trend check",
+		}, "manual"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	hourly, err := store.GetTenantHealthTrends(context.Background(), now, "24h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hourly.Buckets) != 24 {
+		t.Fatalf("hourly bucket count=%d, want 24", len(hourly.Buckets))
+	}
+	if !hourly.WindowStartedAt.Equal(time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)) ||
+		!hourly.WindowEndedAt.Equal(time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)) {
+		t.Fatalf("unexpected hourly window: %+v", hourly)
+	}
+	if hourly.Buckets[0].Checks != 1 || hourly.Buckets[0].Healthy != 1 ||
+		hourly.Buckets[1].Checks != 1 || hourly.Buckets[1].Unhealthy != 1 ||
+		hourly.Buckets[23].Checks != 1 || hourly.Buckets[23].SuccessRate != 100 {
+		t.Fatalf("hourly bucket aggregation mismatch: %+v", hourly.Buckets)
+	}
+	for i := 2; i < 23; i++ {
+		if hourly.Buckets[i].Checks != 0 || hourly.Buckets[i].SuccessRate != 0 {
+			t.Fatalf("empty bucket %d was not zero-filled: %+v", i, hourly.Buckets[i])
+		}
+	}
+
+	daily, err := store.GetTenantHealthTrends(context.Background(), now, "7d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(daily.Buckets) != 7 {
+		t.Fatalf("daily bucket count=%d, want 7", len(daily.Buckets))
+	}
+	if !daily.WindowStartedAt.Equal(time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)) ||
+		!daily.WindowEndedAt.Equal(now) {
+		t.Fatalf("unexpected daily window: %+v", daily)
+	}
+	if daily.Buckets[5].Checks != 2 || daily.Buckets[5].Healthy != 1 || daily.Buckets[5].Unhealthy != 1 ||
+		daily.Buckets[6].Checks != 1 || daily.Buckets[6].SuccessRate != 0 {
+		t.Fatalf("daily bucket aggregation mismatch: %+v", daily.Buckets)
+	}
+	if _, err := store.GetTenantHealthTrends(context.Background(), now, "30d"); err == nil {
+		t.Fatal("unsupported trend range should be rejected")
+	}
+}
+
+func TestTenantHealthTrendsReturnsZeroFilledSeriesWithoutHistory(t *testing.T) {
+	store, err := Open(context.Background(), ":memory:", testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 11, 8, 12, 34, 0, 0, time.UTC)
+	got, err := store.GetTenantHealthTrends(context.Background(), now, "24h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Buckets) != 24 {
+		t.Fatalf("bucket count=%d, want 24", len(got.Buckets))
+	}
+	for i, bucket := range got.Buckets {
+		if bucket.Checks != 0 || bucket.Healthy != 0 || bucket.Unhealthy != 0 || bucket.SuccessRate != 0 {
+			t.Fatalf("empty bucket %d contains non-zero metrics: %+v", i, bucket)
+		}
+	}
+	if _, err := store.GetTenantHealthTrends(context.Background(), time.Time{}, "24h"); err == nil {
+		t.Fatal("zero trend time should be rejected")
+	}
+}
