@@ -60,12 +60,12 @@ describe('runLatestRequest', () => {
     expect(finished).toBe(true)
   })
 
-  it('ignores stale responses and stale errors after a newer request starts', async () => {
+  it('ignores a stale failure after a newer request starts', async () => {
     const sequence = createRequestSequence()
-    let resolveFirst!: (value: string) => void
-    let rejectSecond!: (error: Error) => void
-    const first = new Promise<string>(resolve => { resolveFirst = resolve })
-    const second = new Promise<string>((_resolve, reject) => { rejectSecond = reject })
+    let rejectFirst!: (error: Error) => void
+    let resolveSecond!: (value: string) => void
+    const first = new Promise<string>((_resolve, reject) => { rejectFirst = reject })
+    const second = new Promise<string>(resolve => { resolveSecond = resolve })
     const applied: string[] = []
     const errors: unknown[] = []
     const firstRun = runLatestRequest(sequence, () => first, {
@@ -74,11 +74,11 @@ describe('runLatestRequest', () => {
     const secondRun = runLatestRequest(sequence, () => second, {
       onSuccess: value => applied.push(value), onError: error => errors.push(error),
     })
-    resolveFirst('旧范围')
+    rejectFirst(new Error('旧请求失败'))
     expect(await firstRun).toBe(false)
-    rejectSecond(new Error('旧请求失败'))
-    expect(await secondRun).toBe(false)
-    expect(applied).toEqual([])
+    resolveSecond('新范围')
+    expect(await secondRun).toBe(true)
+    expect(applied).toEqual(['新范围'])
     expect(errors).toEqual([])
   })
 
