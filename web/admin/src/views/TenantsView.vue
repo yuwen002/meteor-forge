@@ -4,7 +4,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
 import { useAdminPermissions } from '../permissions'
 import TenantDiscoveryDialog from '../components/TenantDiscoveryDialog.vue'
-import { canLoadNextPage, createRequestSequence } from '../utils/requestSequence'
+import { canLoadNextPage, createRequestSequence, runLatestRequest } from '../utils/requestSequence'
+import { createTenantHealthTrendHistoryRange, isTenantHealthTrendBucketSelectable } from '../utils/healthTrend'
 
 interface DataSource {
   id: string
@@ -175,6 +176,7 @@ const healthHistorySource = ref("")
 const healthHistoryStatus = ref("")
 const healthHistoryTenant = ref("")
 const healthHistoryTimeRange = ref<[Date, Date] | null>(null)
+const healthHistoryExactTo = ref('')
 const loading = ref(false)
 const healthBatching = ref(false)
 const saving = ref(false)
@@ -439,23 +441,28 @@ async function loadHealthSummary() {
   }
 }
 
+const healthTrendRequests = createRequestSequence()
+
 async function loadHealthTrends() {
   healthTrendsLoading.value = true
-  try {
-    const { data } = await api.get<TenantHealthTrends>('/tenant-health/trends', {
-      params: { range: healthTrendsRange.value },
-    })
-    healthTrendBuckets.value = data.buckets
-  } catch {
-    ElMessage.error('读取租户健康趋势失败')
-  } finally {
-    healthTrendsLoading.value = false
-  }
+  const range = healthTrendsRange.value
+  await runLatestRequest(healthTrendRequests, async () => {
+    const { data } = await api.get<TenantHealthTrends>('/tenant-health/trends', { params: { range } })
+    return data
+  }, {
+    onSuccess: data => { healthTrendBuckets.value = data.buckets ?? [] },
+    onError: () => {
+      healthTrendBuckets.value = []
+      ElMessage.error('读取租户健康趋势失败')
+    },
+    onFinally: () => { healthTrendsLoading.value = false },
+  })
 }
 
 function changeHealthTrendRange(value: string) {
   if (value !== '24h' && value !== '7d') return
   healthTrendsRange.value = value
+  healthTrendBuckets.value = []
   void loadHealthTrends()
 }
 
@@ -511,13 +518,17 @@ const healthHistoryRequests = createRequestSequence()
 async function loadHealthHistory(next = false) {
   if (next && !canLoadNextPage(healthHistoryLoading.value, healthHistoryNext.value)) return
   const requestID = healthHistoryRequests.begin()
+  if (!next) {
+    healthHistory.value = []
+    healthHistoryNext.value = ''
+  }
   const query = {
     limit: 20,
     source: healthHistorySource.value || undefined,
     status: healthHistoryStatus.value || undefined,
     tenant_id: healthHistoryTenant.value || undefined,
     from: healthHistoryTimeRange.value?.[0]?.toISOString(),
-    to: healthHistoryTimeRange.value?.[1]?.toISOString(),
+    to: healthHistoryExactTo.value || healthHistoryTimeRange.value?.[1]?.toISOString(),
     cursor: next ? healthHistoryNext.value : undefined,
   }
   healthHistoryLoading.value = true
@@ -525,8 +536,6 @@ async function loadHealthHistory(next = false) {
     const { data } = await api.get<{ items: TenantHealthHistory[]; next_cursor?: string }>('/tenant-health/history', {
       params: query,
     })
-    // Filters may change while a request is in flight. Only the newest request
-    // may update the list or cursor, otherwise stale results can overwrite it.
     if (!healthHistoryRequests.isCurrent(requestID)) return
     healthHistory.value = next ? [...healthHistory.value, ...data.items] : data.items
     healthHistoryNext.value = data.next_cursor ?? ''
@@ -535,6 +544,24 @@ async function loadHealthHistory(next = false) {
   } finally {
     if (healthHistoryRequests.isCurrent(requestID)) healthHistoryLoading.value = false
   }
+}
+
+function selectHealthTrendBucket(bucket: TenantHealthTrendBucket) {
+  if (!isTenantHealthTrendBucketSelectable(bucket)) return
+  try {
+    const range = createTenantHealthTrendHistoryRange(bucket.bucket_start, healthTrendsRange.value)
+    healthHistoryTimeRange.value = range.pickerRange
+    healthHistoryExactTo.value = range.to
+    healthHistoryStatus.value = 'unhealthy'
+    void loadHealthHistory()
+  } catch {
+    ElMessage.error('无法按该趋势时间桶筛选巡检历史')
+  }
+}
+
+function changeHealthHistoryTimeRange() {
+  healthHistoryExactTo.value = ''
+  void loadHealthHistory()
 }
 
 function auditActionLabel(action: TenantAuditEvent['action']): string {
@@ -684,16 +711,23 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
           <span><i class="trend-legend-healthy" />正常</span>
           <span><i class="trend-legend-unhealthy" />异常</span>
         </div>
-        <div class="health-trend-chart" role="img" :aria-label="healthTrendsRange === '24h' ? '最近 24 个完整小时的巡检次数趋势' : '最近 7 个 UTC 日历日的巡检次数趋势'">
-          <div v-for="bucket in healthTrendBuckets" :key="bucket.bucket_start" class="health-trend-column"
-            :title="bucket.bucket_start + ' · 总计 ' + bucket.checks + ' · 正常 ' + bucket.healthy + ' · 异常 ' + bucket.unhealthy">
-            <div class="health-trend-bar-area">
-              <div class="health-trend-bar-stack" :style="{ height: healthTrendBarHeight(bucket) }">
-                <span class="trend-bar-healthy" :style="{ height: healthTrendSegmentHeight(bucket, bucket.healthy) }" />
-                <span class="trend-bar-unhealthy" :style="{ height: healthTrendSegmentHeight(bucket, bucket.unhealthy) }" />
+        <div class="health-trend-chart-scroll">
+          <div class="health-trend-chart" role="group" :aria-label="healthTrendsRange === '24h' ? '最近 24 个完整小时的巡检次数趋势' : '最近 7 个 UTC 日历日的巡检次数趋势'">
+            <button v-for="bucket in healthTrendBuckets" :key="bucket.bucket_start" type="button"
+              class="health-trend-column"
+              :class="{ 'is-selectable': isTenantHealthTrendBucketSelectable(bucket) }"
+              :disabled="!isTenantHealthTrendBucketSelectable(bucket)"
+              :aria-label="bucket.bucket_start + '，共 ' + bucket.checks + ' 次，正常 ' + bucket.healthy + ' 次，异常 ' + bucket.unhealthy + ' 次' + (isTenantHealthTrendBucketSelectable(bucket) ? '，点击筛选异常历史' : '，无异常记录')"
+              :title="bucket.bucket_start + ' · 总计 ' + bucket.checks + ' · 正常 ' + bucket.healthy + ' · 异常 ' + bucket.unhealthy"
+              @click="selectHealthTrendBucket(bucket)">
+              <div class="health-trend-bar-area">
+                <div class="health-trend-bar-stack" :style="{ height: healthTrendBarHeight(bucket) }">
+                  <span class="trend-bar-healthy" :style="{ height: healthTrendSegmentHeight(bucket, bucket.healthy) }" />
+                  <span class="trend-bar-unhealthy" :style="{ height: healthTrendSegmentHeight(bucket, bucket.unhealthy) }" />
+                </div>
               </div>
-            </div>
-            <span class="health-trend-tick">{{ healthTrendLabel(bucket) }}</span>
+              <span class="health-trend-tick">{{ healthTrendLabel(bucket) }}</span>
+            </button>
           </div>
         </div>
         <span class="health-summary-hint">{{ healthTrendsRange === '24h' ? '按 UTC 完整小时统计，不包含当前未结束小时。' : '按 UTC 日历日统计，今天的数据截至当前查询时间。' }} 空时间桶按 0 显示。</span>
@@ -731,7 +765,7 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
     <div class="table-toolbar history-toolbar">
       <div><strong>历史记录</strong><span>按检查时间倒序</span></div>
       <div class="toolbar-actions">
-        <el-date-picker v-model="healthHistoryTimeRange" type="datetimerange" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" clearable style="width: 330px" @change="loadHealthHistory()" />
+        <el-date-picker v-model="healthHistoryTimeRange" type="datetimerange" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" clearable style="width: 330px" @change="changeHealthHistoryTimeRange" />
         <el-select v-model="healthHistoryTenant" clearable filterable placeholder="全部租户" style="width: 180px" @change="loadHealthHistory()">
           <el-option v-for="tenant in items" :key="tenant.id" :label="tenant.name + '（' + tenant.code + '）'" :value="tenant.id" />
         </el-select>
@@ -904,8 +938,12 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
 .health-trend-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; }
 .trend-legend-healthy, .trend-bar-healthy { background: #39a879; }
 .trend-legend-unhealthy, .trend-bar-unhealthy { background: #e36b6b; }
-.health-trend-chart { display: flex; align-items: stretch; gap: 3px; min-height: 150px; padding: 8px 2px 0; border-bottom: 1px solid #e8edf4; }
-.health-trend-column { display: flex; flex: 1; flex-direction: column; min-width: 0; }
+.health-trend-chart-scroll { max-width: 100%; overflow-x: auto; }
+.health-trend-chart { display: flex; align-items: stretch; gap: 3px; min-width: 560px; min-height: 150px; padding: 8px 2px 0; border-bottom: 1px solid #e8edf4; }
+.health-trend-column { display: flex; flex: 1; flex-direction: column; min-width: 0; padding: 0; border: 0; border-radius: 4px 4px 0 0; background: transparent; color: inherit; font: inherit; }
+.health-trend-column:disabled { cursor: default; opacity: 1; }
+.health-trend-column.is-selectable { cursor: pointer; }
+.health-trend-column.is-selectable:hover, .health-trend-column.is-selectable:focus-visible { background: #f1f6fc; outline: 2px solid #8bb7e8; outline-offset: -2px; }
 .health-trend-bar-area { display: flex; flex: 1; align-items: flex-end; justify-content: center; min-height: 112px; }
 .health-trend-bar-stack { display: flex; flex-direction: column-reverse; width: min(100%, 18px); min-height: 0; overflow: hidden; border-radius: 3px 3px 0 0; }
 .trend-bar-healthy, .trend-bar-unhealthy { display: block; flex: none; min-height: 0; }
@@ -927,6 +965,13 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
   .table-toolbar { align-items: flex-start; flex-direction: column; gap: 12px; }
   .history-toolbar .toolbar-actions { width: 100%; justify-content: flex-start; }
   .history-toolbar .toolbar-actions :deep(.el-date-editor) { max-width: 100%; }
+}
+@media (max-width: 460px) {
+  .health-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .health-scheduler-overview { grid-template-columns: 1fr; }
+  .health-trend-chart { min-width: 520px; }
+  .history-toolbar .toolbar-actions { align-items: stretch; flex-direction: column; }
+  .history-toolbar .toolbar-actions > * { width: 100% !important; }
 }
 .batch-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; font-size: 12px; }
 .batch-summary span { margin-right: 8px; color: #667085; }

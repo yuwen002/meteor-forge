@@ -21,3 +21,32 @@ export function createRequestSequence() {
 export function canLoadNextPage(loading: boolean, nextCursor: string): boolean {
   return !loading && nextCursor.length > 0
 }
+
+
+/**
+ * Runs an asynchronous request while allowing only its newest invocation to
+ * publish data, errors, or loading-state changes.
+ */
+export async function runLatestRequest<T>(
+  sequence: ReturnType<typeof createRequestSequence>,
+  request: () => Promise<T>,
+  handlers: {
+    onSuccess(value: T): void
+    onError(error: unknown): void
+    onFinally?(): void
+  },
+): Promise<boolean> {
+  const requestID = sequence.begin()
+  try {
+    const value = await request()
+    if (!sequence.isCurrent(requestID)) return false
+    handlers.onSuccess(value)
+    return true
+  } catch (error) {
+    if (!sequence.isCurrent(requestID)) return false
+    handlers.onError(error)
+    return false
+  } finally {
+    if (sequence.isCurrent(requestID)) handlers.onFinally?.()
+  }
+}
