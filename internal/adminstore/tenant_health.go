@@ -101,11 +101,15 @@ func (s *Store) GetTenantHealthTrends(ctx context.Context, now time.Time, rangeN
 	var bucketSize time.Duration
 	var start time.Time
 	var groupExpression string
+	queryEnd := now
+	endExclusive := false
 	switch rangeName {
 	case "24h":
 		bucketCount = 24
 		bucketSize = time.Hour
-		start = now.Add(-24 * time.Hour)
+		queryEnd = now.Truncate(time.Hour)
+		start = queryEnd.Add(-24 * time.Hour)
+		endExclusive = true
 		groupExpression = "substr(checked_at, 1, 13)"
 	case "7d":
 		bucketCount = 7
@@ -119,17 +123,21 @@ func (s *Store) GetTenantHealthTrends(ctx context.Context, now time.Time, rangeN
 	result := TenantHealthTrends{
 		Range: rangeName,
 		WindowStartedAt: start,
-		WindowEndedAt: now,
+		WindowEndedAt: queryEnd,
 		Buckets: make([]TenantHealthTrendBucket, bucketCount),
 	}
 	for i := range result.Buckets {
 		result.Buckets[i].BucketStart = start.Add(time.Duration(i) * bucketSize)
 	}
+	endOperator := "<="
+	if endExclusive {
+		endOperator = "<"
+	}
 	query := "SELECT " + groupExpression + ", COUNT(*), " +
 		"COALESCE(SUM(CASE WHEN status = 'healthy' THEN 1 ELSE 0 END), 0), " +
 		"COALESCE(SUM(CASE WHEN status = 'unhealthy' THEN 1 ELSE 0 END), 0) " +
-		"FROM admin_tenant_connection_health_history WHERE checked_at >= ? AND checked_at <= ? GROUP BY " + groupExpression
-	rows, err := s.db.QueryContext(ctx, query, formatTenantHealthTime(start), formatTenantHealthTime(now))
+		"FROM admin_tenant_connection_health_history WHERE checked_at >= ? AND checked_at " + endOperator + " ? GROUP BY " + groupExpression
+	rows, err := s.db.QueryContext(ctx, query, formatTenantHealthTime(start), formatTenantHealthTime(queryEnd))
 	if err != nil {
 		return TenantHealthTrends{}, fmt.Errorf("query tenant health trends: %w", err)
 	}
