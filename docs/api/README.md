@@ -599,7 +599,7 @@ GET /api/v1/tenant-discovery/preview?data_source_id=control-source-id
 ### GET /tenant-health/trends
 
 查询租户连接健康趋势，所有已认证角色可读。支持可选参数 `range`：
-- `24h`：最近 24 个完整 UTC 小时，返回 24 个小时桶；当前尚未结束的小时不纳入统计。
+- `24h`：最近 24 个完整 UTC 小时，返回 24 个小时桶；当前尚未结束的小时不纳入统计，`window_ended_at` 是不包含在查询内的结束边界。
 - `7d`：最近 7 个 UTC 日历日（包含今天），返回 7 个日桶；今天是截至查询时刻的部分数据。
 - 不传 `range` 时默认使用 `24h`；其他值返回 HTTP 400。
 
