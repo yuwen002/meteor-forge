@@ -23,6 +23,7 @@ type tenantHealthCheckRequest struct {
 func (s *Server) registerTenantHealthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+apiPrefix+"/tenant-health", s.listTenantHealth)
 	mux.HandleFunc("GET "+apiPrefix+"/tenant-health/summary", s.getTenantHealthSummary)
+	mux.HandleFunc("GET "+apiPrefix+"/tenant-health/trends", s.getTenantHealthTrends)
 	mux.HandleFunc("GET "+apiPrefix+"/tenant-health/settings", s.getTenantHealthSettings)
 	mux.HandleFunc("GET "+apiPrefix+"/tenant-health/scheduler", s.getTenantHealthScheduler)
 	mux.HandleFunc("PUT "+apiPrefix+"/tenant-health/settings", s.updateTenantHealthSettings)
@@ -55,6 +56,27 @@ func (s *Server) getTenantHealthSummary(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, summary)
+}
+
+func (s *Server) getTenantHealthTrends(w http.ResponseWriter, r *http.Request) {
+	if s.authStore == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "metadata_unavailable", "management metadata store is not configured")
+		return
+	}
+	rangeName := strings.TrimSpace(r.URL.Query().Get("range"))
+	if rangeName == "" {
+		rangeName = "24h"
+	}
+	trends, err := s.authStore.GetTenantHealthTrends(r.Context(), time.Now().UTC(), rangeName)
+	if errors.Is(err, adminstore.ErrTenantHealthInvalidInput) {
+		writeAPIError(w, http.StatusBadRequest, "invalid_tenant_health_range", "range must be 24h or 7d")
+		return
+	}
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "tenant_health_trends_failed", "unable to read tenant health trends")
+		return
+	}
+	writeJSON(w, http.StatusOK, trends)
 }
 
 func (s *Server) getTenantHealthScheduler(w http.ResponseWriter, r *http.Request) {
