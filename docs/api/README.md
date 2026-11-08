@@ -596,6 +596,15 @@ GET /api/v1/tenant-discovery/preview?data_source_id=control-source-id
 
 `window_started_at` 返回本次查询采用的 24 小时窗口起点。当前状态统计与历史窗口统计口径不同，不应将租户数量与检查次数混用。
 
+### GET /tenant-health/trends
+
+查询租户连接健康趋势，所有已认证角色可读。支持可选参数 `range`：
+- `24h`：最近 24 个完整 UTC 小时，返回 24 个小时桶；当前尚未结束的小时不纳入统计。
+- `7d`：最近 7 个 UTC 日历日（包含今天），返回 7 个日桶；今天是截至查询时刻的部分数据。
+- 不传 `range` 时默认使用 `24h`；其他值返回 HTTP 400。
+
+响应包含 `range`、`window_started_at`、`window_ended_at` 和 `buckets`。每个桶包含 `bucket_start`（UTC）、`checks`、`healthy`、`unhealthy` 和 `success_rate`。无巡检记录的时间桶也会返回，计数和成功率均为 0。成功率 = 正常次数 / 检查总次数 × 100；没有检查时为 0。趋势只统计历史检查记录，不代表租户当前状态。
+
 ### GET /tenant-health/history
 
 查询巡检历史，所有已认证角色可读取。支持 `tenant_id`、`status`（healthy/unhealthy）、`source`（manual/scheduled）、`from`、`to`（RFC3339，起止边界均包含）、`limit`（1–100，默认 50）和 `cursor`。结果按 `checked_at DESC, id DESC` 稳定分页，响应包含 `items` 和可选的 `next_cursor`；游标为不透明值，应原样传回，不要自行解码或构造。非法筛选、反向时间范围或非法游标返回 HTTP 400。
