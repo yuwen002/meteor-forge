@@ -600,13 +600,13 @@ GET /api/v1/tenant-discovery/preview?data_source_id=control-source-id
 
 查询租户连接健康趋势，所有已认证角色可读。支持可选参数 `range`：
 - `24h`：最近 24 个完整 UTC 小时，返回 24 个小时桶；当前尚未结束的小时不纳入统计，`window_ended_at` 是不包含在查询内的结束边界。
-- `7d`：最近 7 个 UTC 日历日（包含今天），返回 7 个日桶；今天是截至查询时刻的部分数据。
+- `7d`：最近 7 个 UTC 日历日（包含今天），返回 7 个日桶；今天是截至查询时刻的部分数据。该范围的 `window_ended_at` 是本次查询时刻，查询上界包含该时刻。
 - 不传 `range` 时默认使用 `24h`；其他值返回 HTTP 400。
 
-响应包含 `range`、`window_started_at`、`window_ended_at` 和 `buckets`。每个桶包含 `bucket_start`（UTC）、`checks`、`healthy`、`unhealthy` 和 `success_rate`。无巡检记录的时间桶也会返回，计数和成功率均为 0。成功率 = 正常次数 / 检查总次数 × 100；没有检查时为 0。趋势只统计历史检查记录，不代表租户当前状态。
+响应包含 `range`、`window_started_at`、`window_ended_at` 和 `buckets`。每个桶包含 `bucket_start`（UTC RFC3339 时间）、`checks`、`healthy`、`unhealthy` 和 `success_rate`。无巡检记录的时间桶也会返回，计数和成功率均为 0；桶数量固定为 24 或 7。`24h` 查询窗口为左闭右开 `[window_started_at, window_ended_at)`；`7d` 查询窗口为左闭右开起点、包含查询时刻的终点，最后一个日桶可能是不完整的当天数据。成功率 = 正常次数 / 检查总次数 × 100；没有检查时为 0。趋势只统计历史检查记录，不代表租户当前状态。
 
 前端点击包含异常检查的时间桶时，会将历史列表筛选为该桶的 `unhealthy` 记录，并同时传入 UTC `from` / `to`。历史接口的两个时间筛选边界均为包含关系；为避免相邻桶在边界处重复，客户端将 `to` 设置为下一桶起点之前的最后 1 纳秒。24h 桶范围为单个完整 UTC 小时，7d 桶范围为单个 UTC 日历日。没有异常记录的桶不可点击；筛选结果为空时显示「暂无巡检历史」。
 
 ### GET /tenant-health/history
 
-查询巡检历史，所有已认证角色可读取。支持 `tenant_id`、`status`（healthy/unhealthy）、`source`（manual/scheduled）、`from`、`to`（RFC3339，起止边界均包含）、`limit`（1–100，默认 50）和 `cursor`。结果按 `checked_at DESC, id DESC` 稳定分页，响应包含 `items` 和可选的 `next_cursor`；游标为不透明值，应原样传回，不要自行解码或构造。非法筛选、反向时间范围或非法游标返回 HTTP 400。
+查询巡检历史，所有已认证角色可读取。支持 `tenant_id`、`status`（healthy/unhealthy）、`source`（manual/scheduled）、`from`、`to`（RFC3339，支持纳秒精度，起止边界均包含）、`limit`（1–100，默认 50）和 `cursor`。结果按 `checked_at DESC, id DESC` 稳定分页，响应包含 `items` 和可选的 `next_cursor`；游标为不透明值，应原样传回，不要自行解码或构造。非法筛选、反向时间范围或非法游标返回 HTTP 400。

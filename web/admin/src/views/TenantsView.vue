@@ -6,6 +6,7 @@ import { useAdminPermissions } from '../permissions'
 import TenantDiscoveryDialog from '../components/TenantDiscoveryDialog.vue'
 import { canLoadNextPage, createRequestSequence, runLatestRequest } from '../utils/requestSequence'
 import { createTenantHealthTrendHistoryRange, isTenantHealthTrendBucketSelectable } from '../utils/healthTrend'
+import { createTenantHealthHistoryQuery, loadLatestTenantHealthTrend } from '../utils/healthTrendInteraction'
 
 interface DataSource {
   id: string
@@ -446,11 +447,13 @@ const healthTrendRequests = createRequestSequence()
 async function loadHealthTrends() {
   healthTrendsLoading.value = true
   const range = healthTrendsRange.value
-  await runLatestRequest(healthTrendRequests, async () => {
-    const { data } = await api.get<TenantHealthTrends>('/tenant-health/trends', { params: { range } })
+  await loadLatestTenantHealthTrend(healthTrendRequests, range, async requestedRange => {
+    const { data } = await api.get<TenantHealthTrends>('/tenant-health/trends', {
+      params: { range: requestedRange },
+    })
     return data
   }, {
-    onSuccess: data => { healthTrendBuckets.value = data.buckets ?? [] },
+    onSuccess: buckets => { healthTrendBuckets.value = buckets },
     onError: () => {
       healthTrendBuckets.value = []
       ElMessage.error('读取租户健康趋势失败')
@@ -517,33 +520,32 @@ const healthHistoryRequests = createRequestSequence()
 
 async function loadHealthHistory(next = false) {
   if (next && !canLoadNextPage(healthHistoryLoading.value, healthHistoryNext.value)) return
-  const requestID = healthHistoryRequests.begin()
   if (!next) {
     healthHistory.value = []
     healthHistoryNext.value = ''
   }
-  const query = {
-    limit: 20,
-    source: healthHistorySource.value || undefined,
-    status: healthHistoryStatus.value || undefined,
-    tenant_id: healthHistoryTenant.value || undefined,
-    from: healthHistoryTimeRange.value?.[0]?.toISOString(),
-    to: healthHistoryExactTo.value || healthHistoryTimeRange.value?.[1]?.toISOString(),
+  const query = createTenantHealthHistoryQuery({
+    source: healthHistorySource.value,
+    status: healthHistoryStatus.value,
+    tenantID: healthHistoryTenant.value,
+    timeRange: healthHistoryTimeRange.value,
+    exactTo: healthHistoryExactTo.value,
     cursor: next ? healthHistoryNext.value : undefined,
-  }
+  })
   healthHistoryLoading.value = true
-  try {
+  await runLatestRequest(healthHistoryRequests, async () => {
     const { data } = await api.get<{ items: TenantHealthHistory[]; next_cursor?: string }>('/tenant-health/history', {
       params: query,
     })
-    if (!healthHistoryRequests.isCurrent(requestID)) return
-    healthHistory.value = next ? [...healthHistory.value, ...data.items] : data.items
-    healthHistoryNext.value = data.next_cursor ?? ''
-  } catch {
-    if (healthHistoryRequests.isCurrent(requestID)) ElMessage.error('读取巡检历史失败')
-  } finally {
-    if (healthHistoryRequests.isCurrent(requestID)) healthHistoryLoading.value = false
-  }
+    return data
+  }, {
+    onSuccess: data => {
+      healthHistory.value = next ? [...healthHistory.value, ...data.items] : data.items
+      healthHistoryNext.value = data.next_cursor ?? ''
+    },
+    onError: () => { ElMessage.error('读取巡检历史失败') },
+    onFinally: () => { healthHistoryLoading.value = false },
+  })
 }
 
 function selectHealthTrendBucket(bucket: TenantHealthTrendBucket) {

@@ -23,20 +23,29 @@ export function createTenantHealthTrendHistoryRange(
   bucketStart: string,
   range: TenantHealthTrendRange,
 ): TenantHealthTrendHistoryRange {
+  if (range !== '24h' && range !== '7d') throw new Error('无效的趋势范围')
+  const pattern = range === '24h'
+    ? /^\d{4}-\d{2}-\d{2}T\d{2}:00:00(?:\.0+)?Z$/
+    : /^\d{4}-\d{2}-\d{2}T00:00:00(?:\.0+)?Z$/
+  if (!pattern.test(bucketStart)) throw new Error('趋势时间桶必须使用 UTC 边界')
   const start = new Date(bucketStart)
-  if (Number.isNaN(start.getTime())) throw new Error('无效的趋势时间桶')
-  const aligned = range === '24h'
-    ? start.getUTCMinutes() === 0 && start.getUTCSeconds() === 0 && start.getUTCMilliseconds() === 0
-    : start.getUTCHours() === 0 && start.getUTCMinutes() === 0
-      && start.getUTCSeconds() === 0 && start.getUTCMilliseconds() === 0
-  if (!aligned) throw new Error('趋势时间桶未对齐 UTC 边界')
+  if (
+    Number.isNaN(start.getTime())
+    || start.toISOString().slice(0, 19) !== bucketStart.slice(0, 19)
+  ) {
+    throw new Error('无效的趋势时间桶')
+  }
+
   const duration = range === '24h' ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000
-  const endExclusive = new Date(start.getTime() + duration)
-  const lastSecond = new Date(endExclusive.getTime() - 1000).toISOString()
+  const endExclusiveTime = start.getTime() + duration
+  const endExclusive = new Date(endExclusiveTime)
+  if (Number.isNaN(endExclusive.getTime())) throw new Error('趋势时间桶超出有效范围')
+
+  const lastSecond = new Date(endExclusiveTime - 1000).toISOString()
   return {
     from: start.toISOString(),
     to: lastSecond.replace(/\.000Z$/, '.999999999Z'),
-    pickerRange: [start, new Date(endExclusive.getTime() - 1)],
+    pickerRange: [start, new Date(endExclusiveTime - 1)],
   }
 }
 
