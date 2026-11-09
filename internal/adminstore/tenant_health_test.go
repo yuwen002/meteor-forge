@@ -283,3 +283,60 @@ func TestTenantHealthTrendsReturnsZeroFilledSeriesWithoutHistory(t *testing.T) {
 		t.Fatal("zero trend time should be rejected")
 	}
 }
+
+
+func TestTenantHealthListReportsConsecutiveFailuresAndLastSuccess(t *testing.T) {
+	store, err := Open(context.Background(), ":memory:", testKey)
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+
+	streakTenant := newTenantForHealthTest(t, store, "failure-streak")
+	noSuccessTenant := newTenantForHealthTest(t, store, "no-success")
+	recoveredTenant := newTenantForHealthTest(t, store, "recovered")
+	base := time.Date(2026, 11, 9, 1, 0, 0, 0, time.UTC)
+
+	record := func(tenantID, status string, at time.Time) {
+		t.Helper()
+		message := "connection successful"
+		if status == "unhealthy" { message = "connection check failed; verify the registered data source" }
+		if err := store.RecordTenantConnectionHealthWithSource(context.Background(), TenantConnectionHealth{
+			TenantID: tenantID, Status: status, CheckedAt: at, Message: message,
+		}, "scheduled"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A success resets the streak. For equal timestamps, the larger history ID is newer.
+	record(streakTenant.ID, "unhealthy", base)
+	record(streakTenant.ID, "healthy", base.Add(time.Minute))
+	record(streakTenant.ID, "unhealthy", base.Add(time.Minute))
+	record(streakTenant.ID, "unhealthy", base.Add(2*time.Minute))
+
+	record(noSuccessTenant.ID, "unhealthy", base)
+	record(noSuccessTenant.ID, "unhealthy", base.Add(time.Minute))
+	record(recoveredTenant.ID, "healthy", base.Add(2*time.Minute))
+
+	items, err := store.ListTenantConnectionHealth(context.Background())
+	if err != nil { t.Fatal(err) }
+	byTenant := make(map[string]TenantConnectionHealth, len(items))
+	for _, item := range items { byTenant[item.TenantID] = item }
+
+	streak := byTenant[streakTenant.ID]
+	if streak.ConsecutiveFailures != 2 {
+		t.Fatalf("consecutive failures=%d, want 2", streak.ConsecutiveFailures)
+	}
+	if streak.LastSuccessAt == nil || !streak.LastSuccessAt.Equal(base.Add(time.Minute)) {
+		t.Fatalf("last success=%v, want %s", streak.LastSuccessAt, base.Add(time.Minute))
+	}
+
+	noSuccess := byTenant[noSuccessTenant.ID]
+	if noSuccess.ConsecutiveFailures != 2 || noSuccess.LastSuccessAt != nil {
+		t.Fatalf("unexpected no-success streak: %+v", noSuccess)
+	}
+
+	recovered := byTenant[recoveredTenant.ID]
+	if recovered.ConsecutiveFailures != 0 || recovered.LastSuccessAt == nil ||
+		!recovered.LastSuccessAt.Equal(base.Add(2*time.Minute)) {
+		t.Fatalf("unexpected recovered health: %+v", recovered)
+	}
+}

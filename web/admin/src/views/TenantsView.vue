@@ -143,6 +143,8 @@ interface TenantHealth {
   checked_at: string
   duration_ms: number
   message: string
+  consecutive_failures: number
+  last_success_at: string | null
 }
 
 const { canManageTenants, canTestConnections, canRunMigrations } = useAdminPermissions()
@@ -667,6 +669,24 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
             {{ new Date(healthByTenant[row.id].checked_at).toLocaleString() }}
             <small> · {{ healthByTenant[row.id].duration_ms }} ms</small>
           </span>
+          <span v-else>—</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="连续失败（保留范围）" width="170">
+        <template #default="{ row }">
+          <el-tag v-if="healthByTenant[row.id] && healthByTenant[row.id].consecutive_failures > 0" type="danger" effect="plain">
+            {{ healthByTenant[row.id].consecutive_failures }} 次
+          </el-tag>
+          <span v-else-if="healthByTenant[row.id]">0 次</span>
+          <span v-else>—</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="最近成功" min-width="190">
+        <template #default="{ row }">
+          <span v-if="healthByTenant[row.id] && healthByTenant[row.id].last_success_at">
+            {{ new Date(healthByTenant[row.id].last_success_at).toLocaleString() }}
+          </span>
+          <span v-else-if="healthByTenant[row.id]" title="仅查询当前保留的巡检历史">保留范围内无成功记录</span>
           <span v-else>—</span>
         </template>
       </el-table-column>

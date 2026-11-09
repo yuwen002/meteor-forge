@@ -15,11 +15,13 @@ var ErrTenantHealthInvalidInput = errors.New("invalid tenant health input")
 
 // TenantConnectionHealth is the latest persisted connection-check result for a tenant.
 type TenantConnectionHealth struct {
-	TenantID   string    `json:"tenant_id"`
-	Status     string    `json:"status"`
-	CheckedAt  time.Time `json:"checked_at"`
-	DurationMS int64     `json:"duration_ms"`
-	Message    string    `json:"message"`
+	TenantID            string     `json:"tenant_id"`
+	Status              string     `json:"status"`
+	CheckedAt           time.Time  `json:"checked_at"`
+	DurationMS          int64      `json:"duration_ms"`
+	Message             string     `json:"message"`
+	ConsecutiveFailures int64      `json:"consecutive_failures"`
+	LastSuccessAt       *time.Time `json:"last_success_at,omitempty"`
 }
 
 // TenantHealthSettings controls the optional single-instance scheduled checker.
@@ -316,7 +318,17 @@ func normalizeTenantHealthMessage(message string) string {
 
 // ListTenantConnectionHealth returns the latest health result for each registered tenant.
 func (s *Store) ListTenantConnectionHealth(ctx context.Context) ([]TenantConnectionHealth, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT h.tenant_id, h.status, h.checked_at, h.duration_ms, h.message
+	rows, err := s.db.QueryContext(ctx, `SELECT h.tenant_id, h.status, h.checked_at, h.duration_ms, h.message,
+		(SELECT COUNT(*) FROM admin_tenant_connection_health_history f
+		 WHERE f.tenant_id = h.tenant_id AND f.status = 'unhealthy'
+		 AND NOT EXISTS (
+			SELECT 1 FROM admin_tenant_connection_health_history ok
+			WHERE ok.tenant_id = f.tenant_id AND ok.status = 'healthy'
+			AND (ok.checked_at > f.checked_at OR (ok.checked_at = f.checked_at AND ok.id > f.id))
+		 )),
+		(SELECT ok.checked_at FROM admin_tenant_connection_health_history ok
+		 WHERE ok.tenant_id = h.tenant_id AND ok.status = 'healthy'
+		 ORDER BY ok.checked_at DESC, ok.id DESC LIMIT 1)
 		FROM admin_tenant_connection_health h JOIN admin_tenants t ON t.id = h.tenant_id
 		ORDER BY h.checked_at DESC, h.tenant_id`)
 	if err != nil { return nil, fmt.Errorf("list tenant connection health: %w", err) }
@@ -325,11 +337,18 @@ func (s *Store) ListTenantConnectionHealth(ctx context.Context) ([]TenantConnect
 	for rows.Next() {
 		var item TenantConnectionHealth
 		var checked string
-		if err := rows.Scan(&item.TenantID, &item.Status, &checked, &item.DurationMS, &item.Message); err != nil {
+		var lastSuccess sql.NullString
+		if err := rows.Scan(&item.TenantID, &item.Status, &checked, &item.DurationMS, &item.Message,
+			&item.ConsecutiveFailures, &lastSuccess); err != nil {
 			return nil, fmt.Errorf("scan tenant connection health: %w", err)
 		}
 		item.CheckedAt, err = time.Parse(time.RFC3339Nano, checked)
 		if err != nil { return nil, fmt.Errorf("parse tenant connection health timestamp: %w", err) }
+		if lastSuccess.Valid {
+			parsed, parseErr := time.Parse(time.RFC3339Nano, lastSuccess.String)
+			if parseErr != nil { return nil, fmt.Errorf("parse last successful tenant health timestamp: %w", parseErr) }
+			item.LastSuccessAt = &parsed
+		}
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil { return nil, fmt.Errorf("iterate tenant connection health: %w", err) }
