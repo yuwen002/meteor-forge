@@ -13,12 +13,26 @@ type fakePinger func(context.Context) error
 
 func (f fakePinger) PingContext(ctx context.Context) error { return f(ctx) }
 
+type fakeTimeoutError struct{}
+
+func (fakeTimeoutError) Error() string   { return "driver operation expired" }
+func (fakeTimeoutError) Timeout() bool   { return true }
+func (fakeTimeoutError) Temporary() bool { return true }
+
 func TestClassifyHealthError(t *testing.T) {
  cases := []struct{ in error; want HealthErrorCode }{
- {nil,HealthErrorNone},{context.DeadlineExceeded,HealthErrorTimeout},{context.Canceled,HealthErrorCanceled},
- {errors.New("Access denied for user"),HealthErrorAuthentication},{errors.New("password authentication failed"),HealthErrorAuthentication},
- {errors.New("connection refused"),HealthErrorConnectionRefused},{errors.New("network is unreachable"),HealthErrorNetworkUnreachable},
- {errors.New("lookup db: no such host"),HealthErrorDNS},{errors.New("private driver detail"),HealthErrorUnknown},
+ {nil,HealthErrorNone},
+ {context.DeadlineExceeded,HealthErrorTimeout},
+ {errors.Join(errors.New("wrapped operation"), context.DeadlineExceeded),HealthErrorTimeout},
+ {context.Canceled,HealthErrorCanceled},
+ {fakeTimeoutError{},HealthErrorTimeout},
+ {errors.New("Access denied for user"),HealthErrorAuthentication},
+ {errors.New("PASSWORD AUTHENTICATION FAILED"),HealthErrorAuthentication},
+ {errors.New("connection to server failed: Connection refused"),HealthErrorConnectionRefused},
+ {errors.New("network is unreachable"),HealthErrorNetworkUnreachable},
+ {errors.New("lookup db: no such host"),HealthErrorDNS},
+ {errors.New("could not translate host name \"db.internal\""),HealthErrorDNS},
+ {errors.New("private driver detail"),HealthErrorUnknown},
  }
  for _,tc:=range cases { if got:=ClassifyHealthError(tc.in); got!=tc.want { t.Errorf("ClassifyHealthError(%v)=%q want %q",tc.in,got,tc.want) } }
 }
