@@ -171,9 +171,11 @@ func (s *Server) runTenantHealthCheckWithOptions(ctx context.Context, tenantID s
 		Status: tenant.HealthStatusUnhealthy,
 		CheckedAt: started,
 		Message: "connection check failed; verify the registered data source",
+		ErrorCode: tenant.HealthErrorUnknown,
 	}
 	if s.healthChecker == nil || s.pools == nil || s.store == nil {
 		result.Message = "connection check is unavailable"
+		result.ErrorCode = tenant.HealthErrorUnavailable
 	} else {
 		checkCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
