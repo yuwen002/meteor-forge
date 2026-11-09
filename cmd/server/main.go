@@ -14,6 +14,16 @@ import (
 	"github.com/yuwen002/meteor-forge/internal/adminapi"
 )
 
+
+// countForeignKeyViolations groups legacy metadata integrity findings by table.
+func countForeignKeyViolations(violations []adminstore.ForeignKeyViolation) map[string]int {
+	counts := make(map[string]int)
+	for _, violation := range violations {
+		counts[violation.Table]++
+	}
+	return counts
+}
+
 func main() {
 	addr := os.Getenv("METEOR_ADMIN_ADDR")
 	if addr == "" {
@@ -29,6 +39,17 @@ func main() {
 	startupCancel()
 	if err != nil {
 		log.Fatalf("initialize management metadata store: %v", err)
+	}
+	integrityCtx, integrityCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	violations, integrityErr := store.CheckForeignKeys(integrityCtx)
+	integrityCancel()
+	if integrityErr != nil {
+		log.Printf("check management metadata foreign keys: %v", integrityErr)
+	} else if len(violations) > 0 {
+		log.Printf("management metadata contains %d pre-existing foreign-key violations; records were preserved", len(violations))
+		for table, count := range countForeignKeyViolations(violations) {
+			log.Printf("management metadata foreign-key violations: table=%s count=%d", table, count)
+		}
 	}
 	bootstrapCtx, bootstrapCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := initializeAdministrator(bootstrapCtx, store); err != nil {

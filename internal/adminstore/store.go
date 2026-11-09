@@ -83,6 +83,21 @@ func Open(ctx context.Context, path, keyHex string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	store := &Store{db: db, aead: aead, path: path}
+	// SQLite foreign-key enforcement is connection-local and must be enabled
+	// before any schema transaction starts.
+	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("enable metadata foreign keys: %w", err)
+	}
+	var foreignKeysEnabled int
+	if err := db.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&foreignKeysEnabled); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("verify metadata foreign keys: %w", err)
+	}
+	if foreignKeysEnabled != 1 {
+		_ = db.Close()
+		return nil, errors.New("metadata SQLite foreign-key enforcement is unavailable")
+	}
 	if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout = 5000"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("configure metadata database: %w", err)

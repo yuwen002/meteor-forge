@@ -175,3 +175,150 @@ func TestTenantHealthMessageNormalizationNeverPersistsRawDetails(t *testing.T) {
 		}
 	}
 }
+
+
+func TestOpenEnablesForeignKeysAndEnforcesRelationships(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	var enabled int
+	if err := store.db.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&enabled); err != nil {
+		t.Fatal(err)
+	}
+	if enabled != 1 {
+		t.Fatalf("PRAGMA foreign_keys=%d, want 1", enabled)
+	}
+
+	_, err := store.db.ExecContext(ctx, `INSERT INTO admin_tenants
+		(id,name,code,data_source_id,status,created_at,updated_at)
+		VALUES ('orphan-tenant','orphan','orphan','missing-source','active','now','now')`)
+	if err == nil {
+		t.Fatal("expected tenant insert with missing data source to fail")
+	}
+
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO admin_data_sources
+		(id,name,driver,dsn_ciphertext,created_at,updated_at)
+		VALUES ('source-1','source','sqlite',X'01','now','now')`); err != nil {
+		t.Fatalf("insert data source: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO admin_tenants
+		(id,name,code,data_source_id,status,created_at,updated_at)
+		VALUES ('tenant-1','tenant','tenant','source-1','active','now','now')`); err != nil {
+		t.Fatalf("insert tenant: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO admin_tenant_connection_health
+		(tenant_id,status,checked_at,duration_ms,message)
+		VALUES ('tenant-1','healthy','now',1,'')`); err != nil {
+		t.Fatalf("insert tenant health: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, "DELETE FROM admin_tenants WHERE id = 'tenant-1'"); err != nil {
+		t.Fatalf("delete tenant: %v", err)
+	}
+	var healthRows int
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM admin_tenant_connection_health WHERE tenant_id = 'tenant-1'").Scan(&healthRows); err != nil {
+		t.Fatal(err)
+	}
+	if healthRows != 0 {
+		t.Fatalf("cascaded health rows=%d, want 0", healthRows)
+	}
+	violations, err := store.CheckForeignKeys(ctx)
+	if err != nil {
+		t.Fatalf("CheckForeignKeys(): %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("unexpected foreign-key violations: %+v", violations)
+	}
+}
+
+func TestCheckForeignKeysReportsLegacyOrphansWithoutDeletingData(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy-orphan.db")
+	store, err := Open(ctx, path, testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	legacyDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacyDB.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		_ = legacyDB.Close()
+		t.Fatal(err)
+	}
+	if _, err := legacyDB.ExecContext(ctx, `INSERT INTO admin_tenants
+		(id,name,code,data_source_id,status,created_at,updated_at)
+		VALUES ('legacy-orphan','legacy','legacy','missing-source','active','now','now')`); err != nil {
+		_ = legacyDB.Close()
+		t.Fatalf("seed legacy orphan: %v", err)
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = Open(ctx, path, testKey)
+	if err != nil {
+		t.Fatalf("Open() must preserve legacy data and allow inspection: %v", err)
+	}
+	defer store.Close()
+	violations, err := store.CheckForeignKeys(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 1 {
+		t.Fatalf("foreign-key violations=%d, want 1: %+v", len(violations), violations)
+	}
+	if violations[0].Table != "admin_tenants" || violations[0].Parent != "admin_data_sources" {
+		t.Fatalf("unexpected violation: %+v", violations[0])
+	}
+	var preserved int
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM admin_tenants WHERE id='legacy-orphan'").Scan(&preserved); err != nil {
+		t.Fatal(err)
+	}
+	if preserved != 1 {
+		t.Fatalf("legacy orphan rows preserved=%d, want 1", preserved)
+	}
+}
+
+func TestRepeatedOpenPreservesInitializedMetadata(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "repeated-open.db")
+	for attempt := 0; attempt < 3; attempt++ {
+		store, err := Open(ctx, path, testKey)
+		if err != nil {
+			t.Fatalf("Open() attempt %d: %v", attempt+1, err)
+		}
+		version, err := store.SchemaVersion(ctx)
+		if err != nil {
+			_ = store.Close()
+			t.Fatal(err)
+		}
+		if version != 17 {
+			_ = store.Close()
+			t.Fatalf("schema version after open=%d, want 17", version)
+		}
+		if attempt == 0 {
+			if _, err := store.db.ExecContext(ctx, `INSERT INTO admin_data_sources
+				(id,name,driver,dsn_ciphertext,created_at,updated_at)
+				VALUES ('persistent-source','persistent','sqlite',X'01','now','now')`); err != nil {
+				_ = store.Close()
+				t.Fatal(err)
+			}
+		}
+		var count int
+		if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM admin_data_sources WHERE id='persistent-source'").Scan(&count); err != nil {
+			_ = store.Close()
+			t.Fatal(err)
+		}
+		if attempt > 0 && count != 1 {
+			_ = store.Close()
+			t.Fatalf("persistent data count after restart=%d, want 1", count)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
