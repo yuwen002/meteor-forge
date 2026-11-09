@@ -286,6 +286,20 @@ func TestCheckForeignKeysReportsLegacyOrphansWithoutDeletingData(t *testing.T) {
 	}
 }
 
+
+func TestMetadataMigrationRegistryIsOrderedAndComplete(t *testing.T) {
+	if err := validateMetadataMigrationRegistry(); err != nil {
+		t.Fatalf("validateMetadataMigrationRegistry(): %v", err)
+	}
+	if got := metadataSchemaVersion(); got != currentMetadataSchemaVersion {
+		t.Fatalf("metadataSchemaVersion()=%d, want %d", got, currentMetadataSchemaVersion)
+	}
+	if len(metadataSchemaMigrations) != currentMetadataSchemaVersion-metadataSchemaMigrations[0].Version+1 {
+		t.Fatalf("migration registry has a gap: %+v", metadataSchemaMigrations)
+	}
+}
+
+
 func TestOpenRejectsNewerMetadataSchemaWithoutModifyingIt(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "future-schema.db")

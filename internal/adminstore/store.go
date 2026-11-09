@@ -519,26 +519,6 @@ func (s *Store) migrate(ctx context.Context) error {
 		ON admin_security_audit_events(occurred_at DESC, id DESC)`); err != nil {
 		return fmt.Errorf("index security audit events: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
-		VALUES (11, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return fmt.Errorf("record metadata schema version: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
-		VALUES (12, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return fmt.Errorf("record security audit schema version: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
-		VALUES (13, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return fmt.Errorf("record tenant migration batch audit schema version: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
-		VALUES (14, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return fmt.Errorf("record tenant lifecycle audit schema version: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
-		VALUES (15, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return fmt.Errorf("record tenant connection health schema version: %w", err)
-	}
 
 	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admin_tenant_health_settings (
 		id INTEGER PRIMARY KEY CHECK(id = 1),
@@ -577,13 +557,8 @@ func (s *Store) migrate(ctx context.Context) error {
 	for _, table := range []string{"admin_tenant_connection_health", "admin_tenant_connection_health_history"} {
 		if err := ensureTenantHealthErrorCodeColumn(ctx, tx, table); err != nil { return err }
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
-		VALUES (16, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return fmt.Errorf("record tenant health scheduling schema version: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
-		VALUES (17, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return fmt.Errorf("record tenant health error classification schema version: %w", err)
+	if err := recordMetadataSchemaMigrations(ctx, tx); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
