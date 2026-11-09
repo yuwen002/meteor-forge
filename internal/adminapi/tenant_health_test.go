@@ -101,11 +101,12 @@ func TestTenantHealthCheckPersistsSingleTenantResult(t *testing.T) {
 		TenantID string `json:"tenant_id"`
 		Status string `json:"status"`
 		Message string `json:"message"`
-	}
+		ErrorCode string `json:"error_code"`
+}
 	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.TenantID != item.ID || result.Status != "healthy" || result.Message != "connection successful" {
+	if result.TenantID != item.ID || result.Status != "healthy" || result.Message != "connection successful" || result.ErrorCode != "none" {
 		t.Fatalf("unexpected health check result: %+v", result)
 	}
 	persisted, err := store.ListTenantConnectionHealth(context.Background())

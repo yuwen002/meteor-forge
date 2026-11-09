@@ -33,6 +33,33 @@ func TestTenantHealthSettingsDefaultsAndValidation(t *testing.T) {
 	if _, err := store.UpdateTenantHealthSettings(context.Background(), got); err != nil { t.Fatalf("valid upper bounds rejected: %v", err) }
 }
 
+func TestTenantHealthErrorCodeIsPersistedAndWhitelisted(t *testing.T) {
+	store, err := Open(context.Background(), ":memory:", testKey)
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	tenant := newTenantForHealthTest(t, store, "error-code")
+	stamp := time.Date(2026, 11, 9, 1, 0, 0, 0, time.UTC)
+	if err := store.RecordTenantConnectionHealth(context.Background(), TenantConnectionHealth{
+		TenantID: tenant.ID, Status: "unhealthy", CheckedAt: stamp,
+		Message: "connection check failed; verify the registered data source", ErrorCode: "authentication_failed",
+	}); err != nil { t.Fatal(err) }
+	latest, err := store.ListTenantConnectionHealth(context.Background())
+	if err != nil { t.Fatal(err) }
+	if len(latest) != 1 || latest[0].ErrorCode != "authentication_failed" { t.Fatalf("latest code not persisted: %+v", latest) }
+	history, err := store.ListTenantConnectionHealthHistory(context.Background(), TenantHealthHistoryFilter{TenantID: tenant.ID})
+	if err != nil { t.Fatal(err) }
+	if len(history.Items) != 1 || history.Items[0].ErrorCode != "authentication_failed" { t.Fatalf("history code not persisted: %+v", history) }
+	if err := store.RecordTenantConnectionHealth(context.Background(), TenantConnectionHealth{
+		TenantID: tenant.ID, Status: "unhealthy", CheckedAt: stamp.Add(time.Second),
+		Message: "postgres://root:secret@db", ErrorCode: "driver_raw_error",
+	}); err != nil { t.Fatal(err) }
+	history, err = store.ListTenantConnectionHealthHistory(context.Background(), TenantHealthHistoryFilter{TenantID: tenant.ID})
+	if err != nil { t.Fatal(err) }
+	if history.Items[0].ErrorCode != "unknown" || history.Items[0].Message != "connection check failed; verify the registered data source" {
+		t.Fatalf("unsafe error metadata not normalized: %+v", history.Items[0])
+	}
+}
+
 func TestTenantHealthHistoryAndLatestAreAtomicAndPaginated(t *testing.T) {
 	store, err := Open(context.Background(), ":memory:", testKey)
 	if err != nil { t.Fatal(err) }

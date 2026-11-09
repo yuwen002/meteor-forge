@@ -135,6 +135,7 @@ interface TenantHealthHistory {
   checked_at: string
   duration_ms: number
   message: string
+  error_code: string
 }
 
 interface TenantHealth {
@@ -143,6 +144,7 @@ interface TenantHealth {
   checked_at: string
   duration_ms: number
   message: string
+  error_code: string
   consecutive_failures: number
   last_success_at: string | null
 }
@@ -224,6 +226,30 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+function tenantHealthErrorLabel(code?: string): string {
+  const labels: Record<string, string> = {
+    none: '无错误', timeout: '连接超时', canceled: '检查已取消',
+    authentication_failed: '认证失败', connection_refused: '连接被拒绝',
+    network_unreachable: '网络不可达', dns_resolution_failed: 'DNS 解析失败',
+    unavailable: '巡检不可用', unknown: '未知连接错误',
+  }
+  return labels[code ?? 'unknown'] ?? '未知连接错误'
+}
+
+function tenantHealthDiagnosis(code?: string): string {
+  const advice: Record<string, string> = {
+    timeout: '检查数据库负载、防火墙策略和网络延迟；确认目标地址与端口可达。',
+    canceled: '本次检查被请求取消或服务关闭中断；确认调度任务仍在运行后再重新巡检。',
+    authentication_failed: '核对数据源账号、密码及认证方式，并确认账号未过期或被锁定。',
+    connection_refused: '确认数据库服务已启动并监听目标端口，检查端口映射、防火墙和安全组规则。',
+    network_unreachable: '检查应用主机路由、网络接口、防火墙及目标网段连通性。',
+    dns_resolution_failed: '检查数据源主机名、DNS 配置和解析服务是否正常。',
+    unavailable: '检查健康巡检组件和数据源连接池是否已正确初始化。',
+    unknown: '无法根据当前错误安全地确定原因；请核对数据源配置和数据库服务状态，并在受控环境查看服务端日志。',
+  }
+  return advice[code ?? 'unknown'] ?? advice.unknown
 }
 
 function tenantHealthLastSuccessLabel(item: TenantHealth): string {
@@ -927,7 +953,21 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
         <el-descriptions-item label="检查时间（本地）">{{ new Date(selectedHealthHistory.checked_at).toLocaleString() }}</el-descriptions-item>
         <el-descriptions-item label="检查时间（UTC）">{{ new Date(selectedHealthHistory.checked_at).toISOString() }}</el-descriptions-item>
         <el-descriptions-item label="执行耗时">{{ selectedHealthHistory.duration_ms }} ms</el-descriptions-item>
+        <el-descriptions-item label="错误分类">
+          <el-tag :type="selectedHealthHistory.error_code === 'none' ? 'success' : 'warning'">
+            {{ tenantHealthErrorLabel(selectedHealthHistory.error_code) }}
+          </el-tag>
+        </el-descriptions-item>
       </el-descriptions>
+      <el-alert
+        v-if="selectedHealthHistory.status === 'unhealthy'"
+        title="排查建议"
+        :description="tenantHealthDiagnosis(selectedHealthHistory.error_code)"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="health-history-diagnosis"
+      />
       <section class="health-history-detail-message">
         <strong>巡检结果摘要</strong>
         <pre>{{ selectedHealthHistory.message || '未提供结果摘要' }}</pre>
