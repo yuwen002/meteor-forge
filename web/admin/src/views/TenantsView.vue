@@ -580,7 +580,7 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
 <template>
   <div class="page-heading">
     <div>
-      <div class="eyebrow">TENANT CONTROL PLANE</div>
+      <div class="eyebrow">租户控制台</div>
       <h1>多租户管理</h1>
       <p>维护租户标识与目标数据源映射。每个租户映射到一个已登记的数据源，连接凭据仍由数据源管理统一加密保管。</p>
     </div>
