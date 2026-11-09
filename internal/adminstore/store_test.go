@@ -288,7 +288,7 @@ func TestCheckForeignKeysReportsLegacyOrphansWithoutDeletingData(t *testing.T) {
 
 
 func TestMetadataMigrationRegistryIsOrderedAndComplete(t *testing.T) {
-	if err := validateMetadataMigrationRegistry(); err != nil {
+	if err := validateMetadataMigrationRegistry(metadataSchemaMigrations, currentMetadataSchemaVersion); err != nil {
 		t.Fatalf("validateMetadataMigrationRegistry(): %v", err)
 	}
 	if got := metadataSchemaVersion(); got != currentMetadataSchemaVersion {
