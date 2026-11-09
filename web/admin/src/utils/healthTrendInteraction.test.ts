@@ -54,7 +54,7 @@ describe('租户健康趋势请求交互', () => {
     const onError = vi.fn(() => { buckets = [] })
     const onFinally = vi.fn(() => { loading = false })
 
-    const applied = await loadLatestTenantHealthTrend(sequence, '7d', async () => {
+    const applied = await loadLatestTenantHealthTrend<string>(sequence, '7d', async () => {
       throw new Error('network unavailable')
     }, {
       onSuccess: value => { buckets = value },
