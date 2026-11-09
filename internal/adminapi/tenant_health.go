@@ -199,7 +199,12 @@ func (s *Server) runTenantHealthCheckWithOptions(ctx context.Context, tenantID s
 		} else {
 			result.DurationMS = time.Since(started).Milliseconds()
 			result.ErrorCode = tenant.ClassifyHealthError(openErr)
-			if result.ErrorCode == tenant.HealthErrorTimeout { result.Message = "connection check timed out" } else if result.ErrorCode == tenant.HealthErrorCanceled { result.Message = "connection check canceled" }
+			switch result.ErrorCode {
+			case tenant.HealthErrorTimeout:
+				result.Message = "connection check timed out"
+			case tenant.HealthErrorCanceled:
+				result.Message = "connection check canceled"
+			}
 		}
 	}
 	// A canceled request or scheduler shutdown is not a failed health result.
