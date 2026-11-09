@@ -150,7 +150,12 @@ func (c *HealthChecker) Check(ctx context.Context, tenantID string, db Pinger) H
 		return result
 	}
 	if checkCtx.Err() != nil { result.ErrorCode = ClassifyHealthError(checkCtx.Err()) } else { result.ErrorCode = ClassifyHealthError(err) }
-	if result.ErrorCode == HealthErrorTimeout { result.Message = "connection check timed out" } else if result.ErrorCode == HealthErrorCanceled { result.Message = "connection check canceled" }
+	switch result.ErrorCode {
+	case HealthErrorTimeout:
+		result.Message = "connection check timed out"
+	case HealthErrorCanceled:
+		result.Message = "connection check canceled"
+	}
 	return result
 }
 
