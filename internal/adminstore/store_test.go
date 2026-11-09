@@ -206,6 +206,9 @@ func TestOpenEnablesForeignKeysAndEnforcesRelationships(t *testing.T) {
 		VALUES ('tenant-1','tenant','tenant','source-1','active','now','now')`); err != nil {
 		t.Fatalf("insert tenant: %v", err)
 	}
+	if _, err := store.db.ExecContext(ctx, "DELETE FROM admin_data_sources WHERE id = 'source-1'"); err == nil {
+		t.Fatal("expected data source referenced by tenant to be protected")
+	}
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO admin_tenant_connection_health
 		(tenant_id,status,checked_at,duration_ms,message)
 		VALUES ('tenant-1','healthy','now',1,'')`); err != nil {
