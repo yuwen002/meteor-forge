@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -502,5 +503,97 @@ func TestMetadataMigrationRegistryRejectsMissingUpForNewVersion(t *testing.T) {
 	migrations = append(migrations, metadataSchemaMigration{Version: 18, Name: "缺少执行函数"})
 	if err := validateMetadataMigrationRegistry(migrations, 18); err == nil || !strings.Contains(err.Error(), "has no Up function") {
 		t.Fatalf("expected missing Up validation error, got %v", err)
+	}
+}
+
+
+func TestMetadataMigrationRunnerSerializesConcurrentStarts(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "concurrent-migrations.db")
+	openDB := func() *sql.DB {
+		db, err := sql.Open("sqlite", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
+		if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout = 5000"); err != nil {
+			_ = db.Close()
+			t.Fatal(err)
+		}
+		return db
+	}
+	seed := openDB()
+	if _, err := seed.ExecContext(ctx, `CREATE TABLE admin_schema_migrations (
+		version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	for version := 11; version <= legacyMetadataSchemaVersion; version++ {
+		if _, err := seed.ExecContext(ctx, "INSERT INTO admin_schema_migrations(version, applied_at) VALUES (?, 'legacy')", version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db1, db2 := openDB(), openDB()
+	defer db1.Close()
+	defer db2.Close()
+
+	var upCalls atomic.Int32
+	upEntered := make(chan struct{})
+	releaseUp := make(chan struct{})
+	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations...)
+	migrations = append(migrations, metadataSchemaMigration{
+		Version: 18, Name: "并发迁移测试",
+		Up: func(ctx context.Context, tx *sql.Tx) error {
+			upCalls.Add(1)
+			close(upEntered)
+			<-releaseUp
+			_, err := tx.ExecContext(ctx, "CREATE TABLE concurrent_v18_marker (id INTEGER PRIMARY KEY)")
+			return err
+		},
+	})
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for _, db := range []*sql.DB{db1, db2} {
+		go func(db *sql.DB) {
+			<-start
+			results <- applyMetadataSchemaMigrations(ctx, db, migrations, 18)
+		}(db)
+	}
+	close(start)
+	select {
+	case <-upEntered:
+	case <-time.After(3 * time.Second):
+		close(releaseUp)
+		t.Fatal("no migration runner entered Up")
+	}
+	// Let the second runner reach the SQLite writer lock while the first
+	// runner keeps its transaction open.
+	time.Sleep(150 * time.Millisecond)
+	close(releaseUp)
+
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-results:
+			if err != nil {
+				t.Fatalf("concurrent migration runner %d: %v", i+1, err)
+			}
+		case <-time.After(7 * time.Second):
+			t.Fatal("concurrent migration runners did not finish")
+		}
+	}
+	if got := upCalls.Load(); got != 1 {
+		t.Fatalf("migration Up called %d times, want exactly once", got)
+	}
+	var version int
+	if err := db1.QueryRowContext(ctx, "SELECT MAX(version) FROM admin_schema_migrations").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 18 {
+		t.Fatalf("schema version after concurrent starts=%d, want 18", version)
 	}
 }
