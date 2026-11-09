@@ -226,6 +226,12 @@ async function load() {
   }
 }
 
+function tenantHealthLastSuccessLabel(item: TenantHealth): string {
+  if (!item.last_success_at) return '保留范围内无成功记录'
+  const checkedAt = new Date(item.last_success_at)
+  return Number.isNaN(checkedAt.getTime()) ? '时间不可用' : checkedAt.toLocaleString()
+}
+
 function openCreate() {
   editingID.value = ''
   Object.assign(form, {
@@ -683,10 +689,7 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
       </el-table-column>
       <el-table-column label="最近成功" min-width="190">
         <template #default="{ row }">
-          <span v-if="healthByTenant[row.id] && healthByTenant[row.id].last_success_at">
-            {{ new Date(healthByTenant[row.id].last_success_at).toLocaleString() }}
-          </span>
-          <span v-else-if="healthByTenant[row.id]" title="仅查询当前保留的巡检历史">保留范围内无成功记录</span>
+          <span v-if="healthByTenant[row.id]">{{ tenantHealthLastSuccessLabel(healthByTenant[row.id]) }}</span>
           <span v-else>—</span>
         </template>
       </el-table-column>

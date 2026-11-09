@@ -8,7 +8,7 @@ describe('租户连续失败诊断展示', () => {
     expect(tenantView).toContain('连续失败（保留范围）')
     expect(tenantView).toContain('最近成功')
     expect(tenantView).toContain('healthByTenant[row.id].consecutive_failures')
-    expect(tenantView).toContain('healthByTenant[row.id].last_success_at')
+    expect(tenantView).toContain('tenantHealthLastSuccessLabel(healthByTenant[row.id])')
     expect(tenantView).toContain('保留范围内无成功记录')
   })
 })
