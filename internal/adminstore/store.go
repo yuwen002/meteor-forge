@@ -560,7 +560,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := recordMetadataSchemaMigrations(ctx, tx); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit legacy metadata schema bootstrap: %w", err)
+	}
+	return applyMetadataSchemaMigrations(ctx, s.db, metadataSchemaMigrations, currentMetadataSchemaVersion)
 }
 
 // checkMetadataSchemaCompatibility prevents an older binary from modifying a

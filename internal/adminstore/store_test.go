@@ -393,3 +393,114 @@ func TestRepeatedOpenPreservesInitializedMetadata(t *testing.T) {
 		}
 	}
 }
+
+
+func TestMetadataMigrationRunnerCommitsEachVersionAndIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, `CREATE TABLE admin_schema_migrations (
+		version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	for version := 11; version <= legacyMetadataSchemaVersion; version++ {
+		if _, err := db.ExecContext(ctx, "INSERT INTO admin_schema_migrations(version, applied_at) VALUES (?, 'legacy')", version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	called := false
+	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations...)
+	migrations = append(migrations, metadataSchemaMigration{
+		Version: 18, Name: "迁移执行器测试",
+		Up: func(ctx context.Context, tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, "CREATE TABLE migration_v18_marker (id INTEGER PRIMARY KEY)"); err != nil {
+				return err
+			}
+			called = true
+			return nil
+		},
+	})
+	if err := applyMetadataSchemaMigrations(ctx, db, migrations, 18); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	if !called {
+		t.Fatal("migration Up function was not called")
+	}
+	var version int
+	if err := db.QueryRowContext(ctx, "SELECT MAX(version) FROM admin_schema_migrations").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 18 {
+		t.Fatalf("schema version=%d, want 18", version)
+	}
+	if err := applyMetadataSchemaMigrations(ctx, db, migrations, 18); err != nil {
+		t.Fatalf("repeat migration: %v", err)
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM admin_schema_migrations WHERE version=18").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("version 18 records=%d, want 1", count)
+	}
+}
+
+func TestMetadataMigrationRunnerRollsBackFailedVersion(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, `CREATE TABLE admin_schema_migrations (
+		version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	for version := 11; version <= legacyMetadataSchemaVersion; version++ {
+		if _, err := db.ExecContext(ctx, "INSERT INTO admin_schema_migrations(version, applied_at) VALUES (?, 'legacy')", version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations...)
+	migrations = append(migrations, metadataSchemaMigration{
+		Version: 18, Name: "失败迁移测试",
+		Up: func(ctx context.Context, tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, "CREATE TABLE should_rollback (id INTEGER PRIMARY KEY)"); err != nil {
+				return err
+			}
+			return errors.New("intentional migration failure")
+		},
+	})
+	if err := applyMetadataSchemaMigrations(ctx, db, migrations, 18); err == nil {
+		t.Fatal("expected migration failure")
+	}
+	var version int
+	if err := db.QueryRowContext(ctx, "SELECT MAX(version) FROM admin_schema_migrations").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != legacyMetadataSchemaVersion {
+		t.Fatalf("schema version after rollback=%d, want %d", version, legacyMetadataSchemaVersion)
+	}
+	var tableCount int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='should_rollback'").Scan(&tableCount); err != nil {
+		t.Fatal(err)
+	}
+	if tableCount != 0 {
+		t.Fatal("failed migration left schema changes behind")
+	}
+}
+
+func TestMetadataMigrationRegistryRejectsMissingUpForNewVersion(t *testing.T) {
+	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations...)
+	migrations = append(migrations, metadataSchemaMigration{Version: 18, Name: "缺少执行函数"})
+	if err := validateMetadataMigrationRegistry(migrations, 18); err == nil || !strings.Contains(err.Error(), "has no Up function") {
+		t.Fatalf("expected missing Up validation error, got %v", err)
+	}
+}
