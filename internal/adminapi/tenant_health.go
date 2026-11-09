@@ -196,11 +196,8 @@ func (s *Server) runTenantHealthCheckWithOptions(ctx context.Context, tenantID s
 			}
 		} else {
 			result.DurationMS = time.Since(started).Milliseconds()
-			if errors.Is(openErr, context.DeadlineExceeded) {
-				result.Message = "connection check timed out"
-			} else if errors.Is(openErr, context.Canceled) {
-				result.Message = "connection check canceled"
-			}
+			result.ErrorCode = tenant.ClassifyHealthError(openErr)
+			if result.ErrorCode == tenant.HealthErrorTimeout { result.Message = "connection check timed out" } else if result.ErrorCode == tenant.HealthErrorCanceled { result.Message = "connection check canceled" }
 		}
 	}
 	// A canceled request or scheduler shutdown is not a failed health result.
@@ -216,6 +213,7 @@ func (s *Server) runTenantHealthCheckWithOptions(ctx context.Context, tenantID s
 		CheckedAt: result.CheckedAt,
 		DurationMS: result.DurationMS,
 		Message: result.Message,
+		ErrorCode: string(result.ErrorCode),
 	}, source)
 	if err != nil {
 		return tenant.HealthResult{}, errors.New("unable to persist tenant connection health")

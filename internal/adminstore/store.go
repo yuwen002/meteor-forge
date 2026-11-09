@@ -554,13 +554,37 @@ func (s *Store) migrate(ctx context.Context) error {
 		ON admin_tenant_connection_health_history(checked_at DESC, id DESC)`); err != nil {
 		return fmt.Errorf("index tenant connection health history by time: %w", err)
 	}
+	for _, table := range []string{"admin_tenant_connection_health", "admin_tenant_connection_health_history"} {
+		if err := ensureTenantHealthErrorCodeColumn(ctx, tx, table); err != nil { return err }
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
 		VALUES (16, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("record tenant health scheduling schema version: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
+		VALUES (17, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("record tenant health error classification schema version: %w", err)
+	}
 	return tx.Commit()
 }
 
+func ensureTenantHealthErrorCodeColumn(ctx context.Context, tx *sql.Tx, table string) error {
+	rows, err := tx.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil { return fmt.Errorf("inspect %s schema: %w", table, err) }
+	has := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, typ string
+		var def sql.NullString
+		if err := rows.Scan(&cid,&name,&typ,&notNull,&def,&primaryKey); err != nil { rows.Close(); return fmt.Errorf("scan %s schema: %w",table,err) }
+		if name=="error_code" { has=true }
+	}
+	if err:=rows.Err(); err!=nil { rows.Close(); return fmt.Errorf("iterate %s schema: %w",table,err) }
+	if err:=rows.Close(); err!=nil { return fmt.Errorf("close %s schema inspection: %w",table,err) }
+	if has { return nil }
+	if _,err:=tx.ExecContext(ctx,"ALTER TABLE "+table+" ADD COLUMN error_code TEXT NOT NULL DEFAULT 'unknown'"); err!=nil { return fmt.Errorf("add error code to %s: %w",table,err) }
+	return nil
+}
 func (s *Store) encrypt(plain string) ([]byte, error) {
 	nonce := make([]byte, s.aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {

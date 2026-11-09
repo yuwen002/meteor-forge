@@ -13,6 +13,15 @@ type fakePinger func(context.Context) error
 
 func (f fakePinger) PingContext(ctx context.Context) error { return f(ctx) }
 
+func TestClassifyHealthError(t *testing.T) {
+ cases := []struct{ in error; want HealthErrorCode }{
+ {nil,HealthErrorNone},{context.DeadlineExceeded,HealthErrorTimeout},{context.Canceled,HealthErrorCanceled},
+ {errors.New("Access denied for user"),HealthErrorAuthentication},{errors.New("password authentication failed"),HealthErrorAuthentication},
+ {errors.New("connection refused"),HealthErrorConnectionRefused},{errors.New("network is unreachable"),HealthErrorNetworkUnreachable},
+ {errors.New("lookup db: no such host"),HealthErrorDNS},{errors.New("private driver detail"),HealthErrorUnknown},
+ }
+ for _,tc:=range cases { if got:=ClassifyHealthError(tc.in); got!=tc.want { t.Errorf("ClassifyHealthError(%v)=%q want %q",tc.in,got,tc.want) } }
+}
 func TestNewHealthCheckerValidatesBounds(t *testing.T) {
 	tests := []struct {
 		name string
@@ -54,6 +63,8 @@ func TestHealthCheckerSuccessAndFailureAreNormalized(t *testing.T) {
 			result := checker.Check(context.Background(), "tenant-1", tt.pinger)
 			if result.Status != tt.wantStatus { t.Fatalf("status=%q, want %q", result.Status, tt.wantStatus) }
 			if result.Message != tt.wantMessage { t.Fatalf("message=%q, want %q", result.Message, tt.wantMessage) }
+			if tt.wantStatus == HealthStatusHealthy && result.ErrorCode != HealthErrorNone { t.Fatalf("unexpected success error code %q", result.ErrorCode) }
+			if tt.wantStatus == HealthStatusUnhealthy && result.ErrorCode != HealthErrorUnknown { t.Fatalf("unexpected failure error code %q", result.ErrorCode) }
 			if strings.Contains(result.Message, secret) || strings.Contains(result.Message, "super-secret") {
 				t.Fatal("result exposed connection credentials")
 			}
@@ -69,7 +80,7 @@ func TestHealthCheckerTimeoutAndCanceledContext(t *testing.T) {
 		<-ctx.Done()
 		return ctx.Err()
 	}))
-	if result.Status != HealthStatusUnhealthy || result.Message != "connection check timed out" {
+	if result.Status != HealthStatusUnhealthy || result.Message != "connection check timed out" || result.ErrorCode != HealthErrorTimeout {
 		t.Fatalf("unexpected timeout result: %+v", result)
 	}
 
@@ -79,7 +90,7 @@ func TestHealthCheckerTimeoutAndCanceledContext(t *testing.T) {
 		t.Fatal("ping should not start for a canceled context")
 		return nil
 	}))
-	if result.Message != "connection check canceled before it started" {
+	if result.Message != "connection check canceled before it started" || result.ErrorCode != HealthErrorCanceled {
 		t.Fatalf("unexpected canceled result: %+v", result)
 	}
 }
