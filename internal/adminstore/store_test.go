@@ -286,6 +286,60 @@ func TestCheckForeignKeysReportsLegacyOrphansWithoutDeletingData(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsNewerMetadataSchemaWithoutModifyingIt(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "future-schema.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TABLE admin_schema_migrations (
+		version INTEGER PRIMARY KEY,
+		applied_at TEXT NOT NULL
+	)`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO admin_schema_migrations(version, applied_at)
+		VALUES (18, 'future-release')`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(ctx, path, testKey)
+	if err == nil {
+		_ = store.Close()
+		t.Fatal("Open() should reject a metadata database from a newer schema version")
+	}
+	if !strings.Contains(err.Error(), "metadata schema version 18 is newer than supported version 17") {
+		t.Fatalf("unexpected Open() error: %v", err)
+	}
+
+	verifyDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer verifyDB.Close()
+	var version int
+	if err := verifyDB.QueryRowContext(ctx, "SELECT MAX(version) FROM admin_schema_migrations").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 18 {
+		t.Fatalf("future schema version after rejected open=%d, want 18", version)
+	}
+	var dataSourceTableCount int
+	if err := verifyDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'admin_data_sources'`).Scan(&dataSourceTableCount); err != nil {
+		t.Fatal(err)
+	}
+	if dataSourceTableCount != 0 {
+		t.Fatal("rejected open modified the newer metadata schema")
+	}
+}
+
 func TestRepeatedOpenPreservesInitializedMetadata(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "repeated-open.db")

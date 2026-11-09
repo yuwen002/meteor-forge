@@ -19,6 +19,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const currentMetadataSchemaVersion = 17
+
 var (
 	ErrNotFound = errors.New("data source not found")
 	ErrConflict = errors.New("data source name already exists")
@@ -125,6 +127,9 @@ func Open(ctx context.Context, path, keyHex string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) migrate(ctx context.Context) error {
+	if err := s.checkMetadataSchemaCompatibility(ctx); err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin metadata schema migration: %w", err)
@@ -581,6 +586,28 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("record tenant health error classification schema version: %w", err)
 	}
 	return tx.Commit()
+}
+
+// checkMetadataSchemaCompatibility prevents an older binary from modifying a
+// metadata database created by a newer release. It runs before the migration
+// transaction so no schema objects or data are changed on this failure path.
+func (s *Store) checkMetadataSchemaCompatibility(ctx context.Context) error {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'admin_schema_migrations'`).Scan(&exists); err != nil {
+		return fmt.Errorf("inspect metadata schema history: %w", err)
+	}
+	if exists == 0 {
+		return nil
+	}
+	var version int
+	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM admin_schema_migrations").Scan(&version); err != nil {
+		return fmt.Errorf("read metadata schema version: %w", err)
+	}
+	if version > currentMetadataSchemaVersion {
+		return fmt.Errorf("metadata schema version %d is newer than supported version %d; upgrade meteor-forge before opening this database", version, currentMetadataSchemaVersion)
+	}
+	return nil
 }
 
 func ensureTenantHealthErrorCodeColumn(ctx context.Context, tx *sql.Tx, table string) error {
