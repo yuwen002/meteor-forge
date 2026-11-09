@@ -609,4 +609,4 @@ GET /api/v1/tenant-discovery/preview?data_source_id=control-source-id
 
 ### GET /tenant-health/history
 
-查询巡检历史，所有已认证角色可读取。支持 `tenant_id`、`status`（healthy/unhealthy）、`source`（manual/scheduled）、`from`、`to`（RFC3339，支持纳秒精度，起止边界均包含）、`limit`（1–100，默认 50）和 `cursor`。结果按 `checked_at DESC, id DESC` 稳定分页，响应包含 `items` 和可选的 `next_cursor`；游标为不透明值，应原样传回，不要自行解码或构造。非法筛选、反向时间范围或非法游标返回 HTTP 400。
+查询巡检历史，所有已认证角色可读取。支持 `tenant_id`、`status`（healthy/unhealthy）、`source`（manual/scheduled）、`from`、`to`（RFC3339，支持纳秒精度，起止边界均包含）、`limit`（1–100，默认 50）和 `cursor`。结果按 `checked_at DESC, id DESC` 稳定分页，响应包含 `items` 和可选的 `next_cursor`；游标为不透明值，应原样传回，不要自行解码或构造。非法筛选、反向时间范围或非法游标返回 HTTP 400。 每条记录包含 `id`、`tenant_id`、`source`、`status`、`checked_at`、`duration_ms` 和 `message`。其中 `message` 是经过归一化的巡检结果摘要，不是数据库驱动原始错误或堆栈；接口不会返回 DSN、密码等连接凭据。管理后台可从历史列表打开记录详情，查看该记录的租户、数据源元信息、UTC/本地检查时间、耗时和已保存摘要。

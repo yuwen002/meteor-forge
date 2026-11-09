@@ -24,6 +24,19 @@ describe('租户健康趋势交互布局', () => {
     expect(tenantView).toContain('createTenantHealthHistoryQuery')
   })
 
+  it('从历史记录打开详情抽屉并展示巡检上下文', () => {
+    expect(tenantView).toContain('@click="viewHealthHistoryDetail(row)"')
+    expect(tenantView).toContain('<el-drawer v-model="healthHistoryDetailVisible" title="巡检记录详情"')
+    expect(tenantView).toContain('记录 ID')
+    expect(tenantView).toContain('租户标识')
+    expect(tenantView).toContain('目标数据源')
+    expect(tenantView).toContain('巡检来源')
+    expect(tenantView).toContain('检查时间（UTC）')
+    expect(tenantView).toContain('执行耗时')
+    expect(tenantView).toContain('巡检结果摘要')
+    expect(tenantView).toContain('不包含数据库连接串、密码或驱动原始堆栈')
+  })
+
   it('为没有匹配历史记录的筛选结果保留明确空状态', () => {
     expect(tenantView).toContain('empty-text="暂无巡检历史"')
     expect(tenantView).toContain('healthHistory.value = next ? [...healthHistory.value, ...data.items] : data.items')

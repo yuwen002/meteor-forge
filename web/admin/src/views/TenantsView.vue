@@ -172,6 +172,11 @@ const healthSettingsLoading = ref(false)
 const healthSettingsSaving = ref(false)
 const healthHistory = ref<TenantHealthHistory[]>([])
 const healthHistoryLoading = ref(false)
+const healthHistoryDetailVisible = ref(false)
+const selectedHealthHistory = ref<TenantHealthHistory | null>(null)
+const selectedHealthHistoryTenant = computed(() =>
+  items.value.find(item => item.id === selectedHealthHistory.value?.tenant_id),
+)
 const healthHistoryNext = ref("")
 const healthHistorySource = ref("")
 const healthHistoryStatus = ref("")
@@ -566,6 +571,19 @@ function changeHealthHistoryTimeRange() {
   void loadHealthHistory()
 }
 
+function viewHealthHistoryDetail(item: TenantHealthHistory) {
+  selectedHealthHistory.value = item
+  healthHistoryDetailVisible.value = true
+}
+
+function healthHistoryStatusLabel(status: TenantHealthHistory['status']): string {
+  return status === 'healthy' ? '正常' : '异常'
+}
+
+function healthHistorySourceLabel(source: TenantHealthHistory['source']): string {
+  return source === 'scheduled' ? '定时巡检' : '手动巡检'
+}
+
 function auditActionLabel(action: TenantAuditEvent['action']): string {
   return action === 'created' ? '创建租户' : action === 'updated' ? '修改租户' : '删除租户'
 }
@@ -795,6 +813,11 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
         <template #default="{ row }">{{ new Date(row.checked_at).toLocaleString() }}</template>
       </el-table-column>
       <el-table-column prop="message" label="结果摘要" min-width="220" show-overflow-tooltip />
+      <el-table-column label="详情" width="90" fixed="right">
+        <template #default="{ row }">
+          <el-button link type="primary" @click="viewHealthHistoryDetail(row)">查看详情</el-button>
+        </template>
+      </el-table-column>
     </el-table>
     <div v-if="healthHistoryNext" class="history-more">
       <el-button plain :loading="healthHistoryLoading" @click="loadHealthHistory(true)">加载更多历史</el-button>
@@ -861,6 +884,43 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
       <el-button type="primary" :loading="batching" @click="refreshBatch">刷新状态</el-button>
     </template>
   </el-dialog>
+
+  <el-drawer v-model="healthHistoryDetailVisible" title="巡检记录详情" size="560px">
+    <template v-if="selectedHealthHistory">
+      <el-descriptions :column="1" border>
+        <el-descriptions-item label="记录 ID">{{ selectedHealthHistory.id }}</el-descriptions-item>
+        <el-descriptions-item label="巡检结果">
+          <el-tag :type="selectedHealthHistory.status === 'healthy' ? 'success' : 'danger'">
+            {{ healthHistoryStatusLabel(selectedHealthHistory.status) }}
+          </el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item label="租户名称">{{ selectedHealthHistoryTenant?.name ?? '租户信息已不可用' }}</el-descriptions-item>
+        <el-descriptions-item label="租户标识">{{ selectedHealthHistoryTenant?.code ?? selectedHealthHistory.tenant_id }}</el-descriptions-item>
+        <el-descriptions-item label="租户 ID">{{ selectedHealthHistory.tenant_id }}</el-descriptions-item>
+        <el-descriptions-item label="目标数据源">
+          {{ selectedHealthHistoryTenant ? selectedHealthHistoryTenant.data_source_name + ' · ' + selectedHealthHistoryTenant.driver : '—' }}
+        </el-descriptions-item>
+        <el-descriptions-item label="巡检来源">{{ healthHistorySourceLabel(selectedHealthHistory.source) }}</el-descriptions-item>
+        <el-descriptions-item label="检查时间（本地）">{{ new Date(selectedHealthHistory.checked_at).toLocaleString() }}</el-descriptions-item>
+        <el-descriptions-item label="检查时间（UTC）">{{ new Date(selectedHealthHistory.checked_at).toISOString() }}</el-descriptions-item>
+        <el-descriptions-item label="执行耗时">{{ selectedHealthHistory.duration_ms }} ms</el-descriptions-item>
+      </el-descriptions>
+      <section class="health-history-detail-message">
+        <strong>巡检结果摘要</strong>
+        <pre>{{ selectedHealthHistory.message || '未提供结果摘要' }}</pre>
+      </section>
+      <el-alert
+        title="安全说明"
+        description="此处展示已保存的巡检摘要，不包含数据库连接串、密码或驱动原始堆栈。"
+        type="info"
+        :closable="false"
+        show-icon
+      />
+    </template>
+    <template #footer>
+      <el-button @click="healthHistoryDetailVisible = false">关闭</el-button>
+    </template>
+  </el-drawer>
 
   <el-dialog v-model="auditVisible" :title="`租户审计 · ${auditTenantName}`" width="760px">
     <div class="audit-total">共 {{ auditTotal }} 条生命周期记录</div>
@@ -981,6 +1041,9 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
 .audit-total { margin-bottom: 14px; color: #8a95a5; font-size: 11px; }
 .audit-event-title { color: #34445d; font-size: 12px; font-weight: 600; }
 .audit-event-meta, .audit-snapshot { margin-top: 5px; color: #8a95a5; font-size: 11px; line-height: 1.6; }
+.health-history-detail-message { margin: 18px 0; }
+.health-history-detail-message strong { color: #34445d; font-size: 13px; }
+.health-history-detail-message pre { margin: 8px 0 0; padding: 12px; overflow-wrap: anywhere; white-space: pre-wrap; word-break: break-word; border: 1px solid #e8edf4; border-radius: 8px; background: #f8fafc; color: #34445d; font: inherit; font-size: 12px; line-height: 1.7; }
 .table-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
 .table-toolbar > div { display: flex; align-items: center; gap: 10px; }
 .toolbar-actions { display: flex; align-items: center; gap: 10px; }
