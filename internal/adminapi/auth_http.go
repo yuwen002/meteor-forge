@@ -170,7 +170,7 @@ func isReadOnlyAdminRoute(path string) bool {
  case "tenant-migration-batches":
   return len(parts)==4 && nonEmpty(3)
  case "migration-tasks":
-  return len(parts)==3 || (len(parts)==4 && nonEmpty(3)) || (len(parts)==5 && nonEmpty(3) && parts[4]=="audit")
+  return len(parts)==3 || (len(parts)==4 && nonEmpty(3)) || (len(parts)==5 && nonEmpty(3) && (parts[4]=="audit" || parts[4]=="disposition"))
  case "shard-rules":
   return len(parts)==3 || (len(parts)==4 && nonEmpty(3)) || (len(parts)==5 && nonEmpty(3) && parts[4]=="tables")
  case "shard-ddl-tasks":
