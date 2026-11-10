@@ -26,6 +26,20 @@ interface UnifiedTask {
   total_steps?: number
 }
 
+interface MigrationReconciliation {
+  task_id: string
+  status: string
+  observed_at: string
+  history_available: boolean
+  current_version?: string
+  current_action?: string
+  current_version_state: 'present' | 'absent' | 'unknown'
+  current_version_checksum_state: 'matched' | 'mismatch' | 'legacy_unverified' | 'local_script_missing' | 'not_comparable' | 'unknown'
+  applied_version_count: number
+  unknown_applied_version_count: number
+  assessment: string
+}
+
 interface AuditEvent {
   id: number
   task_id: string
@@ -43,6 +57,8 @@ const { canCancelMigrationTask, canCancelShardDDL } = useAdminPermissions()
 const tasks = ref<UnifiedTask[]>([])
 const selected = ref<UnifiedTask | null>(null)
 const audit = ref<AuditEvent[]>([])
+const reconciliation = ref<MigrationReconciliation | null>(null)
+const reconciliationLoading = ref(false)
 const loading = ref(false)
 const detailLoading = ref(false)
 const statusFilter = ref('')
@@ -122,6 +138,7 @@ async function selectTask(task: UnifiedTask) {
   selected.value = task
   detailLoading.value = true
   audit.value = []
+  reconciliation.value = null
   try {
     const prefix = task.kind === 'migration' ? '/migration-tasks/' : '/shard-ddl-tasks/'
     const [detail, events] = await Promise.all([
@@ -135,6 +152,49 @@ async function selectTask(task: UnifiedTask) {
   } finally {
     detailLoading.value = false
   }
+}
+
+async function reconcileSelected() {
+  const task = selected.value
+  if (!task || task.kind !== 'migration' || task.status !== 'interrupted') return
+  reconciliationLoading.value = true
+  reconciliation.value = null
+  try {
+    const { data } = await api.get<MigrationReconciliation>(
+      '/migration-tasks/' + encodeURIComponent(task.id) + '/reconciliation',
+    )
+    if (selected.value?.id === task.id && selected.value.kind === 'migration') {
+      reconciliation.value = data
+    }
+  } catch {
+    ElMessage.error('只读核对失败，请检查目标数据源连接和迁移历史')
+  } finally {
+    reconciliationLoading.value = false
+  }
+}
+
+function reconciliationVersionLabel(state: MigrationReconciliation['current_version_state']) {
+  const labels = { present: '历史记录存在', absent: '历史记录不存在', unknown: '无法判断' }
+  return labels[state]
+}
+
+function reconciliationChecksumLabel(state: MigrationReconciliation['current_version_checksum_state']) {
+  const labels: Record<MigrationReconciliation['current_version_checksum_state'], string> = {
+    matched: '校验和一致',
+    mismatch: '校验和不一致',
+    legacy_unverified: '历史记录未保存校验和',
+    local_script_missing: '本地脚本缺失',
+    not_comparable: '无可比较记录',
+    unknown: '无法判断',
+  }
+  return labels[state]
+}
+
+function reconciliationTagType(state: string) {
+  if (state === 'present' || state === 'matched') return 'success'
+  if (state === 'mismatch' || state === 'local_script_missing') return 'danger'
+  if (state === 'absent') return 'warning'
+  return 'info'
 }
 
 async function cancelSelected() {
@@ -248,6 +308,14 @@ onBeforeUnmount(() => {
       <div class="task-detail-actions">
         <el-tag :type="statusType(selected.status)" effect="plain">{{ statusLabel(selected.status) }}</el-tag>
         <el-button
+          v-if="selected.kind === 'migration' && selected.status === 'interrupted'"
+          :loading="reconciliationLoading"
+          size="small"
+          type="warning"
+          plain
+          @click="reconcileSelected"
+        >只读核对</el-button>
+        <el-button
           v-if="['queued', 'running'].includes(selected.status) && canCancelTask(selected)"
           type="danger"
           plain
@@ -269,6 +337,49 @@ onBeforeUnmount(() => {
       </el-descriptions-item>
       <el-descriptions-item label="执行结果" :span="selected.kind === 'migration' ? 1 : 2">{{ selected.message || '—' }}</el-descriptions-item>
     </el-descriptions>
+
+    <div v-if="selected.kind === 'migration' && selected.status === 'interrupted'" class="reconciliation-panel">
+      <div class="task-audit-heading">
+        <strong>中断任务核对</strong>
+        <span>只读取目标库迁移历史，不执行 SQL</span>
+      </div>
+      <el-empty v-if="!reconciliation && !reconciliationLoading" description="尚未执行核对" :image-size="56">
+        <el-button type="warning" plain :loading="reconciliationLoading" @click="reconcileSelected">开始只读核对</el-button>
+      </el-empty>
+      <template v-if="reconciliation">
+        <el-descriptions :column="2" border size="small">
+          <el-descriptions-item label="最后进度版本">{{ reconciliation.current_version || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="目标库历史">{{ reconciliation.history_available ? '可读取' : '不可读取' }}</el-descriptions-item>
+          <el-descriptions-item label="版本记录">
+            <el-tag :type="reconciliationTagType(reconciliation.current_version_state)" effect="plain">
+              {{ reconciliationVersionLabel(reconciliation.current_version_state) }}
+            </el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="脚本校验和">
+            <el-tag :type="reconciliationTagType(reconciliation.current_version_checksum_state)" effect="plain">
+              {{ reconciliationChecksumLabel(reconciliation.current_version_checksum_state) }}
+            </el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="已应用版本数">{{ reconciliation.applied_version_count }}</el-descriptions-item>
+          <el-descriptions-item label="本地脚本缺失版本">{{ reconciliation.unknown_applied_version_count }}</el-descriptions-item>
+          <el-descriptions-item label="核对时间" :span="2">{{ new Date(reconciliation.observed_at).toLocaleString() }}</el-descriptions-item>
+        </el-descriptions>
+        <el-alert
+          class="reconciliation-assessment"
+          :title="reconciliation.assessment"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+        <el-alert
+          title="核对结果仅供人工判断"
+          description="迁移历史缺少版本记录不能证明 SQL 未执行；非事务型 DDL 可能已部分生效。请检查目标库实际结构，不要直接重放任务。"
+          type="info"
+          :closable="false"
+          show-icon
+        />
+      </template>
+    </div>
 
     <div class="task-audit-heading"><strong>审计记录</strong><span>{{ audit.length }} 条事件</span></div>
     <el-table :data="audit" size="small" empty-text="暂无审计事件">
@@ -305,7 +416,9 @@ onBeforeUnmount(() => {
 .task-id { color: #8a95a5; font-size: 11px; overflow-wrap: anywhere; }
 .task-audit-heading { margin: 24px 0 12px; }
 .task-audit-heading span { color: #8a95a5; font-size: 11px; }
-.task-audit-note { margin-top: 14px; }
+ .task-audit-note { margin-top: 14px; }
+.reconciliation-panel { margin-top: 22px; padding-top: 18px; border-top: 1px solid #e8edf4; }
+.reconciliation-assessment { margin: 12px 0; }
 .task-alert { margin-bottom: 16px; }
 @media (max-width: 760px) {
   .task-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
