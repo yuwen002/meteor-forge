@@ -10,9 +10,5 @@ func metadataSQLiteDSN(path string) string {
 	if strings.Contains(path, "?") {
 		separator = "&"
 	}
-	dsn := path + separator + "_busy_timeout=5000&_foreign_keys=on"
-	if path != ":memory:" {
-		dsn += "&_journal_mode=WAL"
-	}
-	return dsn
+	return path + separator + "_busy_timeout=5000&_foreign_keys=on"
 }
