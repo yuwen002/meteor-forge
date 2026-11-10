@@ -340,7 +340,7 @@ func TestTenantHealthSummaryEndpointReturnsCurrentAndRecentCounts(t *testing.T) 
 	if err != nil { t.Fatal(err) }
 	_, err = store.CreateTenant(context.Background(), adminstore.TenantInput{Name:"Unchecked", Code:"summary-unchecked", DataSourceID:source.ID})
 	if err != nil { t.Fatal(err) }
-	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	for _, item := range []adminstore.TenantConnectionHealth{
 		{TenantID:healthy.ID, Status:"healthy", CheckedAt:now.Add(-time.Hour), Message:"connection successful"},
 		{TenantID:unhealthy.ID, Status:"unhealthy", CheckedAt:now.Add(-2*time.Hour), Message:"connection failed"},
