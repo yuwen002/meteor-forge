@@ -707,3 +707,125 @@ func TestMetadataMigrationRunnerResumesAfterCanceledVersion(t *testing.T) {
 		t.Fatalf("retried migration table count=%d, want 1", retriedTableCount)
 	}
 }
+
+
+// TestMetadataMigrationRunnerRollsBackSQLExecutionError verifies that a real
+// SQLite statement error rolls back schema changes and leaves the version
+// history ready for a retry.
+func TestMetadataMigrationRunnerRollsBackSQLExecutionError(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, `CREATE TABLE admin_schema_migrations (
+		version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	for version := 11; version <= legacyMetadataSchemaVersion; version++ {
+		if _, err := db.ExecContext(ctx,
+			"INSERT INTO admin_schema_migrations(version, applied_at) VALUES (?, 'legacy')", version); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations...)
+	migrations = append(migrations, metadataSchemaMigration{
+		Version: 18, Name: "SQL 执行错误回滚测试",
+		Up: func(ctx context.Context, tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, "CREATE TABLE sql_error_marker (id INTEGER PRIMARY KEY)"); err != nil {
+				return err
+			}
+			_, err := tx.ExecContext(ctx, "INSERT INTO missing_migration_table(id) VALUES (1)")
+			return err
+		},
+	})
+	if err := applyMetadataSchemaMigrations(ctx, db, migrations, 18); err == nil {
+		t.Fatal("expected SQL execution error")
+	} else if !strings.Contains(err.Error(), "apply metadata migration 18") {
+		t.Fatalf("migration error = %v, want migration context", err)
+	}
+
+	assertMigrationVersionAndTableRollback(t, ctx, db, legacyMetadataSchemaVersion, "sql_error_marker")
+}
+
+// TestMetadataMigrationRunnerRollsBackCommitFailure uses a deferred foreign
+// key violation to make SQLite reject COMMIT after Up and the version marker
+// have both executed. The failed transaction must not leak partial state.
+func TestMetadataMigrationRunnerRollsBackCommitFailure(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TABLE admin_schema_migrations (
+		version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	for version := 11; version <= legacyMetadataSchemaVersion; version++ {
+		if _, err := db.ExecContext(ctx,
+			"INSERT INTO admin_schema_migrations(version, applied_at) VALUES (?, 'legacy')", version); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations...)
+	migrations = append(migrations, metadataSchemaMigration{
+		Version: 18, Name: "提交失败回滚测试",
+		Up: func(ctx context.Context, tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, `CREATE TABLE migration_commit_parent (
+				id INTEGER PRIMARY KEY
+			)`); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `CREATE TABLE migration_commit_child (
+				parent_id INTEGER,
+				FOREIGN KEY(parent_id) REFERENCES migration_commit_parent(id)
+					DEFERRABLE INITIALLY DEFERRED
+			)`); err != nil {
+				return err
+			}
+			_, err := tx.ExecContext(ctx, "INSERT INTO migration_commit_child(parent_id) VALUES (999)")
+			return err
+		},
+	})
+	if err := applyMetadataSchemaMigrations(ctx, db, migrations, 18); err == nil {
+		t.Fatal("expected deferred foreign-key commit failure")
+	} else if !strings.Contains(err.Error(), "commit metadata migration 18") {
+		t.Fatalf("migration error = %v, want commit failure context", err)
+	}
+
+	assertMigrationVersionAndTableRollback(t, ctx, db, legacyMetadataSchemaVersion,
+		"migration_commit_parent", "migration_commit_child")
+}
+
+func assertMigrationVersionAndTableRollback(t *testing.T, ctx context.Context, db *sql.DB, wantVersion int, tableNames ...string) {
+	t.Helper()
+	var version int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COALESCE(MAX(version), 0) FROM admin_schema_migrations").Scan(&version); err != nil {
+		t.Fatalf("read schema version after failed migration: %v", err)
+	}
+	if version != wantVersion {
+		t.Fatalf("schema version after failed migration = %d, want %d", version, wantVersion)
+	}
+	for _, tableName := range tableNames {
+		var count int
+		if err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", tableName).Scan(&count); err != nil {
+			t.Fatalf("inspect rolled-back table %q: %v", tableName, err)
+		}
+		if count != 0 {
+			t.Errorf("failed migration left table %q behind", tableName)
+		}
+	}
+}

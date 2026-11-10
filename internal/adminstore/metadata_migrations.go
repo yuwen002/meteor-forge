@@ -137,6 +137,10 @@ func applyMetadataSchemaMigrations(ctx context.Context, db *sql.DB, migrations [
 			return fmt.Errorf("record metadata migration %d (%s): %w", migration.Version, migration.Name, err)
 		}
 		if err := tx.Commit(); err != nil {
+			// Some databases (including SQLite with deferred constraints) can
+			// reject COMMIT while leaving the transaction active. Explicitly
+			// roll it back so no partial schema state can leak into a retry.
+			_ = tx.Rollback()
 			return fmt.Errorf("commit metadata migration %d (%s): %w", migration.Version, migration.Name, err)
 		}
 	}
