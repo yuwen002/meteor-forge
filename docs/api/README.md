@@ -232,6 +232,18 @@ Down、DownSteps 和 ToVersion 必须显式提交 `confirm: true`，并且仅 ad
 
 任务状态：`queued`、`running`、`succeeded`、`failed`、`canceled`、`interrupted`。任务详情和列表同时返回进度字段：`current_version`（当前迁移版本）、`completed_steps`、`total_steps`、`current_action`（`up` / `down`）和 `progress_updated_at`。进度在每条迁移开始及成功完成时写入管理元数据库；没有待执行迁移时这些计数保持为 0。开始时间与结束时间可用于计算任务耗时。进度只反映已成功完成的迁移步骤，不代表单条 SQL 内部的执行百分比；单条 SQL 执行期间当前版本会保持不变。状态转换由管理元数据库原子约束：`queued` 只能进入 `running`、`failed`、`canceled` 或 `interrupted`；`running` 只能进入 `succeeded`、`failed`、`canceled` 或 `interrupted`；终态不可重新打开或改写。无效转换会被拒绝。任务响应只包含安全的状态摘要，不包含 DSN、SQL 内容或数据库驱动原始错误。
 
+### GET /migration-tasks/{id}/reconciliation
+
+只读核对一条 `interrupted` 迁移任务的最后进度与目标数据库迁移历史。仅对中断任务开放；其他状态返回 HTTP 409。响应包含：
+
+- `history_available`：是否成功读取目标库已有迁移历史。连接失败或历史表不可读时为 false；接口不会调用 `EnsureTable`，不会创建历史表。
+- `current_version_state`：当前进度版本在目标库历史中的事实状态，`present` / `absent` / `unknown`。
+- `current_version_checksum_state`：脚本校验和状态，可能为 `matched`、`mismatch`、`legacy_unverified`、`local_script_missing`、`not_comparable` 或 `unknown`。
+- `unknown_applied_version_count`：目标库已应用、但本地脚本目录中不存在的版本数量。
+- `assessment`：供操作者参考的安全摘要。
+
+该接口不更新任务状态、不执行 SQL、不重放任务。特别注意：`absent` 只表示迁移历史中没有该版本记录，不能证明 SQL 从未执行；非事务型 DDL 可能已经部分生效。即使状态为 `present` 且校验和匹配，也仍应检查目标库实际结构，再由管理员决定下一步。该接口不提供自动恢复或自动标记完成。
+
 ### GET /migration-tasks/{id}/audit
 
 按时间顺序返回任务审计事件，包含数据源 ID、租户 ID（租户级任务）、动作、状态变更前后值、操作者标识、请求来源、事件摘要和时间戳。当前任务审计事件记录已认证的管理员用户名；请求来源取管理 API 连接的远端地址，不信任转发头。认证登录、登出、密码变更和管理员账号生命周期另记入管理员专属安全审计流。事件与任务创建/状态变更在同一 SQLite 事务内写入，避免任务状态更新成功但审计事件丢失。 服务启动时将遗留的 queued/running 任务标记为 interrupted 时，也会写入对应的恢复审计事件。
