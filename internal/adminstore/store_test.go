@@ -598,3 +598,112 @@ func TestMetadataMigrationRunnerSerializesConcurrentStarts(t *testing.T) {
 		t.Fatalf("schema version after concurrent starts=%d, want 18", version)
 	}
 }
+
+
+func TestMetadataMigrationRunnerResumesAfterCanceledVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "migration-recovery.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`CREATE TABLE admin_schema_migrations (
+		version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	for version := 11; version <= legacyMetadataSchemaVersion; version++ {
+		if _, err := db.Exec("INSERT INTO admin_schema_migrations(version, applied_at) VALUES (?, 'legacy')", version); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var version18Calls, version19Calls atomic.Int32
+	version19Entered := make(chan struct{})
+	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations...)
+	migrations = append(migrations,
+		metadataSchemaMigration{
+			Version: 18, Name: "恢复测试 v18",
+			Up: func(ctx context.Context, tx *sql.Tx) error {
+				version18Calls.Add(1)
+				_, err := tx.ExecContext(ctx, "CREATE TABLE migration_v18_committed (id INTEGER PRIMARY KEY)")
+				return err
+			},
+		},
+		metadataSchemaMigration{
+			Version: 19, Name: "恢复测试 v19",
+			Up: func(ctx context.Context, tx *sql.Tx) error {
+				if version19Calls.Add(1) == 1 {
+					if _, err := tx.ExecContext(ctx, "CREATE TABLE migration_v19_rolled_back (id INTEGER PRIMARY KEY)"); err != nil {
+						return err
+					}
+					close(version19Entered)
+					<-ctx.Done()
+					return ctx.Err()
+				}
+				_, err := tx.ExecContext(ctx, "CREATE TABLE migration_v19_retried (id INTEGER PRIMARY KEY)")
+				return err
+			},
+		},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- applyMetadataSchemaMigrations(ctx, db, migrations, 19)
+	}()
+	select {
+	case <-version19Entered:
+		cancel()
+	case <-time.After(3 * time.Second):
+		cancel()
+		t.Fatal("version 19 migration did not start")
+	}
+	if err := <-result; err == nil || !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("expected canceled migration error, got %v", err)
+	}
+
+	var current int
+	if err := db.QueryRow("SELECT MAX(version) FROM admin_schema_migrations").Scan(&current); err != nil {
+		t.Fatal(err)
+	}
+	if current != 18 {
+		t.Fatalf("schema version after cancellation=%d, want 18", current)
+	}
+	for _, table := range []string{"migration_v18_committed", "migration_v19_rolled_back"} {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		want := 0
+		if table == "migration_v18_committed" {
+			want = 1
+		}
+		if count != want {
+			t.Fatalf("table %s exists=%v, want %v", table, count == 1, want == 1)
+		}
+	}
+
+	if err := applyMetadataSchemaMigrations(context.Background(), db, migrations, 19); err != nil {
+		t.Fatalf("retry migrations after cancellation: %v", err)
+	}
+	if got := version18Calls.Load(); got != 1 {
+		t.Fatalf("version 18 Up calls=%d, want 1", got)
+	}
+	if got := version19Calls.Load(); got != 2 {
+		t.Fatalf("version 19 Up calls=%d, want 2", got)
+	}
+	if err := db.QueryRow("SELECT MAX(version) FROM admin_schema_migrations").Scan(&current); err != nil {
+		t.Fatal(err)
+	}
+	if current != 19 {
+		t.Fatalf("schema version after retry=%d, want 19", current)
+	}
+	var retriedTableCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='migration_v19_retried'").Scan(&retriedTableCount); err != nil {
+		t.Fatal(err)
+	}
+	if retriedTableCount != 1 {
+		t.Fatalf("retried migration table count=%d, want 1", retriedTableCount)
+	}
+}
