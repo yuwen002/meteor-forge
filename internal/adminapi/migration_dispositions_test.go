@@ -33,6 +33,7 @@ func TestMigrationTaskDispositionRequiresAdministratorAndRecordsServerSnapshot(t
 	body,_:=json.Marshal(createMigrationTaskDispositionRequest{Action:"terminate",OperatorNote:"已检查目标库，决定终止并保留现场。",Confirmation:migrationDispositionConfirmation})
 	req:=httptest.NewRequest(http.MethodPost,"/api/v1/migration-tasks/"+task.ID+"/disposition",bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id",task.ID)
 	req=req.WithContext(contextWithAdmin(req.Context(),"migration_operator"))
 	rec:=httptest.NewRecorder()
@@ -40,6 +41,7 @@ func TestMigrationTaskDispositionRequiresAdministratorAndRecordsServerSnapshot(t
 	if rec.Code!=http.StatusForbidden { t.Fatalf("migration_operator status=%d body=%s",rec.Code,rec.Body.String()) }
 
 	req=httptest.NewRequest(http.MethodPost,"/api/v1/migration-tasks/"+task.ID+"/disposition",bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id",task.ID)
 	req=req.WithContext(contextWithAdmin(req.Context(),"administrator"))
 	rec=httptest.NewRecorder()
@@ -56,6 +58,7 @@ func TestMigrationTaskDispositionRequiresAdministratorAndRecordsServerSnapshot(t
 	if got.Status!="interrupted" { t.Fatalf("disposition changed task status to %q",got.Status) }
 
 	req=httptest.NewRequest(http.MethodPost,"/api/v1/migration-tasks/"+task.ID+"/disposition",bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id",task.ID)
 	req=req.WithContext(contextWithAdmin(req.Context(),"administrator"))
 	rec=httptest.NewRecorder()
