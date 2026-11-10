@@ -75,7 +75,7 @@ const reconciliationLoading = ref(false)
 const disposition = ref<MigrationTaskDisposition | null>(null)
 const dispositionLoading = ref(false)
 const dispositionSubmitting = ref(false)
-const dispositionAction = ref<MigrationDispositionAction>('terminate')
+const dispositionAction = ref<MigrationDispositionAction | ''>('')
 const dispositionNote = ref('')
 const dispositionConfirmation = ref('')
 const loading = ref(false)
@@ -160,6 +160,7 @@ async function selectTask(task: UnifiedTask) {
   reconciliation.value = null
   disposition.value = null
   dispositionNote.value = ''
+  dispositionAction.value = ''
   dispositionConfirmation.value = ''
   try {
     const prefix = task.kind === 'migration' ? '/migration-tasks/' : '/shard-ddl-tasks/'
@@ -169,7 +170,7 @@ async function selectTask(task: UnifiedTask) {
     ])
     selected.value = { ...detail.data, kind: task.kind }
     audit.value = events.data.items
-    if (task.kind === 'migration' && task.status === 'interrupted') {
+    if (selected.value?.kind === 'migration' && selected.value.status === 'interrupted') {
       dispositionLoading.value = true
       try {
         const saved = await api.get<MigrationTaskDisposition>(
@@ -512,8 +513,8 @@ onBeforeUnmount(() => {
           <el-button
             type="warning"
             :loading="dispositionSubmitting"
-            :disabled="!canSubmitMigrationDisposition(isAdministrator, selected.status, disposition) || !dispositionNote.trim() || dispositionConfirmation !== migrationDispositionConfirmation"
-            @click="submitDisposition(dispositionAction)"
+            :disabled="!dispositionAction || !canSubmitMigrationDisposition(isAdministrator, selected.status, disposition) || !dispositionNote.trim() || dispositionConfirmation !== migrationDispositionConfirmation"
+            @click="dispositionAction && submitDisposition(dispositionAction)"
           >记录人工处置</el-button>
         </el-form>
       </template>
