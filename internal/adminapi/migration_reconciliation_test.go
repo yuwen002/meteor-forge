@@ -83,15 +83,17 @@ func TestInterruptedMigrationReconciliationIsReadOnly(t *testing.T) {
 			}
 
 			// Reconciliation is intentionally limited to interrupted tasks.
-			finished := time.Now().UTC()
-			if err := store.UpdateMigrationTask(ctx, task.ID, "succeeded", "completed", &started, &finished); err != nil {
+			queuedTask, err := store.CreateMigrationTask(ctx, adminstore.MigrationTask{
+				ID: "reconcile-queued-task", DataSourceID: source.ID, Action: "up",
+			})
+			if err != nil {
 				t.Fatal(err)
 			}
-			conflictRequest := httptest.NewRequest(http.MethodGet, "/api/v1/migration-tasks/"+task.ID+"/reconciliation", nil)
+			conflictRequest := httptest.NewRequest(http.MethodGet, "/api/v1/migration-tasks/"+queuedTask.ID+"/reconciliation", nil)
 			conflictRecorder := httptest.NewRecorder()
 			server.Handler().ServeHTTP(conflictRecorder, conflictRequest)
 			if conflictRecorder.Code != http.StatusConflict {
-				t.Fatalf("non-interrupted task reconciliation status=%d body=%s", conflictRecorder.Code, conflictRecorder.Body.String())
+				t.Fatalf("queued task reconciliation status=%d body=%s", conflictRecorder.Code, conflictRecorder.Body.String())
 			}
 		})
 	}
