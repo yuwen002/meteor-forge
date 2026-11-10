@@ -32,6 +32,7 @@ func TestMigrationTaskDispositionRequiresAdministratorAndRecordsServerSnapshot(t
 
 	body,_:=json.Marshal(createMigrationTaskDispositionRequest{Action:"terminate",OperatorNote:"已检查目标库，决定终止并保留现场。",Confirmation:migrationDispositionConfirmation})
 	req:=httptest.NewRequest(http.MethodPost,"/api/v1/migration-tasks/"+task.ID+"/disposition",bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id",task.ID)
 	req=req.WithContext(contextWithAdmin(req.Context(),"migration_operator"))
 	rec:=httptest.NewRecorder()
