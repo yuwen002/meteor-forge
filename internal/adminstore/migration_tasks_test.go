@@ -196,3 +196,83 @@ func TestMigrationRecoveryPreservesAuditActor(t *testing.T) {
  if len(events)!=2{t.Fatalf("events=%d, want queued and interrupted",len(events))}
  for _,event:=range events{if event.Actor!="migration-operator"{t.Errorf("actor=%q",event.Actor)}}
 }
+
+
+func TestMigrationTaskDispositionRequiresInterruptedTaskAndIsImmutable(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	task, err := store.CreateMigrationTask(ctx, MigrationTask{ID: "disposition-task", DataSourceID: "source-disposition", Action: "up"})
+	if err != nil { t.Fatal(err) }
+	snapshot := []byte(`{"assessment":"manual_review","history_available":true}`)
+	input := MigrationTaskDisposition{
+		TaskID: task.ID, Action: "authorize_retry", Reconciliation: snapshot,
+		OperatorNote: "已核对目标库结构，批准创建新的迁移任务", Actor: "admin", RequestSource: "127.0.0.1",
+	}
+	if _, err := store.CreateMigrationTaskDisposition(ctx, input); !errors.Is(err, ErrMigrationTaskNotInterrupted) {
+		t.Fatalf("queued task disposition error = %v, want ErrMigrationTaskNotInterrupted", err)
+	}
+	started := time.Now().UTC()
+	if err := store.UpdateMigrationTask(ctx, task.ID, "running", "running", &started, nil); err != nil { t.Fatal(err) }
+	finished := time.Now().UTC()
+	if err := store.UpdateMigrationTask(ctx, task.ID, "interrupted", "process interrupted", nil, &finished); err != nil { t.Fatal(err) }
+
+	created, err := store.CreateMigrationTaskDisposition(ctx, input)
+	if err != nil { t.Fatalf("CreateMigrationTaskDisposition: %v", err) }
+	if created.ID == 0 || created.DataSourceID != "source-disposition" || created.Action != "authorize_retry" || created.Actor != "admin" {
+		t.Fatalf("unexpected disposition: %+v", created)
+	}
+	got, err := store.GetMigrationTaskDisposition(ctx, task.ID)
+	if err != nil { t.Fatalf("GetMigrationTaskDisposition: %v", err) }
+	if string(got.Reconciliation) != string(snapshot) || got.OperatorNote != input.OperatorNote {
+		t.Fatalf("disposition content changed: %+v", got)
+	}
+	current, err := store.GetMigrationTask(ctx, task.ID)
+	if err != nil { t.Fatal(err) }
+	if current.Status != "interrupted" {
+		t.Fatalf("recording a decision changed task status to %q", current.Status)
+	}
+	if _, err := store.CreateMigrationTaskDisposition(ctx, input); !errors.Is(err, ErrMigrationTaskDispositionExists) {
+		t.Fatalf("duplicate disposition error = %v, want ErrMigrationTaskDispositionExists", err)
+	}
+}
+
+func TestMigrationTaskDispositionRejectsInvalidInput(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	cases := []MigrationTaskDisposition{
+		{TaskID:"t", Action:"unknown", Reconciliation:[]byte(`{}`), OperatorNote:"note", Actor:"admin"},
+		{TaskID:"t", Action:"terminate", Reconciliation:[]byte("not-json"), OperatorNote:"note", Actor:"admin"},
+		{TaskID:"t", Action:"terminate", Reconciliation:[]byte(`{}`), OperatorNote:"", Actor:"admin"},
+	}
+	for i, item := range cases {
+		if _, err := store.CreateMigrationTaskDisposition(ctx, item); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("case %d error = %v, want ErrInvalidInput", i, err)
+		}
+	}
+}
+
+func TestMigrationTaskDispositionConcurrentRequestsCreateOneRecord(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	task, err := store.CreateMigrationTask(ctx, MigrationTask{ID:"concurrent-disposition", DataSourceID:"source-concurrent", Action:"up"})
+	if err != nil { t.Fatal(err) }
+	now := time.Now().UTC()
+	if err := store.UpdateMigrationTask(ctx, task.ID, "running", "running", &now, nil); err != nil { t.Fatal(err) }
+	if err := store.UpdateMigrationTask(ctx, task.ID, "interrupted", "interrupted", nil, &now); err != nil { t.Fatal(err) }
+	input := MigrationTaskDisposition{
+		TaskID:task.ID, Action:"terminate", Reconciliation:[]byte(`{"assessment":"manual_review"}`),
+		OperatorNote:"确认终止该中断任务", Actor:"admin",
+	}
+	results := make(chan error, 2)
+	for i:=0;i<2;i++ {
+		go func() { _, err := store.CreateMigrationTaskDisposition(ctx, input); results <- err }()
+	}
+	successes, duplicates := 0, 0
+	for i:=0;i<2;i++ {
+		err := <-results
+		if err == nil { successes++ } else if errors.Is(err, ErrMigrationTaskDispositionExists) { duplicates++ } else { t.Errorf("unexpected concurrent result: %v", err) }
+	}
+	if successes != 1 || duplicates != 1 {
+		t.Fatalf("successes=%d duplicates=%d, want one of each", successes, duplicates)
+	}
+}
