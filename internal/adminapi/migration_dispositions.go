@@ -1,6 +1,7 @@
 package adminapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -136,11 +137,11 @@ func (s *Server) getMigrationTaskDisposition(w http.ResponseWriter, r *http.Requ
 type responseRecorder struct {
 	header http.Header
 	status int
-	body *strings.Builder
+	body *bytes.Buffer
 }
 
 func newResponseRecorder() *responseRecorder {
-	return &responseRecorder{header: make(http.Header), body: &strings.Builder{}}
+	return &responseRecorder{header: make(http.Header), body: &bytes.Buffer{}}
 }
 func (r *responseRecorder) Header() http.Header { return r.header }
 func (r *responseRecorder) WriteHeader(status int) { if r.status == 0 { r.status = status } }
