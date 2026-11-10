@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"database/sql"
@@ -20,6 +21,10 @@ import (
 )
 
 const currentMetadataSchemaVersion = 17
+
+// metadataOpenLocks prevents two goroutines in the same process from racing
+// through SQLite connection setup and schema initialization for one file.
+var metadataOpenLocks sync.Map
 
 var (
 	ErrNotFound = errors.New("data source not found")
@@ -72,6 +77,16 @@ func Open(ctx context.Context, path, keyHex string) (*Store, error) {
 
 	if path == "" {
 		return nil, errors.New("metadata database path is required")
+	}
+	if path != ":memory:" {
+		absolutePath, err := filepath.Abs(path)
+		if err != nil {
+			return nil, fmt.Errorf("resolve metadata database path: %w", err)
+		}
+		value, _ := metadataOpenLocks.LoadOrStore(absolutePath, &sync.Mutex{})
+		openLock := value.(*sync.Mutex)
+		openLock.Lock()
+		defer openLock.Unlock()
 	}
 	if path != ":memory:" {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
