@@ -78,19 +78,15 @@ func Open(ctx context.Context, path, keyHex string) (*Store, error) {
 			return nil, fmt.Errorf("create metadata directory: %w", err)
 		}
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", metadataSQLiteDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open metadata database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	store := &Store{db: db, aead: aead, path: path}
-	// SQLite foreign-key enforcement is connection-local and must be enabled
-	// before any schema transaction starts.
-	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("enable metadata foreign keys: %w", err)
-	}
+	// Connection-scoped SQLite settings are applied by the driver to every
+	// physical connection through the DSN, not just the first pooled connection.
 	var foreignKeysEnabled int
 	if err := db.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&foreignKeysEnabled); err != nil {
 		_ = db.Close()
@@ -100,9 +96,14 @@ func Open(ctx context.Context, path, keyHex string) (*Store, error) {
 		_ = db.Close()
 		return nil, errors.New("metadata SQLite foreign-key enforcement is unavailable")
 	}
-	if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout = 5000"); err != nil {
+	var busyTimeout int
+	if err := db.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("configure metadata database: %w", err)
+		return nil, fmt.Errorf("verify metadata busy timeout: %w", err)
+	}
+	if busyTimeout != 5000 {
+		_ = db.Close()
+		return nil, fmt.Errorf("metadata SQLite busy timeout is %d ms, want 5000 ms", busyTimeout)
 	}
 	if path != ":memory:" {
 		if _, err := db.ExecContext(ctx, "PRAGMA journal_mode = WAL"); err != nil {
