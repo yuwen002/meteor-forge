@@ -121,6 +121,9 @@ interface TenantHealthSchedulerSnapshot {
   total_runs: number
   success_count: number
   failure_count: number
+  lease_skipped_count: number
+  lease_lost_count: number
+  lease_acquire_failure_count: number
   last_started_at: string | null
   last_finished_at: string | null
   last_success_at: string | null
@@ -162,7 +165,7 @@ const healthByTenant = ref<Record<string, TenantHealth>>({})
 const healthSettings = reactive<TenantHealthSettings>({ enabled: false, interval_seconds: 300, timeout_seconds: 5, history_retention_days: 30, updated_at: "" })
 const healthScheduler = reactive<TenantHealthSchedulerSnapshot>({
   enabled: false, running: false, interval_seconds: 300, total_runs: 0,
-  success_count: 0, failure_count: 0, last_started_at: null, last_finished_at: null,
+  success_count: 0, failure_count: 0, lease_skipped_count: 0, lease_lost_count: 0, lease_acquire_failure_count: 0, last_started_at: null, last_finished_at: null,
   last_success_at: null, next_run_at: null, last_duration_ms: 0,
   lease_status: "not_configured", lease_expires_at: null, lease_generation: 0, lease_remaining_seconds: 0,
 })
@@ -815,6 +818,8 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
     <div v-loading="healthSchedulerLoading" class="health-scheduler-overview">
       <div><span>进程内轮次</span><strong>{{ healthScheduler.total_runs }}</strong></div>
       <div><span>成功 / 失败</span><strong>{{ healthScheduler.success_count }} / {{ healthScheduler.failure_count }}</strong></div>
+      <div><span>租约跳过 / 丢失</span><strong>{{ healthScheduler.lease_skipped_count }} / {{ healthScheduler.lease_lost_count }}</strong></div>
+      <div><span>租约获取失败</span><strong>{{ healthScheduler.lease_acquire_failure_count }}</strong></div>
       <div><span>最近开始</span><strong>{{ healthScheduler.last_started_at ? new Date(healthScheduler.last_started_at).toLocaleString() : '尚未执行' }}</strong></div>
       <div><span>最近成功</span><strong>{{ healthScheduler.last_success_at ? new Date(healthScheduler.last_success_at).toLocaleString() : '尚无成功记录' }}</strong></div>
       <div><span>下次执行</span><strong>{{ healthScheduler.running ? '正在执行' : healthScheduler.next_run_at ? new Date(healthScheduler.next_run_at).toLocaleString() : '未安排' }}</strong></div>
