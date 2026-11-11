@@ -613,6 +613,9 @@ GET /api/v1/tenant-discovery/preview?data_source_id=control-source-id
 | `enabled` / `running` | 当前配置是否启用、是否正在执行巡检轮次 |
 | `interval_seconds` | 最近一次成功读取的巡检间隔（秒） |
 | `total_runs` / `success_count` / `failure_count` | 当前进程启动以来的轮次总数、成功数和失败数 |
+| `lease_skipped_count` | 因其他实例持有租约而跳过的轮次数 |
+| `lease_lost_count` | 巡检过程中租约丢失次数 |
+| `lease_acquire_failure_count` | 获取租约时元数据库访问失败次数 |
 | `last_started_at` / `last_finished_at` / `last_success_at` | 最近轮次开始、结束和成功时间；尚无记录时省略 |
 | `next_run_at` | 当前预计下一轮开始时间；禁用、运行中或尚未安排时省略 |
 | `last_duration_ms` | 最近一轮巡检执行耗时（毫秒） |
