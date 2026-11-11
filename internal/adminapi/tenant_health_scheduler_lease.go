@@ -23,6 +23,7 @@ type tenantHealthSchedulerLeaseContext struct {
 }
 
 var errTenantHealthSchedulerLeaseNotAcquired = errors.New("another API instance owns the tenant health scheduler lease")
+var errTenantHealthSchedulerLeaseAcquireFailed = errors.New("tenant health scheduler lease acquisition failed")
 
 func newTenantHealthSchedulerOwnerID() (string, error) {
 	value := make([]byte, 16)
@@ -48,7 +49,7 @@ func runWithTenantHealthSchedulerLeaseTTL(ctx context.Context, store *adminstore
 	now := time.Now().UTC()
 	acquired, generation, err := store.AcquireTenantHealthSchedulerLease(ctx, ownerID, now, ttl)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", errTenantHealthSchedulerLeaseAcquireFailed, err)
 	}
 	if !acquired {
 		return errTenantHealthSchedulerLeaseNotAcquired
