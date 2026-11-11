@@ -11,7 +11,7 @@ import (
 var ErrTenantHealthSchedulerLeaseInvalid = errors.New("invalid tenant health scheduler lease")
 
 // AcquireTenantHealthSchedulerLease atomically acquires an expired lease or
-// renews the lease already owned by ownerID. All timestamps are UTC RFC3339Nano.
+// renews the lease already owned by ownerID. Lease deadlines use Unix nanoseconds to preserve numeric ordering.
 func (s *Store) AcquireTenantHealthSchedulerLease(ctx context.Context, ownerID string, now time.Time, ttl time.Duration) (bool, int64, error) {
 	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || now.IsZero() || ttl < 5*time.Second || ttl > 5*time.Minute {
 		return false, 0, ErrTenantHealthSchedulerLeaseInvalid
@@ -54,7 +54,7 @@ func (s *Store) RenewTenantHealthSchedulerLease(ctx context.Context, ownerID str
 func (s *Store) ReleaseTenantHealthSchedulerLease(ctx context.Context, ownerID string) error {
 	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 { return ErrTenantHealthSchedulerLeaseInvalid }
 	_, err := s.db.ExecContext(ctx, `UPDATE admin_tenant_health_scheduler_lease
-		SET owner_id = '', lease_until = '', updated_at = ?
+		SET owner_id = '', lease_until = 0, updated_at = ?
 		WHERE id = 1 AND owner_id = ?`, formatTenantHealthTime(time.Now().UTC()), ownerID)
 	if err != nil { return fmt.Errorf("release tenant health scheduler lease: %w", err) }
 	return nil
