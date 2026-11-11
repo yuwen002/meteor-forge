@@ -244,3 +244,80 @@ func TestRunWithTenantHealthSchedulerLeaseFencesOldOwnerAfterTakeover(t *testing
 		t.Fatalf("old owner's deferred release damaged replacement lease: %+v", info)
 	}
 }
+
+// TestTenantHealthSchedulerLeaseRepeatedTakeoversKeepGenerationMonotonic
+// simulates repeated process crashes and recoveries without waiting for real TTLs.
+// Every replacement must advance the fencing generation, and stale owners must
+// neither renew nor release the current owner's lease.
+func TestTenantHealthSchedulerLeaseRepeatedTakeoversKeepGenerationMonotonic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "repeated-takeovers.db")
+	stores := make([]*adminstore.Store, 3)
+	for i := range stores {
+		store, err := adminstore.Open(context.Background(), path, strings.Repeat("0", 64))
+		if err != nil {
+			t.Fatal(err)
+		}
+		stores[i] = store
+		defer store.Close()
+	}
+
+	base := time.Now().UTC().Truncate(time.Second)
+	const ttl = 5 * time.Second
+	const takeovers = 12
+	previousOwner := ""
+	var currentOwner string
+	var currentGeneration int64
+	var currentNow time.Time
+
+	for i := 0; i < takeovers; i++ {
+		currentOwner = fmt.Sprintf("recovered-instance-%02d", i)
+		currentNow = base.Add(time.Duration(i) * 6 * time.Second)
+		store := stores[i%len(stores)]
+		acquired, generation, err := store.AcquireTenantHealthSchedulerLease(
+			context.Background(), currentOwner, currentNow, ttl,
+		)
+		if err != nil || !acquired {
+			t.Fatalf("takeover %d: acquired=%v generation=%d err=%v", i+1, acquired, generation, err)
+		}
+		wantGeneration := int64(i + 1)
+		if generation != wantGeneration {
+			t.Fatalf("takeover %d generation=%d, want %d", i+1, generation, wantGeneration)
+		}
+		currentGeneration = generation
+
+		if previousOwner != "" {
+			staleStore := stores[(i-1+len(stores))%len(stores)]
+			renewed, err := staleStore.RenewTenantHealthSchedulerLease(
+				context.Background(), previousOwner, currentNow, ttl,
+			)
+			if err != nil {
+				t.Fatalf("stale owner renewal after takeover %d: %v", i+1, err)
+			}
+			if renewed {
+				t.Fatalf("stale owner %q renewed lease after takeover %d", previousOwner, i+1)
+			}
+			if err := staleStore.ReleaseTenantHealthSchedulerLease(context.Background(), previousOwner); err != nil {
+				t.Fatalf("stale owner release after takeover %d: %v", i+1, err)
+			}
+		}
+
+		info, err := store.GetTenantHealthSchedulerLeaseInfo(context.Background(), currentOwner, currentNow.Add(time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Status != "held_by_this_instance" || info.Generation != currentGeneration {
+			t.Fatalf("takeover %d current lease info=%+v", i+1, info)
+		}
+		previousOwner = currentOwner
+	}
+
+	info, err := stores[(takeovers-1)%len(stores)].GetTenantHealthSchedulerLeaseInfo(
+		context.Background(), currentOwner, currentNow.Add(time.Second),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Status != "held_by_this_instance" || info.Generation != takeovers {
+		t.Fatalf("final lease info=%+v, want current owner and generation %d", info, takeovers)
+	}
+}
