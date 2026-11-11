@@ -369,6 +369,7 @@ func TestTenantHealthSchedulerSnapshotClearsNextRunWhenDisabled(t *testing.T) {
 func TestTenantHealthSchedulerSkipsCleanupAfterLeaseLoss(t *testing.T) {
 	var cleanups atomic.Int32
 	runFinished := make(chan struct{})
+	cleanupCalled := make(chan struct{}, 1)
 	scheduler := newTenantHealthScheduler(
 		func(context.Context) (adminstore.TenantHealthSettings, error) {
 			return adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 30, HistoryRetentionDays: 30}, nil
@@ -379,6 +380,7 @@ func TestTenantHealthSchedulerSkipsCleanupAfterLeaseLoss(t *testing.T) {
 		},
 		func(context.Context, int) error {
 			cleanups.Add(1)
+			cleanupCalled <- struct{}{}
 			return nil
 		},
 	)
@@ -388,6 +390,14 @@ func TestTenantHealthSchedulerSkipsCleanupAfterLeaseLoss(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		scheduler.Close()
 		t.Fatal("scheduled round did not finish")
+	}
+	// Keep the scheduler alive after the callback returns. If the lease-lost
+	// branch accidentally falls through, cleanup would be invoked immediately.
+	select {
+	case <-cleanupCalled:
+		scheduler.Close()
+		t.Fatal("cleanup ran after the scheduler lost its lease")
+	case <-time.After(100 * time.Millisecond):
 	}
 	scheduler.Close()
 	if got := cleanups.Load(); got != 0 {
