@@ -36,18 +36,28 @@ func newTenantHealthSchedulerOwnerID() (string, error) {
 // database. A heartbeat cancels the round if ownership is lost; expiry allows
 // another process to take over after an abnormal exit.
 func runWithTenantHealthSchedulerLease(ctx context.Context, store *adminstore.Store, ownerID string, run func(context.Context) error) error {
-	if store == nil || ownerID == "" {
+	return runWithTenantHealthSchedulerLeaseTTL(ctx, store, ownerID, tenantHealthSchedulerLeaseTTL, run)
+}
+
+// runWithTenantHealthSchedulerLeaseTTL keeps the production lease policy in the
+// wrapper while allowing deterministic short-lease failure tests.
+func runWithTenantHealthSchedulerLeaseTTL(ctx context.Context, store *adminstore.Store, ownerID string, ttl time.Duration, run func(context.Context) error) error {
+	if store == nil || ownerID == "" || ttl < 5*time.Second || ttl > 5*time.Minute {
 		return errors.New("tenant health scheduler lease is not configured")
 	}
 	now := time.Now().UTC()
-	acquired, generation, err := store.AcquireTenantHealthSchedulerLease(ctx, ownerID, now, tenantHealthSchedulerLeaseTTL)
-	if err != nil { return err }
-	if !acquired { return errTenantHealthSchedulerLeaseNotAcquired }
+	acquired, generation, err := store.AcquireTenantHealthSchedulerLease(ctx, ownerID, now, ttl)
+	if err != nil {
+		return err
+	}
+	if !acquired {
+		return errTenantHealthSchedulerLeaseNotAcquired
+	}
 
 	runCtx, cancel := context.WithCancel(ctx)
 	heartbeatDone := make(chan error, 1)
 	go func() {
-		ticker := time.NewTicker(tenantHealthSchedulerLeaseTTL / 3)
+		ticker := time.NewTicker(ttl / 3)
 		defer ticker.Stop()
 		for {
 			select {
@@ -55,7 +65,7 @@ func runWithTenantHealthSchedulerLease(ctx context.Context, store *adminstore.St
 				heartbeatDone <- nil
 				return
 			case <-ticker.C:
-				renewed, renewErr := store.RenewTenantHealthSchedulerLease(runCtx, ownerID, time.Now().UTC(), tenantHealthSchedulerLeaseTTL)
+				renewed, renewErr := store.RenewTenantHealthSchedulerLease(runCtx, ownerID, time.Now().UTC(), ttl)
 				if renewErr != nil {
 					heartbeatDone <- fmt.Errorf("%w: renewal failed: %v", errTenantHealthSchedulerLeaseLost, renewErr)
 					cancel()
@@ -77,7 +87,11 @@ func runWithTenantHealthSchedulerLease(ctx context.Context, store *adminstore.St
 	releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	releaseErr := store.ReleaseTenantHealthSchedulerLease(releaseCtx, ownerID)
 	releaseCancel()
-	if heartbeatErr != nil { return heartbeatErr }
-	if releaseErr != nil && ctx.Err() == nil { return releaseErr }
+	if heartbeatErr != nil {
+		return heartbeatErr
+	}
+	if releaseErr != nil && ctx.Err() == nil {
+		return releaseErr
+	}
 	return runErr
 }
