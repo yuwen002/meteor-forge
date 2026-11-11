@@ -5,12 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
+	"net/http/httptest"\n\t"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/yuwen002/meteor-forge/internal/adminstore"
+	"github.com/yuwen002/meteor-forge/internal/adminstore"\n\t"github.com/yuwen002/meteor-forge/pkg/migration"
 )
 
 func TestMigrationTaskDispositionRequiresAdministratorAndRecordsServerSnapshot(t *testing.T) {
