@@ -85,7 +85,7 @@ func TestTenantHealthSchedulerLeaseFencesStaleResultWrites(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	defer second.Close()
 	tenant := newTenantForHealthTest(t, first, "lease-fence")
-	now := time.Date(2026, 11, 11, 6, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	ok, oldGeneration, err := first.AcquireTenantHealthSchedulerLease(context.Background(), "old-owner", now, 30*time.Second)
 	if err != nil || !ok { t.Fatalf("old owner acquire: ok=%v err=%v", ok, err) }
 	ok, newGeneration, err := second.AcquireTenantHealthSchedulerLease(context.Background(), "new-owner", now.Add(31*time.Second), 30*time.Second)
