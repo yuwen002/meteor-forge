@@ -17,6 +17,9 @@ type tenantHealthSchedulerSnapshot struct {
 	TotalRuns uint64 `json:"total_runs"`
 	SuccessCount uint64 `json:"success_count"`
 	FailureCount uint64 `json:"failure_count"`
+	LeaseSkippedCount uint64 `json:"lease_skipped_count"`
+	LeaseLostCount uint64 `json:"lease_lost_count"`
+	LeaseAcquireFailureCount uint64 `json:"lease_acquire_failure_count"`
 	LastStartedAt *time.Time `json:"last_started_at,omitempty"`
 	LastFinishedAt *time.Time `json:"last_finished_at,omitempty"`
 	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
@@ -126,6 +129,12 @@ func (s *tenantHealthScheduler) finishRound(started time.Time, runErr error) {
 	s.snapshotMu.Unlock()
 }
 
+func (s *tenantHealthScheduler) recordLeaseSkipped() { s.snapshotMu.Lock(); s.snapshot.LeaseSkippedCount++; s.snapshotMu.Unlock() }
+
+func (s *tenantHealthScheduler) recordLeaseLost() { s.snapshotMu.Lock(); s.snapshot.LeaseLostCount++; s.snapshotMu.Unlock() }
+
+func (s *tenantHealthScheduler) recordLeaseAcquireFailure() { s.snapshotMu.Lock(); s.snapshot.LeaseAcquireFailureCount++; s.snapshotMu.Unlock() }
+
 func (s *tenantHealthScheduler) setSnapshotError(message string) {
 	s.snapshotMu.Lock()
 	s.snapshot.LastError = message
@@ -230,6 +239,7 @@ func (s *tenantHealthScheduler) loop(ctx context.Context) {
 		roundCtx, cancel := context.WithCancel(ctx)
 		runErr := s.run(roundCtx, settings)
 		if errors.Is(runErr, errTenantHealthSchedulerLeaseNotAcquired) {
+			s.recordLeaseSkipped()
 			cancel()
 			s.snapshotMu.Lock()
 			s.snapshot.Running = false
@@ -237,6 +247,8 @@ func (s *tenantHealthScheduler) loop(ctx context.Context) {
 			s.snapshotMu.Unlock()
 			continue
 		}
+		if errors.Is(runErr, errTenantHealthSchedulerLeaseAcquireFailed) { s.recordLeaseAcquireFailure() }
+		if errors.Is(runErr, errTenantHealthSchedulerLeaseLost) { s.recordLeaseLost() }
 		if runErr != nil && ctx.Err() == nil {
 			s.reportError(fmt.Errorf("run scheduled tenant health checks: %w", runErr))
 		}
