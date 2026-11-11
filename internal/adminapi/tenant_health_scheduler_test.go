@@ -404,3 +404,44 @@ func TestTenantHealthSchedulerSkipsCleanupAfterLeaseLoss(t *testing.T) {
 		t.Fatalf("cleanup calls after lease loss=%d, want 0", got)
 	}
 }
+
+
+// TestTenantHealthSchedulerTracksLeaseCoordinationOutcomes verifies the
+// process-local counters distinguish a normal skip, acquisition failure and
+// lease loss from actual completed health-check rounds.
+func TestTenantHealthSchedulerTracksLeaseCoordinationOutcomes(t *testing.T) {
+	var calls atomic.Int32
+	settings := adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 1, HistoryRetentionDays: 30}
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) { return settings, nil },
+		func(context.Context, adminstore.TenantHealthSettings) error {
+			switch calls.Add(1) {
+			case 1:
+				return errTenantHealthSchedulerLeaseNotAcquired
+			case 2:
+				return fmt.Errorf("%w: simulated database unavailable", errTenantHealthSchedulerLeaseAcquireFailed)
+			default:
+				return errTenantHealthSchedulerLeaseLost
+			}
+		},
+		func(context.Context, int) error { return nil },
+	)
+	scheduler.Start(context.Background())
+	deadline := time.After(5 * time.Second)
+	for {
+		snapshot := scheduler.Snapshot()
+		if snapshot.LeaseSkippedCount == 1 && snapshot.LeaseAcquireFailureCount == 1 && snapshot.LeaseLostCount == 1 {
+			scheduler.Close()
+			if snapshot.TotalRuns != 2 || snapshot.FailureCount != 2 {
+				t.Fatalf("lease coordination outcomes incorrectly counted as health rounds: %+v", snapshot)
+			}
+			return
+		}
+		select {
+		case <-deadline:
+			scheduler.Close()
+			t.Fatalf("lease counters did not reach expected values: %+v", scheduler.Snapshot())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
