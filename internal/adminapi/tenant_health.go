@@ -214,14 +214,23 @@ func (s *Server) runTenantHealthCheckWithOptions(ctx context.Context, tenantID s
 	}
 	persistCtx, persistCancel := context.WithTimeout(ctx, 2*time.Second)
 	defer persistCancel()
-	err = s.authStore.RecordTenantConnectionHealthWithSource(persistCtx, adminstore.TenantConnectionHealth{
+	healthRecord := adminstore.TenantConnectionHealth{
 		TenantID: result.TenantID,
 		Status: string(result.Status),
 		CheckedAt: result.CheckedAt,
 		DurationMS: result.DurationMS,
 		Message: result.Message,
 		ErrorCode: string(result.ErrorCode),
-	}, source)
+	}
+	if source == "scheduled" {
+		lease, ok := ctx.Value(tenantHealthSchedulerLeaseContextKey{}).(tenantHealthSchedulerLeaseContext)
+		if !ok {
+			return tenant.HealthResult{}, errors.New("scheduled health check is missing its scheduler lease")
+		}
+		err = s.authStore.RecordTenantConnectionHealthWithSchedulerLease(persistCtx, healthRecord, lease.ownerID, lease.generation)
+	} else {
+		err = s.authStore.RecordTenantConnectionHealthWithSource(persistCtx, healthRecord, source)
+	}
 	if err != nil {
 		return tenant.HealthResult{}, errors.New("unable to persist tenant connection health")
 	}
