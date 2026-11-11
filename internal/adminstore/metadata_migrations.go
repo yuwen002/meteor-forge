@@ -30,6 +30,7 @@ var metadataSchemaMigrations = []metadataSchemaMigration{
 	{Version: 16, Name: "租户定时健康巡检"},
 	{Version: 17, Name: "租户健康错误分类"},
 	{Version: 18, Name: "迁移任务人工处置记录", Up: migrateMigrationTaskDispositions},
+	{Version: 19, Name: "租户健康巡检调度租约", Up: migrateTenantHealthSchedulerLease},
 }
 
 func metadataSchemaVersion() int {

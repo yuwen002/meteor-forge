@@ -20,7 +20,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentMetadataSchemaVersion = 18
+const currentMetadataSchemaVersion = 19
 
 // metadataOpenLocks prevents two goroutines in the same process from racing
 // through SQLite connection setup and schema initialization for one file.
