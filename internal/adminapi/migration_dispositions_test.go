@@ -69,3 +69,31 @@ func TestMigrationTaskDispositionRequiresAdministratorAndRecordsServerSnapshot(t
 func contextWithAdmin(ctx context.Context, role string) context.Context {
 	return context.WithValue(ctx, adminContextKey{}, adminstore.AdminSession{Admin:adminstore.Admin{Username:"test-admin",Role:role}})
 }
+
+
+func TestMigrationDispositionReconciliationEvidenceRules(t *testing.T) {
+	tests := []struct {
+		name string
+		action string
+		snapshot migrationTaskReconciliation
+		want bool
+	}{
+		{name: "确认完成要求版本存在且校验和匹配", action: "confirm_completed", snapshot: migrationTaskReconciliation{HistoryAvailable: true, CurrentVersionState: "present", CurrentVersionChecksum: "matched"}, want: true},
+		{name: "兼容旧历史的未校验记录", action: "confirm_completed", snapshot: migrationTaskReconciliation{HistoryAvailable: true, CurrentVersionState: "present", CurrentVersionChecksum: "legacy_unverified"}, want: true},
+		{name: "版本不存在不能确认完成", action: "confirm_completed", snapshot: migrationTaskReconciliation{HistoryAvailable: true, CurrentVersionState: "absent", CurrentVersionChecksum: "not_comparable"}, want: false},
+		{name: "校验和不一致不能确认完成", action: "confirm_completed", snapshot: migrationTaskReconciliation{HistoryAvailable: true, CurrentVersionState: "present", CurrentVersionChecksum: "mismatch"}, want: false},
+		{name: "授权重试要求版本不存在", action: "authorize_retry", snapshot: migrationTaskReconciliation{HistoryAvailable: true, CurrentVersionState: "absent", CurrentVersionChecksum: "not_comparable"}, want: true},
+		{name: "版本存在不能授权重试", action: "authorize_retry", snapshot: migrationTaskReconciliation{HistoryAvailable: true, CurrentVersionState: "present", CurrentVersionChecksum: "matched"}, want: false},
+		{name: "缺少本地脚本不能授权重试", action: "authorize_retry", snapshot: migrationTaskReconciliation{HistoryAvailable: true, CurrentVersionState: "absent", CurrentVersionChecksum: "local_script_missing"}, want: false},
+		{name: "历史不可读不能执行高风险处置", action: "authorize_retry", snapshot: migrationTaskReconciliation{HistoryAvailable: false, CurrentVersionState: "unknown", CurrentVersionChecksum: "unknown"}, want: false},
+		{name: "未知动作拒绝", action: "unexpected", snapshot: migrationTaskReconciliation{HistoryAvailable: true, CurrentVersionState: "present", CurrentVersionChecksum: "matched"}, want: false},
+		{name: "终止不依赖核对", action: "terminate", snapshot: migrationTaskReconciliation{}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := migrationDispositionReconciliationAllows(tt.action, tt.snapshot); got != tt.want {
+				t.Fatalf("migrationDispositionReconciliationAllows(%q, %+v) = %v, want %v", tt.action, tt.snapshot, got, tt.want)
+			}
+		})
+	}
+}

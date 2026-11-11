@@ -28,10 +28,11 @@ export function canUseMigrationDispositionAction(
 ): boolean {
   if (action === 'terminate') return true
   if (!reconciliation || !reconciliation.history_available) return false
-  return !(
-    reconciliation.current_version_state === 'unknown' ||
-    reconciliation.current_version_checksum_state === 'unknown' ||
-    reconciliation.current_version_checksum_state === 'mismatch' ||
-    reconciliation.current_version_checksum_state === 'local_script_missing'
-  )
+  if (action === 'confirm_completed') {
+    return reconciliation.current_version_state === 'present' &&
+      (reconciliation.current_version_checksum_state === 'matched' ||
+        reconciliation.current_version_checksum_state === 'legacy_unverified')
+  }
+  return reconciliation.current_version_state === 'absent' &&
+    reconciliation.current_version_checksum_state === 'not_comparable'
 }

@@ -81,12 +81,8 @@ func (s *Server) createMigrationTaskDisposition(w http.ResponseWriter, r *http.R
 		writeAPIError(w, http.StatusConflict, "task_not_interrupted", "only interrupted migration tasks can receive a disposition")
 		return
 	}
-	if request.Action != "terminate" && (!snapshot.HistoryAvailable ||
-		snapshot.CurrentVersionState == "unknown" ||
-		snapshot.CurrentVersionChecksum == "unknown" ||
-		snapshot.CurrentVersionChecksum == "mismatch" ||
-		snapshot.CurrentVersionChecksum == "local_script_missing") {
-		writeAPIError(w, http.StatusConflict, "reconciliation_not_sufficient", "target migration history is unavailable or inconsistent; confirm completion and retry authorization are blocked")
+	if !migrationDispositionReconciliationAllows(request.Action, snapshot) {
+		writeAPIError(w, http.StatusConflict, "reconciliation_not_sufficient", "the reconciliation evidence does not support this disposition; confirm completion requires the current version to be present with a matching or legacy-unverified checksum, while retry authorization requires it to be absent with readable history")
 		return
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -146,3 +142,25 @@ func newResponseRecorder() *responseRecorder {
 func (r *responseRecorder) Header() http.Header { return r.header }
 func (r *responseRecorder) WriteHeader(status int) { if r.status == 0 { r.status = status } }
 func (r *responseRecorder) Write(p []byte) (int, error) { if r.status == 0 { r.status = http.StatusOK }; return r.body.Write(p) }
+
+
+// migrationDispositionReconciliationAllows keeps the two high-risk decisions
+// tied to opposite, explicit facts from the server-generated read-only snapshot.
+func migrationDispositionReconciliationAllows(action string, snapshot migrationTaskReconciliation) bool {
+	if action == "terminate" {
+		return true
+	}
+	if !snapshot.HistoryAvailable {
+		return false
+	}
+	switch action {
+	case "confirm_completed":
+		return snapshot.CurrentVersionState == "present" &&
+			(snapshot.CurrentVersionChecksum == "matched" || snapshot.CurrentVersionChecksum == "legacy_unverified")
+	case "authorize_retry":
+		return snapshot.CurrentVersionState == "absent" &&
+			snapshot.CurrentVersionChecksum == "not_comparable"
+	default:
+		return false
+	}
+}

@@ -256,7 +256,7 @@ Down、DownSteps 和 ToVersion 必须显式提交 `confirm: true`，并且仅 ad
 }
 ```
 
-`action` 仅允许 `confirm_completed`、`authorize_retry`、`terminate`；必须提供 1–2000 字的 `operator_note`，并在 `confirmation` 字段完整填写：`我已核对目标数据库实际结构并理解中断迁移风险`。核对快照由服务端在提交时重新读取生成，客户端不能提交或覆盖快照。对于目标库不可连接、迁移历史不可读或核对结果未知的情况，接口拒绝 `confirm_completed` 和 `authorize_retry`；`terminate` 可在无法连接时记录人工终止决定。版本缺失、checksum 匹配或不匹配都不能替代对目标库实际结构的人工检查。
+`action` 仅允许 `confirm_completed`、`authorize_retry`、`terminate`；必须提供 1–2000 字的 `operator_note`，并在 `confirmation` 字段完整填写：`我已核对目标数据库实际结构并理解中断迁移风险`。核对快照由服务端在提交时重新读取生成，客户端不能提交或覆盖快照。接口按决定分别校验：`confirm_completed` 要求目标库历史可读、当前进度版本为 `present`，且校验和为 `matched` 或兼容旧版的 `legacy_unverified`；`authorize_retry` 要求目标库历史可读、当前进度版本为 `absent`，且校验和状态为 `not_comparable`（本地脚本存在、目标历史中尚无该版本）。版本已存在时禁止授权重试，版本不存在时禁止确认完成；历史不可读、状态未知、校验和不一致或本地脚本缺失时均拒绝这两种高风险决定。`terminate` 可在无法连接时记录人工终止决定。以上证据仍不能替代对目标库实际结构的人工检查。
 
 每个任务最多有一条处置记录，重复提交返回 HTTP 409。该接口只保存管理员决定与服务端核对快照：不会改变原任务状态、不会执行 SQL，也不会自动创建重试任务。授权重试后，管理员仍需在后续流程中基于实际核查结果创建新的任务。
 

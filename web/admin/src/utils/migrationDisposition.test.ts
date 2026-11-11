@@ -27,6 +27,19 @@ describe('迁移任务人工处置交互规则', () => {
     expect(canUseMigrationDispositionAction('authorize_retry', { ...readable, current_version_checksum_state: 'local_script_missing' })).toBe(false)
   })
 
+  it('确认完成要求当前版本存在且校验和匹配或为旧版未校验记录', () => {
+    expect(canUseMigrationDispositionAction('confirm_completed', readable)).toBe(true)
+    expect(canUseMigrationDispositionAction('confirm_completed', { ...readable, current_version_checksum_state: 'legacy_unverified' })).toBe(true)
+    expect(canUseMigrationDispositionAction('confirm_completed', { ...readable, current_version_state: 'absent', current_version_checksum_state: 'not_comparable' })).toBe(false)
+    expect(canUseMigrationDispositionAction('confirm_completed', { ...readable, current_version_checksum_state: 'mismatch' })).toBe(false)
+  })
+
+  it('授权重试要求当前版本不存在且本地脚本可比较', () => {
+    expect(canUseMigrationDispositionAction('authorize_retry', { ...readable, current_version_state: 'absent', current_version_checksum_state: 'not_comparable' })).toBe(true)
+    expect(canUseMigrationDispositionAction('authorize_retry', readable)).toBe(false)
+    expect(canUseMigrationDispositionAction('authorize_retry', { ...readable, current_version_state: 'absent', current_version_checksum_state: 'local_script_missing' })).toBe(false)
+  })
+
   it('允许终止决定记录，但不要求目标库核对可用', () => {
     expect(canUseMigrationDispositionAction('terminate', null)).toBe(true)
     expect(canUseMigrationDispositionAction('terminate', { ...readable, history_available: false })).toBe(true)
