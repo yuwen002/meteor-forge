@@ -21,8 +21,8 @@ func (s *Store) AcquireTenantHealthSchedulerLease(ctx context.Context, ownerID s
 		SET generation = generation + CASE WHEN owner_id = ? THEN 0 ELSE 1 END,
 		    owner_id = ?, lease_until = ?, updated_at = ?
 		WHERE id = 1 AND (owner_id = ? OR lease_until <= ? OR owner_id = '')`,
-		ownerID, ownerID, formatTenantHealthTime(now.Add(ttl)), formatTenantHealthTime(now),
-		ownerID, formatTenantHealthTime(now))
+		ownerID, ownerID, now.Add(ttl).UnixNano(), formatTenantHealthTime(now),
+		ownerID, now.UnixNano())
 	if err != nil { return false, 0, fmt.Errorf("acquire tenant health scheduler lease: %w", err) }
 	affected, err := result.RowsAffected()
 	if err != nil { return false, 0, fmt.Errorf("read tenant health scheduler lease result: %w", err) }
@@ -43,7 +43,7 @@ func (s *Store) RenewTenantHealthSchedulerLease(ctx context.Context, ownerID str
 	result, err := s.db.ExecContext(ctx, `UPDATE admin_tenant_health_scheduler_lease
 		SET lease_until = ?, updated_at = ?
 		WHERE id = 1 AND owner_id = ? AND lease_until > ?`,
-		formatTenantHealthTime(now.Add(ttl)), formatTenantHealthTime(now), ownerID, formatTenantHealthTime(now))
+		now.Add(ttl).UnixNano(), formatTenantHealthTime(now), ownerID, now.UnixNano())
 	if err != nil { return false, fmt.Errorf("renew tenant health scheduler lease: %w", err) }
 	affected, err := result.RowsAffected()
 	if err != nil { return false, fmt.Errorf("read renewed tenant health scheduler lease result: %w", err) }
