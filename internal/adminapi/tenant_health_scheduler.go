@@ -247,6 +247,9 @@ func (s *tenantHealthScheduler) loop(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		if errors.Is(runErr, errTenantHealthSchedulerLeaseLost) {
+			continue
+		}
 		cleanupCtx, cleanupCancel := context.WithTimeout(ctx, 5*time.Second)
 		if err := s.cleanup(cleanupCtx, settings.HistoryRetentionDays); err != nil && ctx.Err() == nil {
 			s.setSnapshotError("清理巡检历史失败")

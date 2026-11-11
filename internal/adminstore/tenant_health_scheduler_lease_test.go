@@ -103,3 +103,32 @@ func TestTenantHealthSchedulerLeaseFencesStaleResultWrites(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	if len(page.Items) != 1 { t.Fatalf("current owner history rows=%d, want 1", len(page.Items)) }
 }
+
+func TestTenantHealthSchedulerLeaseInfoRedactsOwnerAndReportsExpiry(t *testing.T) {
+	store, err := Open(context.Background(), ":memory:", testKey)
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	now := time.Now().UTC()
+	info, err := store.GetTenantHealthSchedulerLeaseInfo(context.Background(), "instance-a", now)
+	if err != nil { t.Fatal(err) }
+	if info.Status != "expired_or_unclaimed" || info.LeaseUntil != nil || info.Generation != 0 {
+		t.Fatalf("unexpected unclaimed lease info: %+v", info)
+	}
+	acquired, generation, err := store.AcquireTenantHealthSchedulerLease(context.Background(), "secret-owner-id", now, 30*time.Second)
+	if err != nil || !acquired { t.Fatalf("acquire lease: acquired=%v err=%v", acquired, err) }
+	info, err = store.GetTenantHealthSchedulerLeaseInfo(context.Background(), "secret-owner-id", now.Add(time.Second))
+	if err != nil { t.Fatal(err) }
+	if info.Status != "held_by_this_instance" || info.LeaseUntil == nil || info.Generation != generation {
+		t.Fatalf("unexpected owned lease info: %+v", info)
+	}
+	info, err = store.GetTenantHealthSchedulerLeaseInfo(context.Background(), "instance-b", now.Add(time.Second))
+	if err != nil { t.Fatal(err) }
+	if info.Status != "held_by_other_instance" || info.LeaseUntil == nil {
+		t.Fatalf("unexpected remote lease info: %+v", info)
+	}
+	info, err = store.GetTenantHealthSchedulerLeaseInfo(context.Background(), "instance-b", now.Add(31*time.Second))
+	if err != nil { t.Fatal(err) }
+	if info.Status != "expired_or_unclaimed" || info.LeaseUntil != nil || info.Generation != generation {
+		t.Fatalf("unexpected expired lease info: %+v", info)
+	}
+}

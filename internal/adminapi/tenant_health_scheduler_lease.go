@@ -13,6 +13,8 @@ import (
 
 const tenantHealthSchedulerLeaseTTL = 30 * time.Second
 
+var errTenantHealthSchedulerLeaseLost = errors.New("tenant health scheduler lease ownership was lost")
+
 type tenantHealthSchedulerLeaseContextKey struct{}
 
 type tenantHealthSchedulerLeaseContext struct {
@@ -55,12 +57,12 @@ func runWithTenantHealthSchedulerLease(ctx context.Context, store *adminstore.St
 			case <-ticker.C:
 				renewed, renewErr := store.RenewTenantHealthSchedulerLease(runCtx, ownerID, time.Now().UTC(), tenantHealthSchedulerLeaseTTL)
 				if renewErr != nil {
-					heartbeatDone <- fmt.Errorf("renew tenant health scheduler lease: %w", renewErr)
+					heartbeatDone <- fmt.Errorf("%w: renewal failed: %v", errTenantHealthSchedulerLeaseLost, renewErr)
 					cancel()
 					return
 				}
 				if !renewed {
-					heartbeatDone <- errors.New("tenant health scheduler lease ownership was lost")
+					heartbeatDone <- errTenantHealthSchedulerLeaseLost
 					cancel()
 					return
 				}
