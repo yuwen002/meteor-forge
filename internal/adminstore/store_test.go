@@ -317,7 +317,7 @@ func TestOpenRejectsNewerMetadataSchemaWithoutModifyingIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO admin_schema_migrations(version, applied_at)
-		VALUES (19, 'future-release')`); err != nil {
+		VALUES (20, 'future-release')`); err != nil {
 		_ = db.Close()
 		t.Fatal(err)
 	}
@@ -330,7 +330,7 @@ func TestOpenRejectsNewerMetadataSchemaWithoutModifyingIt(t *testing.T) {
 		_ = store.Close()
 		t.Fatal("Open() should reject a metadata database from a newer schema version")
 	}
-	if !strings.Contains(err.Error(), "metadata schema version 19 is newer than supported version 18") {
+	if !strings.Contains(err.Error(), "metadata schema version 20 is newer than supported version 19") {
 		t.Fatalf("unexpected Open() error: %v", err)
 	}
 
@@ -343,8 +343,8 @@ func TestOpenRejectsNewerMetadataSchemaWithoutModifyingIt(t *testing.T) {
 	if err := verifyDB.QueryRowContext(ctx, "SELECT MAX(version) FROM admin_schema_migrations").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 19 {
-		t.Fatalf("future schema version after rejected open=%d, want 19", version)
+	if version != 20 {
+		t.Fatalf("future schema version after rejected open=%d, want 20", version)
 	}
 	var dataSourceTableCount int
 	if err := verifyDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master
@@ -369,9 +369,9 @@ func TestRepeatedOpenPreservesInitializedMetadata(t *testing.T) {
 			_ = store.Close()
 			t.Fatal(err)
 		}
-		if version != 18 {
+		if version != 19 {
 			_ = store.Close()
-			t.Fatalf("schema version after open=%d, want 18", version)
+			t.Fatalf("schema version after open=%d, want 19", version)
 		}
 		if attempt == 0 {
 			if _, err := store.db.ExecContext(ctx, `INSERT INTO admin_data_sources
@@ -416,7 +416,7 @@ func TestMetadataMigrationRunnerCommitsEachVersionAndIsIdempotent(t *testing.T) 
 		}
 	}
 	called := false
-	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations[:len(metadataSchemaMigrations)-1]...)
+	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations[:len(metadataSchemaMigrations)-2]...)
 	migrations = append(migrations, metadataSchemaMigration{
 		Version: 18, Name: "迁移执行器测试",
 		Up: func(ctx context.Context, tx *sql.Tx) error {
@@ -470,7 +470,7 @@ func TestMetadataMigrationRunnerRollsBackFailedVersion(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations[:len(metadataSchemaMigrations)-1]...)
+	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations[:len(metadataSchemaMigrations)-2]...)
 	migrations = append(migrations, metadataSchemaMigration{
 		Version: 18, Name: "失败迁移测试",
 		Up: func(ctx context.Context, tx *sql.Tx) error {
@@ -500,7 +500,7 @@ func TestMetadataMigrationRunnerRollsBackFailedVersion(t *testing.T) {
 }
 
 func TestMetadataMigrationRegistryRejectsMissingUpForNewVersion(t *testing.T) {
-	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations[:len(metadataSchemaMigrations)-1]...)
+	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations[:len(metadataSchemaMigrations)-2]...)
 	migrations = append(migrations, metadataSchemaMigration{Version: 18, Name: "缺少执行函数"})
 	if err := validateMetadataMigrationRegistry(migrations, 18); err == nil || !strings.Contains(err.Error(), "has no Up function") {
 		t.Fatalf("expected missing Up validation error, got %v", err)
@@ -546,7 +546,7 @@ func TestMetadataMigrationRunnerSerializesConcurrentStarts(t *testing.T) {
 	var upCalls atomic.Int32
 	upEntered := make(chan struct{})
 	releaseUp := make(chan struct{})
-	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations[:len(metadataSchemaMigrations)-1]...)
+	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations[:len(metadataSchemaMigrations)-2]...)
 	migrations = append(migrations, metadataSchemaMigration{
 		Version: 18, Name: "并发迁移测试",
 		Up: func(ctx context.Context, tx *sql.Tx) error {
@@ -621,7 +621,7 @@ func TestMetadataMigrationRunnerResumesAfterCanceledVersion(t *testing.T) {
 
 	var version18Calls, version19Calls atomic.Int32
 	version19Entered := make(chan struct{})
-	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations[:len(metadataSchemaMigrations)-1]...)
+	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations[:len(metadataSchemaMigrations)-2]...)
 	migrations = append(migrations,
 		metadataSchemaMigration{
 			Version: 18, Name: "恢复测试 v18",
@@ -732,7 +732,7 @@ func TestMetadataMigrationRunnerRollsBackSQLExecutionError(t *testing.T) {
 		}
 	}
 
-	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations[:len(metadataSchemaMigrations)-1]...)
+	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations[:len(metadataSchemaMigrations)-2]...)
 	migrations = append(migrations, metadataSchemaMigration{
 		Version: 18, Name: "SQL 执行错误回滚测试",
 		Up: func(ctx context.Context, tx *sql.Tx) error {
@@ -778,7 +778,7 @@ func TestMetadataMigrationRunnerRollsBackCommitFailure(t *testing.T) {
 		}
 	}
 
-	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations[:len(metadataSchemaMigrations)-1]...)
+	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations[:len(metadataSchemaMigrations)-2]...)
 	migrations = append(migrations, metadataSchemaMigration{
 		Version: 18, Name: "提交失败回滚测试",
 		Up: func(ctx context.Context, tx *sql.Tx) error {
