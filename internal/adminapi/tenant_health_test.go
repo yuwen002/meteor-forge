@@ -325,6 +325,9 @@ func TestTenantHealthSchedulerSnapshotAPI(t *testing.T) {
 	if got.LastError != "巡检执行失败" || got.NextRunAt == nil || !got.NextRunAt.Equal(next) {
 		t.Fatalf("unexpected scheduler details: %+v", got)
 	}
+	if got.LeaseStatus != "expired_or_unclaimed" {
+		t.Fatalf("unexpected scheduler lease status: %+v", got)
+	}
 }
 
 
@@ -404,4 +407,36 @@ func TestTenantHealthTrendsAPIValidatesRangeAndReturnsBuckets(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestTenantHealthSchedulerAPIReportsSharedLeaseState(t *testing.T) {
+	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	server := newTestServerWithStore(store)
+	defer server.Close()
+	owner := server.tenantHealthLeaseOwnerID
+	if owner == "" { t.Fatal("scheduler owner ID was not configured") }
+
+	acquired, _, err := store.AcquireTenantHealthSchedulerLease(context.Background(), owner, time.Now().UTC(), 30*time.Second)
+	if err != nil || !acquired { t.Fatalf("acquire local lease: acquired=%v err=%v", acquired, err) }
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/tenant-health/scheduler", nil))
+	if rec.Code != http.StatusOK { t.Fatalf("local lease status=%d body=%s", rec.Code, rec.Body.String()) }
+	var local map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &local); err != nil { t.Fatal(err) }
+	if local["lease_status"] != "held_by_this_instance" || local["lease_generation"] != float64(1) {
+		t.Fatalf("unexpected local lease status: %+v", local)
+	}
+	if _, leaked := local["lease_owner_id"]; leaked { t.Fatal("scheduler API exposed lease owner ID") }
+
+	if err := store.ReleaseTenantHealthSchedulerLease(context.Background(), owner); err != nil { t.Fatal(err) }
+	acquired, _, err = store.AcquireTenantHealthSchedulerLease(context.Background(), "another-instance", time.Now().UTC(), 30*time.Second)
+	if err != nil || !acquired { t.Fatalf("acquire other lease: acquired=%v err=%v", acquired, err) }
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/tenant-health/scheduler", nil))
+	if rec.Code != http.StatusOK { t.Fatalf("other lease status=%d body=%s", rec.Code, rec.Body.String()) }
+	local = nil
+	if err := json.Unmarshal(rec.Body.Bytes(), &local); err != nil { t.Fatal(err) }
+	if local["lease_status"] != "held_by_other_instance" { t.Fatalf("unexpected other lease status: %+v", local) }
 }

@@ -155,3 +155,16 @@
 7. 全量 CI 与 PR 验收。
 
 每一步使用中文提交说明；本阶段不主动推进产品版本号。
+
+
+## 多实例调度状态排查
+
+通过 `GET /api/v1/tenant-health/scheduler` 查看本实例的进程内执行统计和共享租约状态：
+
+- `held_by_this_instance`：本实例当前持有有效租约，且租约代次可用于 fencing。
+- `held_by_other_instance`：另一实例持有有效租约，本实例会跳过本轮。
+- `expired_or_unclaimed`：当前没有有效持有者，等待下一轮竞争；若长期持续出现，应检查巡检配置、调度日志和元数据库访问。
+- `unavailable`：本次无法读取租约状态，接口仍返回进程内统计；检查管理元数据库连接和日志。
+- `not_configured`：本实例未能配置租约身份，不能执行安全的多实例调度。
+
+`lease_expires_at` 和 `lease_remaining_seconds` 仅在有效租约存在时提供；`lease_generation` 在每次新持有者接管时递增。接口不会暴露随机 owner ID、DSN 或数据库驱动错误。该状态是当前查询时刻的观测值，不是全局历史统计。

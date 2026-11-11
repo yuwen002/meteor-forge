@@ -617,8 +617,11 @@ GET /api/v1/tenant-discovery/preview?data_source_id=control-source-id
 | `next_run_at` | 当前预计下一轮开始时间；禁用、运行中或尚未安排时省略 |
 | `last_duration_ms` | 最近一轮巡检执行耗时（毫秒） |
 | `last_error` | 最近一次调度错误的固定脱敏摘要，不包含数据库驱动原始错误或连接凭据 |
+| `lease_status` | 当前共享租约状态：`held_by_this_instance`、`held_by_other_instance`、`expired_or_unclaimed`、`unavailable` 或 `not_configured` |
+| `lease_expires_at` / `lease_remaining_seconds` | 当前有效租约的到期时间和剩余秒数；无有效租约时省略到期时间并返回 0 |
+| `lease_generation` | 租约 fencing 代次；每次新持有者接管时递增 |
 
-统计仅在当前进程内维护，服务重启后归零；不代表多实例全局统计。多个 API 进程共享同一管理元数据库时，每轮巡检通过数据库租约选出唯一执行者；租约 30 秒、每 10 秒续约，进程异常退出后可在租约过期后接管；结果写入事务会校验租约 owner 和 generation，阻止旧持有者写入过期结果。未取得租约的实例跳过该轮。配置读取或历史清理错误可能更新 `last_error`，但不会计入巡检轮次失败数。
+统计仅在当前进程内维护，服务重启后归零；不代表多实例全局统计。多个 API 进程共享同一管理元数据库时，每轮巡检通过数据库租约选出唯一执行者；租约 30 秒、每 10 秒续约，进程异常退出后可在租约过期后接管；结果写入事务会校验租约 owner 和 generation，阻止旧持有者写入过期结果。未取得租约的实例跳过该轮。配置读取或历史清理错误可能更新 `last_error`，但不会计入巡检轮次失败数。调度状态接口会额外实时读取共享租约并返回脱敏的 `lease_status`、`lease_expires_at`、`lease_remaining_seconds` 和 `lease_generation`；不会返回随机 owner ID。租约状态读取失败时仍返回进程内统计，`lease_status` 为 `unavailable`。
 
 ### GET /tenant-health/summary
 

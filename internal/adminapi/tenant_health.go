@@ -84,7 +84,26 @@ func (s *Server) getTenantHealthScheduler(w http.ResponseWriter, r *http.Request
 		writeAPIError(w, http.StatusServiceUnavailable, "tenant_health_scheduler_unavailable", "tenant health scheduler is unavailable")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.healthScheduler.Snapshot())
+	snapshot := s.healthScheduler.Snapshot()
+	if s.authStore == nil || s.tenantHealthLeaseOwnerID == "" {
+		snapshot.LeaseStatus = "not_configured"
+		writeJSON(w, http.StatusOK, snapshot)
+		return
+	}
+	lease, err := s.authStore.GetTenantHealthSchedulerLeaseInfo(r.Context(), s.tenantHealthLeaseOwnerID, time.Now().UTC())
+	if err != nil {
+		snapshot.LeaseStatus = "unavailable"
+		writeJSON(w, http.StatusOK, snapshot)
+		return
+	}
+	snapshot.LeaseStatus = lease.Status
+	snapshot.LeaseExpiresAt = lease.LeaseUntil
+	snapshot.LeaseGeneration = lease.Generation
+	if lease.LeaseUntil != nil {
+		remaining := time.Until(*lease.LeaseUntil).Seconds()
+		if remaining > 0 { snapshot.LeaseRemainingSeconds = int64(remaining) }
+	}
+	writeJSON(w, http.StatusOK, snapshot)
 }
 
 func (s *Server) getTenantHealthSettings(w http.ResponseWriter, r *http.Request) {

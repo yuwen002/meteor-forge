@@ -62,3 +62,31 @@ func (s *Store) ReleaseTenantHealthSchedulerLease(ctx context.Context, ownerID s
 	if err != nil { return fmt.Errorf("release tenant health scheduler lease: %w", err) }
 	return nil
 }
+
+type TenantHealthSchedulerLeaseInfo struct {
+	Status string
+	LeaseUntil *time.Time
+	Generation int64
+}
+
+// GetTenantHealthSchedulerLeaseInfo returns a redacted view of the shared
+// scheduler lease. It never exposes the random owner identifier.
+func (s *Store) GetTenantHealthSchedulerLeaseInfo(ctx context.Context, ownerID string, now time.Time) (TenantHealthSchedulerLeaseInfo, error) {
+	if now.IsZero() { return TenantHealthSchedulerLeaseInfo{}, ErrTenantHealthSchedulerLeaseInvalid }
+	var currentOwner string
+	var leaseUntil int64
+	var generation int64
+	err := s.db.QueryRowContext(ctx, `SELECT owner_id, lease_until, generation
+		FROM admin_tenant_health_scheduler_lease WHERE id = 1`).Scan(&currentOwner, &leaseUntil, &generation)
+	if err != nil { return TenantHealthSchedulerLeaseInfo{}, fmt.Errorf("read tenant health scheduler lease info: %w", err) }
+	info := TenantHealthSchedulerLeaseInfo{Status:"expired_or_unclaimed", Generation:generation}
+	if leaseUntil > now.UTC().UnixNano() && currentOwner != "" {
+		info.LeaseUntil = ptrTime(time.Unix(0, leaseUntil).UTC())
+		if ownerID != "" && currentOwner == ownerID {
+			info.Status = "held_by_this_instance"
+		} else {
+			info.Status = "held_by_other_instance"
+		}
+	}
+	return info, nil
+}

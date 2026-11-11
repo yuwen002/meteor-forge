@@ -23,6 +23,10 @@ type tenantHealthSchedulerSnapshot struct {
 	NextRunAt *time.Time `json:"next_run_at,omitempty"`
 	LastDurationMS int64 `json:"last_duration_ms"`
 	LastError string `json:"last_error,omitempty"`
+	LeaseStatus string `json:"lease_status"`
+	LeaseExpiresAt *time.Time `json:"lease_expires_at,omitempty"`
+	LeaseGeneration int64 `json:"lease_generation"`
+	LeaseRemainingSeconds int64 `json:"lease_remaining_seconds"`
 }
 
 type tenantHealthScheduler struct {
