@@ -81,7 +81,8 @@ func (s *Store) GetTenantHealthSchedulerLeaseInfo(ctx context.Context, ownerID s
 	if err != nil { return TenantHealthSchedulerLeaseInfo{}, fmt.Errorf("read tenant health scheduler lease info: %w", err) }
 	info := TenantHealthSchedulerLeaseInfo{Status:"expired_or_unclaimed", Generation:generation}
 	if leaseUntil > now.UTC().UnixNano() && currentOwner != "" {
-		info.LeaseUntil = ptrTime(time.Unix(0, leaseUntil).UTC())
+		expiresAt := time.Unix(0, leaseUntil).UTC()
+		info.LeaseUntil = &expiresAt
 		if ownerID != "" && currentOwner == ownerID {
 			info.Status = "held_by_this_instance"
 		} else {
