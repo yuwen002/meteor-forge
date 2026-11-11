@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -224,6 +225,14 @@ func (s *tenantHealthScheduler) loop(ctx context.Context) {
 		roundStarted := s.beginRound()
 		roundCtx, cancel := context.WithCancel(ctx)
 		runErr := s.run(roundCtx, settings)
+		if errors.Is(runErr, errTenantHealthSchedulerLeaseNotAcquired) {
+			cancel()
+			s.snapshotMu.Lock()
+			s.snapshot.Running = false
+			s.snapshot.TotalRuns--
+			s.snapshotMu.Unlock()
+			continue
+		}
 		if runErr != nil && ctx.Err() == nil {
 			s.reportError(fmt.Errorf("run scheduled tenant health checks: %w", runErr))
 		}

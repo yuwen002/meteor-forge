@@ -33,6 +33,7 @@ type Server struct {
 	shardDDL     *shardDDLTaskManager
 	healthChecker *tenant.HealthChecker
 	healthScheduler *tenantHealthScheduler
+	tenantHealthLeaseOwnerID string
 	migrationDir string
 }
 
@@ -59,6 +60,8 @@ func newServerWithMigrationDir(store *adminstore.Store, migrationDir string, enf
 	healthChecker, _ := tenant.NewHealthChecker(5*time.Second, 4)
 	server := &Server{pools: NewPoolManager(), migrationDir: migrationDir, authStore: store, loginLimiter: newLoginLimiter(), healthChecker: healthChecker}
 	if store != nil {
+		ownerID, ownerErr := newTenantHealthSchedulerOwnerID()
+		if ownerErr != nil { log.Printf("tenant health scheduler: unable to create lease owner: %v", ownerErr) } else { server.tenantHealthLeaseOwnerID = ownerID }
 		server.store = store
 		server.tenants = store
 		server.shards = store

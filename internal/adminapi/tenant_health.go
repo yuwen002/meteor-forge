@@ -230,6 +230,12 @@ func (s *Server) runTenantHealthCheckWithOptions(ctx context.Context, tenantID s
 
 
 func (s *Server) runScheduledTenantHealthChecks(ctx context.Context, settings adminstore.TenantHealthSettings) error {
+	return runWithTenantHealthSchedulerLease(ctx, s.authStore, s.tenantHealthLeaseOwnerID, func(leaseCtx context.Context) error {
+		return s.runScheduledTenantHealthChecksAsLeaseOwner(leaseCtx, settings)
+	})
+}
+
+func (s *Server) runScheduledTenantHealthChecksAsLeaseOwner(ctx context.Context, settings adminstore.TenantHealthSettings) error {
 	tenants, err := s.tenants.ListTenants(ctx)
 	if err != nil {
 		return fmt.Errorf("list tenants for scheduled health check: %w", err)
