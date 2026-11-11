@@ -126,7 +126,13 @@ interface TenantHealthSchedulerSnapshot {
   next_run_at: string | null
   last_duration_ms: number
   last_error?: string
+  lease_status: TenantHealthLeaseStatus
+  lease_expires_at: string | null
+  lease_generation: number
+  lease_remaining_seconds: number
 }
+ type TenantHealthLeaseStatus = "held_by_this_instance" | "held_by_other_instance" | "expired_or_unclaimed" | "unavailable" | "not_configured"
+
 interface TenantHealthHistory {
   id: number
   tenant_id: string
@@ -159,6 +165,7 @@ const healthScheduler = reactive<TenantHealthSchedulerSnapshot>({
   enabled: false, running: false, interval_seconds: 300, total_runs: 0,
   success_count: 0, failure_count: 0, last_started_at: null, last_finished_at: null,
   last_success_at: null, next_run_at: null, last_duration_ms: 0,
+  lease_status: "not_configured", lease_expires_at: null, lease_generation: 0, lease_remaining_seconds: 0,
 })
 const healthSchedulerLoading = ref(false)
 const healthSummary = reactive<TenantHealthSummary>({
@@ -516,6 +523,24 @@ function healthTrendSegmentHeight(bucket: TenantHealthTrendBucket, count: number
   return bucket.checks > 0 ? String(count / bucket.checks * 100) + '%' : '0%'
 }
 
+function leaseStatusLabel(status: TenantHealthLeaseStatus): string {
+  const labels: Record<TenantHealthLeaseStatus, string> = {
+    held_by_this_instance: "本实例持有",
+    held_by_other_instance: "其他实例持有",
+    expired_or_unclaimed: "当前无有效持有者",
+    unavailable: "状态读取失败",
+    not_configured: "未配置",
+  }
+  return labels[status] ?? "未知状态"
+}
+
+function leaseStatusType(status: TenantHealthLeaseStatus): "success" | "warning" | "danger" | "info" {
+  if (status === "held_by_this_instance") return "success"
+  if (status === "held_by_other_instance") return "warning"
+  if (status === "unavailable" || status === "not_configured") return "danger"
+  return "info"
+}
+
 function healthTrendLabel(bucket: TenantHealthTrendBucket): string {
   return healthTrendsRange.value === '24h' ? bucket.bucket_start.slice(11, 16) : bucket.bucket_start.slice(5, 10)
 }
@@ -530,6 +555,10 @@ async function loadHealthScheduler() {
       last_success_at: data.last_success_at ?? null,
       next_run_at: data.next_run_at ?? null,
       last_error: data.last_error ?? '',
+      lease_status: data.lease_status ?? "unavailable",
+      lease_expires_at: data.lease_expires_at ?? null,
+      lease_generation: data.lease_generation ?? 0,
+      lease_remaining_seconds: data.lease_remaining_seconds ?? 0,
     })
   } catch {
     ElMessage.error('读取巡检运行状态失败')
@@ -809,6 +838,9 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
       <div><span>最近成功</span><strong>{{ healthScheduler.last_success_at ? new Date(healthScheduler.last_success_at).toLocaleString() : '尚无成功记录' }}</strong></div>
       <div><span>下次执行</span><strong>{{ healthScheduler.running ? '正在执行' : healthScheduler.next_run_at ? new Date(healthScheduler.next_run_at).toLocaleString() : '未安排' }}</strong></div>
       <div><span>最近耗时</span><strong>{{ healthScheduler.last_duration_ms }} ms</strong></div>
+      <div><span>共享租约</span><strong><el-tag :type="leaseStatusType(healthScheduler.lease_status)" effect="plain">{{ leaseStatusLabel(healthScheduler.lease_status) }}</el-tag></strong></div>
+      <div><span>租约到期</span><strong>{{ healthScheduler.lease_expires_at ? new Date(healthScheduler.lease_expires_at).toLocaleString() : '—' }}</strong></div>
+      <div><span>剩余 / 代次</span><strong>{{ healthScheduler.lease_remaining_seconds }} 秒 / {{ healthScheduler.lease_generation }}</strong></div>
       <div class="scheduler-refresh"><el-button text :loading="healthSchedulerLoading" @click="loadHealthScheduler">刷新运行状态</el-button></div>
     </div>
     <el-alert v-if="healthScheduler.last_error" :title="healthScheduler.last_error" type="warning" :closable="false" show-icon class="scheduler-error" />
