@@ -3,6 +3,7 @@ package adminapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"strings"
 	"testing"
@@ -430,7 +431,7 @@ func TestTenantHealthSchedulerTracksLeaseCoordinationOutcomes(t *testing.T) {
 	deadline := time.After(5 * time.Second)
 	for {
 		snapshot := scheduler.Snapshot()
-		if snapshot.LeaseSkippedCount == 1 && snapshot.LeaseAcquireFailureCount == 1 && snapshot.LeaseLostCount == 1 {
+		if snapshot.LeaseSkippedCount == 1 && snapshot.LeaseAcquireFailureCount == 1 && snapshot.LeaseLostCount == 1 && snapshot.FailureCount == 2 {
 			scheduler.Close()
 			if snapshot.TotalRuns != 2 || snapshot.FailureCount != 2 {
 				t.Fatalf("lease coordination outcomes incorrectly counted as health rounds: %+v", snapshot)
