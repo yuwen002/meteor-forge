@@ -372,7 +372,7 @@ func TestTenantHealthSchedulerSkipsCleanupAfterLeaseLoss(t *testing.T) {
 	cleanupCalled := make(chan struct{}, 1)
 	scheduler := newTenantHealthScheduler(
 		func(context.Context) (adminstore.TenantHealthSettings, error) {
-			return adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 30, HistoryRetentionDays: 30}, nil
+			return adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 1, HistoryRetentionDays: 30}, nil
 		},
 		func(context.Context, adminstore.TenantHealthSettings) error {
 			close(runFinished)
