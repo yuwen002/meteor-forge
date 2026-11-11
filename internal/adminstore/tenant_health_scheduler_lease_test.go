@@ -75,3 +75,31 @@ func TestTenantHealthSchedulerLeaseRejectsInvalidArguments(t *testing.T) {
 		t.Fatal("expected too-short lease to be rejected")
 	}
 }
+
+func TestTenantHealthSchedulerLeaseFencesStaleResultWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fenced-health.db")
+	first, err := Open(context.Background(), path, testKey)
+	if err != nil { t.Fatal(err) }
+	defer first.Close()
+	second, err := Open(context.Background(), path, testKey)
+	if err != nil { t.Fatal(err) }
+	defer second.Close()
+	tenant := newTenantForHealthTest(t, first, "lease-fence")
+	now := time.Date(2026, 11, 11, 6, 0, 0, 0, time.UTC)
+	ok, oldGeneration, err := first.AcquireTenantHealthSchedulerLease(context.Background(), "old-owner", now, 30*time.Second)
+	if err != nil || !ok { t.Fatalf("old owner acquire: ok=%v err=%v", ok, err) }
+	ok, newGeneration, err := second.AcquireTenantHealthSchedulerLease(context.Background(), "new-owner", now.Add(31*time.Second), 30*time.Second)
+	if err != nil || !ok || newGeneration <= oldGeneration { t.Fatalf("new owner takeover: ok=%v generation=%d err=%v", ok, newGeneration, err) }
+	item := TenantConnectionHealth{TenantID: tenant.ID, Status: "healthy", CheckedAt: now.Add(32*time.Second), Message: "connection successful"}
+	err = first.RecordTenantConnectionHealthWithSchedulerLease(context.Background(), item, "old-owner", oldGeneration)
+	if err != ErrTenantHealthSchedulerLeaseLost { t.Fatalf("stale result write error=%v, want lease lost", err) }
+	page, err := second.ListTenantConnectionHealthHistory(context.Background(), TenantHealthHistoryFilter{TenantID: tenant.ID})
+	if err != nil { t.Fatal(err) }
+	if len(page.Items) != 0 { t.Fatalf("stale owner wrote %d history rows", len(page.Items)) }
+	if err := second.RecordTenantConnectionHealthWithSchedulerLease(context.Background(), item, "new-owner", newGeneration); err != nil {
+		t.Fatalf("current owner result write failed: %v", err)
+	}
+	page, err = second.ListTenantConnectionHealthHistory(context.Background(), TenantHealthHistoryFilter{TenantID: tenant.ID})
+	if err != nil { t.Fatal(err) }
+	if len(page.Items) != 1 { t.Fatalf("current owner history rows=%d, want 1", len(page.Items)) }
+}

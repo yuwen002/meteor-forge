@@ -13,6 +13,13 @@ import (
 
 const tenantHealthSchedulerLeaseTTL = 30 * time.Second
 
+type tenantHealthSchedulerLeaseContextKey struct{}
+
+type tenantHealthSchedulerLeaseContext struct {
+	ownerID string
+	generation int64
+}
+
 var errTenantHealthSchedulerLeaseNotAcquired = errors.New("another API instance owns the tenant health scheduler lease")
 
 func newTenantHealthSchedulerOwnerID() (string, error) {
@@ -31,7 +38,7 @@ func runWithTenantHealthSchedulerLease(ctx context.Context, store *adminstore.St
 		return errors.New("tenant health scheduler lease is not configured")
 	}
 	now := time.Now().UTC()
-	acquired, _, err := store.AcquireTenantHealthSchedulerLease(ctx, ownerID, now, tenantHealthSchedulerLeaseTTL)
+	acquired, generation, err := store.AcquireTenantHealthSchedulerLease(ctx, ownerID, now, tenantHealthSchedulerLeaseTTL)
 	if err != nil { return err }
 	if !acquired { return errTenantHealthSchedulerLeaseNotAcquired }
 
@@ -61,7 +68,8 @@ func runWithTenantHealthSchedulerLease(ctx context.Context, store *adminstore.St
 		}
 	}()
 
-	runErr := run(runCtx)
+	leaseCtx := context.WithValue(runCtx, tenantHealthSchedulerLeaseContextKey{}, tenantHealthSchedulerLeaseContext{ownerID: ownerID, generation: generation})
+	runErr := run(leaseCtx)
 	cancel()
 	heartbeatErr := <-heartbeatDone
 	releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 3*time.Second)

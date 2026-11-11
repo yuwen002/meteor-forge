@@ -8,7 +8,10 @@ import (
 	"time"
 )
 
-var ErrTenantHealthSchedulerLeaseInvalid = errors.New("invalid tenant health scheduler lease")
+var (
+	ErrTenantHealthSchedulerLeaseInvalid = errors.New("invalid tenant health scheduler lease")
+	ErrTenantHealthSchedulerLeaseLost = errors.New("tenant health scheduler lease is no longer owned")
+)
 
 // AcquireTenantHealthSchedulerLease atomically acquires an expired lease or
 // renews the lease already owned by ownerID. Lease deadlines use Unix nanoseconds to preserve numeric ordering.

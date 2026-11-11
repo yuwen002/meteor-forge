@@ -271,6 +271,19 @@ func (s *Store) RecordTenantConnectionHealth(ctx context.Context, item TenantCon
 
 // RecordTenantConnectionHealthWithSource appends history and updates the latest snapshot in one transaction.
 func (s *Store) RecordTenantConnectionHealthWithSource(ctx context.Context, item TenantConnectionHealth, source string) error {
+	return s.recordTenantConnectionHealth(ctx, item, source, "", 0, false)
+}
+
+// RecordTenantConnectionHealthWithSchedulerLease persists a scheduled result
+// only while the same owner and fencing generation still hold the live lease.
+func (s *Store) RecordTenantConnectionHealthWithSchedulerLease(ctx context.Context, item TenantConnectionHealth, ownerID string, generation int64) error {
+	if strings.TrimSpace(ownerID) == "" || generation <= 0 {
+		return ErrTenantHealthSchedulerLeaseInvalid
+	}
+	return s.recordTenantConnectionHealth(ctx, item, "scheduled", ownerID, generation, true)
+}
+
+func (s *Store) recordTenantConnectionHealth(ctx context.Context, item TenantConnectionHealth, source, leaseOwner string, leaseGeneration int64, requireLease bool) error {
 	if item.TenantID == "" || (item.Status != "healthy" && item.Status != "unhealthy") ||
 		item.CheckedAt.IsZero() || item.DurationMS < 0 || (source != "manual" && source != "scheduled") {
 		return ErrTenantHealthInvalidInput
@@ -283,6 +296,19 @@ func (s *Store) RecordTenantConnectionHealthWithSource(ctx context.Context, item
 		return fmt.Errorf("begin tenant health result transaction: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck
+
+	if requireLease {
+		var leaseExists int
+		err := tx.QueryRowContext(ctx, `SELECT 1 FROM admin_tenant_health_scheduler_lease
+			WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?`,
+			leaseOwner, leaseGeneration, time.Now().UTC().UnixNano()).Scan(&leaseExists)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrTenantHealthSchedulerLeaseLost
+		}
+		if err != nil {
+			return fmt.Errorf("verify tenant health scheduler lease before persisting result: %w", err)
+		}
+	}
 
 	var exists int
 	if err := tx.QueryRowContext(ctx, "SELECT 1 FROM admin_tenants WHERE id = ?", item.TenantID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
