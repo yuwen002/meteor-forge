@@ -362,3 +362,35 @@ func TestTenantHealthSchedulerSnapshotClearsNextRunWhenDisabled(t *testing.T) {
 		t.Fatalf("disabled scheduler should clear next run: %+v", snapshot)
 	}
 }
+
+
+// A lease-lost round must not trigger retention cleanup. Another instance may
+// already own the next generation, so cleanup belongs only to a valid round.
+func TestTenantHealthSchedulerSkipsCleanupAfterLeaseLoss(t *testing.T) {
+	var cleanups atomic.Int32
+	runFinished := make(chan struct{})
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			return adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 30, HistoryRetentionDays: 30}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error {
+			close(runFinished)
+			return errTenantHealthSchedulerLeaseLost
+		},
+		func(context.Context, int) error {
+			cleanups.Add(1)
+			return nil
+		},
+	)
+	scheduler.Start(context.Background())
+	select {
+	case <-runFinished:
+	case <-time.After(2 * time.Second):
+		scheduler.Close()
+		t.Fatal("scheduled round did not finish")
+	}
+	scheduler.Close()
+	if got := cleanups.Load(); got != 0 {
+		t.Fatalf("cleanup calls after lease loss=%d, want 0", got)
+	}
+}
