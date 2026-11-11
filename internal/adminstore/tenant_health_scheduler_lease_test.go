@@ -86,11 +86,11 @@ func TestTenantHealthSchedulerLeaseFencesStaleResultWrites(t *testing.T) {
 	defer second.Close()
 	tenant := newTenantForHealthTest(t, first, "lease-fence")
 	now := time.Now().UTC()
-	ok, oldGeneration, err := first.AcquireTenantHealthSchedulerLease(context.Background(), "old-owner", now, 30*time.Second)
+	ok, oldGeneration, err := first.AcquireTenantHealthSchedulerLease(context.Background(), "old-owner", now.Add(-31*time.Second), 30*time.Second)
 	if err != nil || !ok { t.Fatalf("old owner acquire: ok=%v err=%v", ok, err) }
-	ok, newGeneration, err := second.AcquireTenantHealthSchedulerLease(context.Background(), "new-owner", now.Add(31*time.Second), 30*time.Second)
+	ok, newGeneration, err := second.AcquireTenantHealthSchedulerLease(context.Background(), "new-owner", now, 30*time.Second)
 	if err != nil || !ok || newGeneration <= oldGeneration { t.Fatalf("new owner takeover: ok=%v generation=%d err=%v", ok, newGeneration, err) }
-	item := TenantConnectionHealth{TenantID: tenant.ID, Status: "healthy", CheckedAt: now.Add(32*time.Second), Message: "connection successful"}
+	item := TenantConnectionHealth{TenantID: tenant.ID, Status: "healthy", CheckedAt: now, Message: "connection successful"}
 	err = first.RecordTenantConnectionHealthWithSchedulerLease(context.Background(), item, "old-owner", oldGeneration)
 	if err != ErrTenantHealthSchedulerLeaseLost { t.Fatalf("stale result write error=%v, want lease lost", err) }
 	page, err := second.ListTenantConnectionHealthHistory(context.Background(), TenantHealthHistoryFilter{TenantID: tenant.ID})
