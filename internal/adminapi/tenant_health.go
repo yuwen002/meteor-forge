@@ -212,7 +212,7 @@ func (s *Server) runTenantHealthCheckWithOptions(ctx context.Context, tenantID s
 	if err := ctx.Err(); err != nil {
 		return tenant.HealthResult{}, err
 	}
-	persistCtx, persistCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	persistCtx, persistCancel := context.WithTimeout(ctx, 2*time.Second)
 	defer persistCancel()
 	err = s.authStore.RecordTenantConnectionHealthWithSource(persistCtx, adminstore.TenantConnectionHealth{
 		TenantID: result.TenantID,
