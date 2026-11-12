@@ -446,3 +446,44 @@ func TestTenantHealthSchedulerTracksLeaseCoordinationOutcomes(t *testing.T) {
 		}
 	}
 }
+
+
+// TestTenantHealthSchedulerRecoversAfterTransientLeaseAcquisitionFailure verifies
+// that a temporary metadata database error does not permanently stop scheduling.
+// The next scheduled round must be able to acquire the lease and complete normally.
+func TestTenantHealthSchedulerRecoversAfterTransientLeaseAcquisitionFailure(t *testing.T) {
+	var attempts atomic.Int32
+	recovered := make(chan struct{})
+	settings := adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 1, HistoryRetentionDays: 30}
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) { return settings, nil },
+		func(context.Context, adminstore.TenantHealthSettings) error {
+			if attempts.Add(1) == 1 {
+				return fmt.Errorf("%w: simulated temporary metadata database outage", errTenantHealthSchedulerLeaseAcquireFailed)
+			}
+			close(recovered)
+			return nil
+		},
+		func(context.Context, int) error { return nil },
+	)
+	scheduler.Start(context.Background())
+
+	select {
+	case <-recovered:
+	case <-time.After(4 * time.Second):
+		scheduler.Close()
+		t.Fatalf("scheduler did not recover on the next round; attempts=%d snapshot=%+v", attempts.Load(), scheduler.Snapshot())
+	}
+	scheduler.Close()
+
+	snapshot := scheduler.Snapshot()
+	if attempts.Load() != 2 {
+		t.Fatalf("round attempts=%d, want 2", attempts.Load())
+	}
+	if snapshot.LeaseAcquireFailureCount != 1 {
+		t.Fatalf("lease acquisition failures=%d, want 1", snapshot.LeaseAcquireFailureCount)
+	}
+	if snapshot.TotalRuns != 2 || snapshot.FailureCount != 1 || snapshot.SuccessCount != 1 {
+		t.Fatalf("unexpected counters after recovery: %+v", snapshot)
+	}
+}
