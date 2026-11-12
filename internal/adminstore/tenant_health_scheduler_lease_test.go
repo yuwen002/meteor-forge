@@ -132,3 +132,55 @@ func TestTenantHealthSchedulerLeaseInfoRedactsOwnerAndReportsExpiry(t *testing.T
 		t.Fatalf("unexpected expired lease info: %+v", info)
 	}
 }
+
+
+// TestTenantHealthSchedulerLeaseAcquisitionRecoversAfterTransientSQLiteLock
+// holds a real SQLite write lock, verifies lease acquisition fails, then releases
+// the lock and verifies the same Store can acquire the lease without reopening.
+func TestTenantHealthSchedulerLeaseAcquisitionRecoversAfterTransientSQLiteLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "transient-lock.db")
+	first, err := Open(context.Background(), path, testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+
+	second, err := Open(context.Background(), path, testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+
+	lockTx, err := second.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockTx.ExecContext(context.Background(), `UPDATE admin_tenant_health_scheduler_lease
+		SET updated_at = updated_at WHERE id = 1`); err != nil {
+		_ = lockTx.Rollback()
+		t.Fatalf("hold SQLite metadata write lock: %v", err)
+	}
+
+	acquireCtx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if acquired, _, err := first.AcquireTenantHealthSchedulerLease(acquireCtx, "recovered-owner", time.Now().UTC(), 30*time.Second); err == nil || acquired {
+		t.Fatalf("lease acquisition during SQLite lock: acquired=%v err=%v, want transient database error", acquired, err)
+	}
+
+	if err := lockTx.Rollback(); err != nil {
+		t.Fatalf("release SQLite metadata write lock: %v", err)
+	}
+
+	now := time.Now().UTC()
+	acquired, generation, err := first.AcquireTenantHealthSchedulerLease(context.Background(), "recovered-owner", now, 30*time.Second)
+	if err != nil || !acquired || generation != 1 {
+		t.Fatalf("lease acquisition after SQLite recovery: acquired=%v generation=%d err=%v", acquired, generation, err)
+	}
+	info, err := first.GetTenantHealthSchedulerLeaseInfo(context.Background(), "recovered-owner", now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Status != "held_by_this_instance" || info.Generation != generation {
+		t.Fatalf("unexpected lease after recovery: %+v", info)
+	}
+}
