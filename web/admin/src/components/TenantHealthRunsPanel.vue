@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { listTenantHealthSchedulerRuns, type TenantHealthSchedulerRun, type TenantHealthSchedulerRunStatus } from '../api'
 import { createRequestSequence, runLatestRequest } from '../utils/requestSequence'
+import { createTenantHealthSchedulerRunQuery, tenantHealthSchedulerRunDuration, tenantHealthSchedulerRunStatusLabel, tenantHealthSchedulerRunStatusType } from '../utils/tenantHealthRuns'
 
 const pageSize = 20
 const items = ref<TenantHealthSchedulerRun[]>([])
@@ -16,18 +17,12 @@ const requests = createRequestSequence()
 function loadRuns(resetPage = false) {
   if (resetPage) page.value = 1
   loading.value = true
-  const params: {
-    status?: TenantHealthSchedulerRunStatus
-    from?: string
-    to?: string
-    limit: number
-    offset: number
-  } = { limit: pageSize, offset: (page.value - 1) * pageSize }
-  if (status.value) params.status = status.value
-  if (timeRange.value) {
-    params.from = timeRange.value[0].toISOString()
-    params.to = timeRange.value[1].toISOString()
-  }
+  const params = createTenantHealthSchedulerRunQuery({
+    status: status.value,
+    timeRange: timeRange.value,
+    page: page.value,
+    pageSize,
+  })
   void runLatestRequest(requests, () => listTenantHealthSchedulerRuns(params), {
     onSuccess: result => {
       items.value = result.items
@@ -47,28 +42,6 @@ function changePage(value: number) {
   loadRuns()
 }
 
-function statusLabel(value: TenantHealthSchedulerRunStatus): string {
-  const labels: Record<TenantHealthSchedulerRunStatus, string> = {
-    running: '执行中',
-    succeeded: '成功',
-    failed: '失败',
-    lease_lost: '租约丢失',
-    interrupted: '接管后中断',
-  }
-  return labels[value]
-}
-
-function statusType(value: TenantHealthSchedulerRunStatus): 'success' | 'danger' | 'warning' | 'info' | 'primary' {
-  if (value === 'succeeded') return 'success'
-  if (value === 'failed' || value === 'lease_lost') return 'danger'
-  if (value === 'interrupted') return 'warning'
-  return 'primary'
-}
-
-function formatDuration(value: number): string {
-  if (value < 1000) return value + ' ms'
-  return (value / 1000).toFixed(2) + ' 秒'
-}
 
 function formatTime(value?: string): string {
   return value ? new Date(value).toLocaleString() : '—'
@@ -108,7 +81,7 @@ onMounted(() => loadRuns())
       <el-table-column prop="id" label="轮次 ID" width="90" />
       <el-table-column label="状态" width="120">
         <template #default="{ row }">
-          <el-tag :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag>
+          <el-tag :type="statusType(row.status)">{{ tenantHealthSchedulerRunStatusLabel(row.status) }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column label="开始时间" min-width="180">
@@ -118,7 +91,7 @@ onMounted(() => loadRuns())
         <template #default="{ row }">{{ formatTime(row.finished_at) }}</template>
       </el-table-column>
       <el-table-column label="耗时" width="110">
-        <template #default="{ row }">{{ formatDuration(row.duration_ms) }}</template>
+        <template #default="{ row }">{{ tenantHealthSchedulerRunDuration(row.duration_ms) }}</template>
       </el-table-column>
       <el-table-column prop="lease_generation" label="租约代次" width="100" />
       <el-table-column label="错误摘要" min-width="220" show-overflow-tooltip>
