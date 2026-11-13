@@ -626,6 +626,12 @@ GET /api/v1/tenant-discovery/preview?data_source_id=control-source-id
 
 统计仅在当前进程内维护，服务重启后归零；不代表多实例全局统计。多个 API 进程共享同一管理元数据库时，每轮巡检通过数据库租约选出唯一执行者；租约 30 秒、每 10 秒续约，进程异常退出后可在租约过期后接管；结果写入事务会校验租约 owner 和 generation，阻止旧持有者写入过期结果。未取得租约的实例跳过该轮。配置读取或历史清理错误可能更新 `last_error`，但不会计入巡检轮次失败数。调度状态接口会额外实时读取共享租约并返回脱敏的 `lease_status`、`lease_expires_at`、`lease_remaining_seconds` 和 `lease_generation`；不会返回随机 owner ID。租约状态读取失败时仍返回进程内统计，`lease_status` 为 `unavailable`。
 
+### GET /tenant-health/runs
+
+查询定时巡检的全局运行轮次记录，所有已认证角色可读取。支持 `status`（running/succeeded/failed/lease_lost/interrupted）、`from`、`to`（RFC3339，按开始时间筛选且两端包含）、`limit`（1–100，默认 20）和 `offset`（0–1,000,000，默认 0）。响应包含 `items` 与 `total`，按 `started_at DESC, id DESC` 排序。记录字段包括 `id`、`lease_generation`、`started_at`、可选的 `finished_at`、`duration_ms`、`status`、可选的 `error_code` 和脱敏的 `error_message`。
+
+只有取得共享调度租约的实例才会创建运行记录；租约竞争失败不会生成轮次记录。新 generation 接管时，旧 generation 遗留的 running 记录会标记为 interrupted。该接口记录的是全局调度轮次，不是每个租户的连接检查历史；租户级结果仍通过 `GET /tenant-health/history` 查询。当前页面尚未展示运行轮次列表。
+
 ### GET /tenant-health/summary
 
 读取租户健康概览，所有已认证角色可读。响应字段分为两组：

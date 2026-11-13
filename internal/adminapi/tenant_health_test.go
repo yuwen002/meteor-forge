@@ -156,6 +156,38 @@ func TestTenantHealthSettingsAndHistoryAPI(t *testing.T) {
 	if invalid.Code != http.StatusBadRequest { t.Fatalf("invalid limit status=%d", invalid.Code) }
 }
 
+func TestTenantHealthSchedulerRunsAPIAndScheduledLifecycle(t *testing.T) {
+	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	server := newTestServerWithStore(store)
+	defer server.Close()
+
+	if err := server.runScheduledTenantHealthChecks(context.Background(), adminstore.TenantHealthSettings{
+		Enabled: true, IntervalSeconds: 300, TimeoutSeconds: 5, HistoryRetentionDays: 30,
+	}); err != nil {
+		t.Fatalf("run scheduled tenant health checks: %v", err)
+	}
+	page, err := store.ListTenantHealthSchedulerRuns(context.Background(), adminstore.TenantHealthSchedulerRunFilter{})
+	if err != nil { t.Fatal(err) }
+	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].Status != "succeeded" || page.Items[0].FinishedAt == nil {
+		t.Fatalf("scheduled run was not finalized: %+v", page)
+	}
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/tenant-health/runs?status=succeeded&limit=10&offset=0", nil))
+	if rec.Code != http.StatusOK { t.Fatalf("runs API status=%d body=%s", rec.Code, rec.Body.String()) }
+	var response adminstore.TenantHealthSchedulerRunPage
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil { t.Fatal(err) }
+	if response.Total != 1 || len(response.Items) != 1 || response.Items[0].ID != page.Items[0].ID {
+		t.Fatalf("unexpected runs API response: %+v", response)
+	}
+
+	invalid := httptest.NewRecorder()
+	server.Handler().ServeHTTP(invalid, httptest.NewRequest(http.MethodGet, "/api/v1/tenant-health/runs?status=unknown", nil))
+	if invalid.Code != http.StatusBadRequest { t.Fatalf("invalid run filter status=%d body=%s", invalid.Code, invalid.Body.String()) }
+}
+
 func TestTenantHealthSettingsRBAC(t *testing.T) {
 	if !authorizeAdminRole("viewer", http.MethodGet, "/api/v1/tenant-health/settings") {
 		t.Fatal("viewer should read health settings")
@@ -222,6 +254,7 @@ func TestTenantHealthEndpointsRejectAnonymousRequests(t *testing.T) {
 		{method: http.MethodGet, path: "/api/v1/tenant-health"},
 		{method: http.MethodGet, path: "/api/v1/tenant-health/settings"},
 		{method: http.MethodGet, path: "/api/v1/tenant-health/history"},
+		{method: http.MethodGet, path: "/api/v1/tenant-health/runs"},
 		{method: http.MethodGet, path: "/api/v1/tenant-health/summary"},
 		{method: http.MethodGet, path: "/api/v1/tenant-health/trends"},
 		{method: http.MethodPut, path: "/api/v1/tenant-health/settings", body: `{"enabled":true,"interval_seconds":300,"timeout_seconds":5,"history_retention_days":30}`},

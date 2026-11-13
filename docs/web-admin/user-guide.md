@@ -208,3 +208,8 @@ migrations/
 - [备份与恢复](backup-restore.md)
 - [架构说明](architecture.md)
 - [分库分表核心库说明](../sharding.md)
+
+
+### 定时巡检运行轮次记录
+
+当前版本已提供定时巡检运行记录查询 API：`GET /api/v1/tenant-health/runs`。可按状态（running、succeeded、failed、lease_lost、interrupted）和开始时间范围筛选，并使用 limit/offset 分页。该记录表示一次全局调度轮次；租户级巡检结果仍在巡检历史中查看。运行记录列表暂未接入 Web Admin 页面，后续阶段再补充页面和统计卡片。
