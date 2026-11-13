@@ -81,7 +81,7 @@ onMounted(() => loadRuns())
       <el-table-column prop="id" label="轮次 ID" width="90" />
       <el-table-column label="状态" width="120">
         <template #default="{ row }">
-          <el-tag :type="statusType(row.status)">{{ tenantHealthSchedulerRunStatusLabel(row.status) }}</el-tag>
+          <el-tag :type="tenantHealthSchedulerRunStatusType(row.status)>{{ tenantHealthSchedulerRunStatusLabel(row.status) }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column label="开始时间" min-width="180">
