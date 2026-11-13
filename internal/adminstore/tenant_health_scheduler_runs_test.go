@@ -12,9 +12,14 @@ func TestTenantHealthSchedulerRunLifecycleAndPaging(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 11, 13, 1, 0, 0, 0, time.UTC)
 
-	firstID, err := store.StartTenantHealthSchedulerRun(ctx, 2, base)
+	acquired, firstGeneration, err := store.AcquireTenantHealthSchedulerLease(ctx, "run-owner-one", base, 5*time.Second)
+	if err != nil || !acquired { t.Fatalf("first lease acquired=%v err=%v", acquired, err) }
+	firstID, err := store.StartTenantHealthSchedulerRunWithLease(ctx, "run-owner-one", firstGeneration, base)
 	if err != nil { t.Fatal(err) }
-	secondID, err := store.StartTenantHealthSchedulerRun(ctx, 3, base.Add(time.Minute))
+	secondStartedAt := base.Add(time.Minute)
+	acquired, secondGeneration, err := store.AcquireTenantHealthSchedulerLease(ctx, "run-owner-two", secondStartedAt, 5*time.Second)
+	if err != nil || !acquired { t.Fatalf("second lease acquired=%v err=%v", acquired, err) }
+	secondID, err := store.StartTenantHealthSchedulerRunWithLease(ctx, "run-owner-two", secondGeneration, secondStartedAt)
 	if err != nil { t.Fatal(err) }
 	if err := store.FinishTenantHealthSchedulerRun(ctx, firstID, base.Add(10*time.Second), 10000, "failed", "tenant_checks_failed"); err != nil { t.Fatal(err) }
 	if err := store.FinishTenantHealthSchedulerRun(ctx, secondID, base.Add(70*time.Second), 10000, "succeeded", ""); err != nil { t.Fatal(err) }
@@ -38,11 +43,16 @@ func TestTenantHealthSchedulerRunRecoveryAndValidation(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 	base := time.Date(2026, 11, 13, 2, 0, 0, 0, time.UTC)
-	oldID, err := store.StartTenantHealthSchedulerRun(ctx, 4, base)
+	acquired, oldGeneration, err := store.AcquireTenantHealthSchedulerLease(ctx, "recovery-owner-one", base, 5*time.Second)
+	if err != nil || !acquired { t.Fatalf("old lease acquired=%v err=%v", acquired, err) }
+	oldID, err := store.StartTenantHealthSchedulerRunWithLease(ctx, "recovery-owner-one", oldGeneration, base)
 	if err != nil { t.Fatal(err) }
-	currentID, err := store.StartTenantHealthSchedulerRun(ctx, 5, base.Add(time.Second))
+	takeoverAt := base.Add(5*time.Second)
+	acquired, currentGeneration, err := store.AcquireTenantHealthSchedulerLease(ctx, "recovery-owner-two", takeoverAt, 5*time.Second)
+	if err != nil || !acquired { t.Fatalf("takeover lease acquired=%v err=%v", acquired, err) }
+	currentID, err := store.StartTenantHealthSchedulerRunWithLease(ctx, "recovery-owner-two", currentGeneration, takeoverAt)
 	if err != nil { t.Fatal(err) }
-	recovered, err := store.RecoverStaleTenantHealthSchedulerRuns(ctx, 5, base.Add(2*time.Second))
+	recovered, err := store.RecoverStaleTenantHealthSchedulerRuns(ctx, currentGeneration, takeoverAt.Add(time.Second))
 	if err != nil { t.Fatal(err) }
 	if recovered != 1 { t.Fatalf("recovered=%d, want 1", recovered) }
 	page, err := store.ListTenantHealthSchedulerRuns(ctx, TenantHealthSchedulerRunFilter{})

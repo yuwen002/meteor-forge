@@ -36,25 +36,6 @@ type TenantHealthSchedulerRunPage struct {
 	Total int64                     `json:"total"`
 }
 
-// StartTenantHealthSchedulerRun records a round only after its instance owns a lease.
-func (s *Store) StartTenantHealthSchedulerRun(ctx context.Context, generation int64, startedAt time.Time) (int64, error) {
-	if generation <= 0 || startedAt.IsZero() {
-		return 0, ErrTenantHealthSchedulerLeaseInvalid
-	}
-	result, err := s.db.ExecContext(ctx, `INSERT INTO admin_tenant_health_scheduler_runs
-		(lease_generation, started_at, status) VALUES (?, ?, 'running')`,
-		generation, formatTenantHealthTime(startedAt))
-	if err != nil {
-		return 0, fmt.Errorf("start tenant health scheduler run: %w", err)
-	}
-	id, err := result.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("read tenant health scheduler run ID: %w", err)
-	}
-	return id, nil
-}
-
-
 // StartTenantHealthSchedulerRunWithLease inserts a run only while the supplied
 // owner and fencing generation still hold an unexpired shared lease. The
 // INSERT ... SELECT keeps the ownership check and insert in one database
