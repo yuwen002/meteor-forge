@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { api, listTenantHealthSchedulerRuns, type TenantHealthSchedulerRun, type TenantHealthSchedulerRunStatus } from '../api'
+import { api } from '../api'
 import TenantHealthRunsPanel from '../components/TenantHealthRunsPanel.vue'
 import { useAdminPermissions } from '../permissions'
 import TenantDiscoveryDialog from '../components/TenantDiscoveryDialog.vue'
