@@ -2,6 +2,7 @@ package adminstore
 
 import (
 	"context"
+	"errors"
 	"encoding/base64"
 	"testing"
 	"time"
@@ -365,5 +366,87 @@ func TestTenantHealthListReportsConsecutiveFailuresAndLastSuccess(t *testing.T) 
 	if recovered.ConsecutiveFailures != 0 || recovered.LastSuccessAt == nil ||
 		!recovered.LastSuccessAt.Equal(base.Add(2*time.Minute)) {
 		t.Fatalf("unexpected recovered health: %+v", recovered)
+	}
+}
+
+
+// TestTenantHealthScheduledResultRejectsStaleLeaseGeneration verifies that a
+// replaced scheduler cannot append history or overwrite the latest health row.
+func TestTenantHealthScheduledResultRejectsStaleLeaseGeneration(t *testing.T) {
+	store, err := Open(context.Background(), ":memory:", testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	tenant := newTenantForHealthTest(t, store, "stale-scheduler")
+
+	now := time.Now().UTC()
+	oldAcquired, oldGeneration, err := store.AcquireTenantHealthSchedulerLease(
+		context.Background(), "old-scheduler", now, 5*time.Minute,
+	)
+	if err != nil || !oldAcquired {
+		t.Fatalf("old scheduler acquire: acquired=%v generation=%d err=%v", oldAcquired, oldGeneration, err)
+	}
+
+	// Advance the lease clock beyond expiry so a replacement takes generation 2.
+	newAcquired, newGeneration, err := store.AcquireTenantHealthSchedulerLease(
+		context.Background(), "new-scheduler", now.Add(6*time.Minute), 5*time.Minute,
+	)
+	if err != nil || !newAcquired {
+		t.Fatalf("new scheduler takeover: acquired=%v generation=%d err=%v", newAcquired, newGeneration, err)
+	}
+	if newGeneration != oldGeneration+1 {
+		t.Fatalf("new generation=%d, want %d", newGeneration, oldGeneration+1)
+	}
+
+	staleResult := TenantConnectionHealth{
+		TenantID: tenant.ID,
+		Status: "unhealthy",
+		CheckedAt: now.Add(time.Second),
+		Message: "connection check failed; verify the registered data source",
+	}
+	err = store.RecordTenantConnectionHealthWithSchedulerLease(
+		context.Background(), staleResult, "old-scheduler", oldGeneration,
+	)
+	if !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
+		t.Fatalf("stale generation write error=%v, want ErrTenantHealthSchedulerLeaseLost", err)
+	}
+
+	history, err := store.ListTenantConnectionHealthHistory(context.Background(), TenantHealthHistoryFilter{TenantID: tenant.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, err := store.ListTenantConnectionHealth(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Items) != 0 || len(latest) != 0 {
+		t.Fatalf("stale scheduler polluted health records: history=%+v latest=%+v", history.Items, latest)
+	}
+
+	currentResult := TenantConnectionHealth{
+		TenantID: tenant.ID,
+		Status: "healthy",
+		CheckedAt: now.Add(2 * time.Second),
+		Message: "connection successful",
+	}
+	if err := store.RecordTenantConnectionHealthWithSchedulerLease(
+		context.Background(), currentResult, "new-scheduler", newGeneration,
+	); err != nil {
+		t.Fatalf("current generation write failed: %v", err)
+	}
+	history, err = store.ListTenantConnectionHealthHistory(context.Background(), TenantHealthHistoryFilter{TenantID: tenant.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, err = store.ListTenantConnectionHealth(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Items) != 1 || history.Items[0].Status != "healthy" || history.Items[0].Source != "scheduled" {
+		t.Fatalf("current generation history mismatch: %+v", history.Items)
+	}
+	if len(latest) != 1 || latest[0].Status != "healthy" {
+		t.Fatalf("current generation latest snapshot mismatch: %+v", latest)
 	}
 }
