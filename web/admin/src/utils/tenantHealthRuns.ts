@@ -1,4 +1,4 @@
-import type { TenantHealthSchedulerRunStatus } from '../api'
+import type { TenantHealthSchedulerRunStatus, TenantHealthSchedulerRunSummary } from '../api'
 
 export interface TenantHealthSchedulerRunQueryInput {
   status: TenantHealthSchedulerRunStatus | ''
@@ -24,6 +24,18 @@ export function createTenantHealthSchedulerRunQuery(input: TenantHealthScheduler
     params.to = input.timeRange[1].toISOString()
   }
   return params
+}
+
+export function tenantHealthSchedulerRunSummaryMetrics(summary: TenantHealthSchedulerRunSummary) {
+  return [
+    { key: 'total', label: '总轮次', value: String(summary.total) },
+    { key: 'running', label: '执行中', value: String(summary.running) },
+    { key: 'succeeded', label: '成功', value: String(summary.succeeded) },
+    { key: 'failed', label: '失败', value: String(summary.failed) },
+    { key: 'lease_lost', label: '租约丢失', value: String(summary.lease_lost) },
+    { key: 'interrupted', label: '接管中断', value: String(summary.interrupted) },
+    { key: 'average_duration', label: '平均耗时', value: tenantHealthSchedulerRunDuration(summary.average_duration_ms) },
+  ]
 }
 
 export function tenantHealthSchedulerRunStatusLabel(status: TenantHealthSchedulerRunStatus): string {

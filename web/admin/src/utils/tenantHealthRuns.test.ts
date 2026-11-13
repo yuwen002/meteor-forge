@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createRequestSequence, runLatestRequest } from './requestSequence'
-import { createTenantHealthSchedulerRunQuery, tenantHealthSchedulerRunDuration, tenantHealthSchedulerRunStatusLabel, tenantHealthSchedulerRunStatusType } from './tenantHealthRuns'
+import { createTenantHealthSchedulerRunQuery, tenantHealthSchedulerRunDuration, tenantHealthSchedulerRunStatusLabel, tenantHealthSchedulerRunStatusType, tenantHealthSchedulerRunSummaryMetrics } from './tenantHealthRuns'
 
 describe('tenant health scheduler run request sequence', () => {
   it('publishes only the latest filter request', async () => {
@@ -68,5 +68,19 @@ describe('tenant health scheduler run filters and presentation', () => {
     expect(tenantHealthSchedulerRunStatusType('succeeded')).toBe('success')
     expect(tenantHealthSchedulerRunDuration(450)).toBe('450 ms')
     expect(tenantHealthSchedulerRunDuration(1250)).toBe('1.25 秒')
+  })
+
+  it('shows every outcome as a separate summary metric', () => {
+    expect(tenantHealthSchedulerRunSummaryMetrics({
+      total: 12, running: 1, succeeded: 7, failed: 1, lease_lost: 2, interrupted: 1, average_duration_ms: 1250,
+    })).toEqual([
+      { key: 'total', label: '总轮次', value: '12' },
+      { key: 'running', label: '执行中', value: '1' },
+      { key: 'succeeded', label: '成功', value: '7' },
+      { key: 'failed', label: '失败', value: '1' },
+      { key: 'lease_lost', label: '租约丢失', value: '2' },
+      { key: 'interrupted', label: '接管中断', value: '1' },
+      { key: 'average_duration', label: '平均耗时', value: '1.25 秒' },
+    ])
   })
 })

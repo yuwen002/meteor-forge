@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { listTenantHealthSchedulerRuns, type TenantHealthSchedulerRun, type TenantHealthSchedulerRunStatus } from '../api'
+import { listTenantHealthSchedulerRuns, type TenantHealthSchedulerRun, type TenantHealthSchedulerRunStatus, type TenantHealthSchedulerRunSummary } from '../api'
 import { createRequestSequence, runLatestRequest } from '../utils/requestSequence'
-import { createTenantHealthSchedulerRunQuery, tenantHealthSchedulerRunDuration, tenantHealthSchedulerRunStatusLabel, tenantHealthSchedulerRunStatusType } from '../utils/tenantHealthRuns'
+import { createTenantHealthSchedulerRunQuery, tenantHealthSchedulerRunDuration, tenantHealthSchedulerRunStatusLabel, tenantHealthSchedulerRunStatusType, tenantHealthSchedulerRunSummaryMetrics } from '../utils/tenantHealthRuns'
 
 const pageSize = 20
 const items = ref<TenantHealthSchedulerRun[]>([])
 const total = ref(0)
-const summary = ref({ total: 0, running: 0, succeeded: 0, failed: 0, lease_lost: 0, interrupted: 0, average_duration_ms: 0 })
+const summary = ref<TenantHealthSchedulerRunSummary>({ total: 0, running: 0, succeeded: 0, failed: 0, lease_lost: 0, interrupted: 0, average_duration_ms: 0 })
+const summaryItems = computed(() => tenantHealthSchedulerRunSummaryMetrics(summary.value))
 const page = ref(1)
 const status = ref<TenantHealthSchedulerRunStatus | ''>('')
 const timeRange = ref<[Date, Date] | null>(null)
@@ -45,7 +46,6 @@ function changePage(value: number) {
   loadRuns()
 }
 
-
 function formatTime(value?: string): string {
   return value ? new Date(value).toLocaleString() : '—'
 }
@@ -63,12 +63,10 @@ onMounted(() => loadRuns())
       <el-button text :loading="loading" @click="loadRuns()">刷新</el-button>
     </div>
     <div class="runs-summary" aria-label="运行记录统计">
-      <div class="summary-item"><span>总轮次</span><strong>{{ summary.total }}</strong></div>
-      <div class="summary-item"><span>执行中</span><strong>{{ summary.running }}</strong></div>
-      <div class="summary-item"><span>成功</span><strong>{{ summary.succeeded }}</strong></div>
-      <div class="summary-item"><span>失败</span><strong>{{ summary.failed + summary.lease_lost }}</strong></div>
-      <div class="summary-item"><span>接管中断</span><strong>{{ summary.interrupted }}</strong></div>
-      <div class="summary-item"><span>平均耗时</span><strong>{{ tenantHealthSchedulerRunDuration(summary.average_duration_ms) }}</strong></div>
+      <div v-for="item in summaryItems" :key="item.key" class="summary-item">
+        <span>{{ item.label }}</span>
+        <strong>{{ item.value }}</strong>
+      </div>
     </div>
     <div class="runs-filters">
       <el-select v-model="status" clearable placeholder="全部运行状态" @change="loadRuns(true)">
@@ -129,7 +127,7 @@ onMounted(() => loadRuns())
 .runs-heading { margin-bottom: 12px; }
 .runs-heading > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .runs-heading span, .runs-pagination > span { color: #98a2b3; font-size: 11px; }
-.runs-summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.runs-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
 .summary-item { display: flex; flex-direction: column; gap: 5px; min-width: 0; padding: 10px 12px; border: 1px solid #edf0f5; border-radius: 6px; }
 .summary-item span { color: #98a2b3; font-size: 11px; }
 .summary-item strong { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
