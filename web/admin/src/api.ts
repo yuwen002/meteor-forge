@@ -76,3 +76,44 @@ export async function listSecurityAuditEvents(limit = 50, offset = 0): Promise<{
   const { data } = await api.get<{ items: SecurityAuditEvent[]; total: number }>('/auth/security-events', { params: { limit, offset } })
   return data
 }
+
+ 
+export type TenantHealthSchedulerRunStatus = 'running' | 'succeeded' | 'failed' | 'lease_lost' | 'interrupted'
+
+export interface TenantHealthSchedulerRun {
+  id: number
+  lease_generation: number
+  started_at: string
+  finished_at?: string
+  duration_ms: number
+  status: TenantHealthSchedulerRunStatus
+  error_code?: string
+  error_message?: string
+}
+
+export interface TenantHealthSchedulerRunSummary {
+  total: number
+  running: number
+  succeeded: number
+  failed: number
+  lease_lost: number
+  interrupted: number
+  average_duration_ms: number
+}
+
+export interface TenantHealthSchedulerRunPage {
+  items: TenantHealthSchedulerRun[]
+  total: number
+  summary: TenantHealthSchedulerRunSummary
+}
+
+export async function listTenantHealthSchedulerRuns(params: {
+  status?: TenantHealthSchedulerRunStatus
+  from?: string
+  to?: string
+  limit?: number
+  offset?: number
+} = {}): Promise<TenantHealthSchedulerRunPage> {
+  const { data } = await api.get<TenantHealthSchedulerRunPage>('/tenant-health/runs', { params })
+  return data
+}

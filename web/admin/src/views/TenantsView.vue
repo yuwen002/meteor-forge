@@ -1,9 +1,14 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
+import TenantHealthRunsPanel from '../components/TenantHealthRunsPanel.vue'
 import { useAdminPermissions } from '../permissions'
 import TenantDiscoveryDialog from '../components/TenantDiscoveryDialog.vue'
+import { canLoadNextPage, createRequestSequence, runLatestRequest } from '../utils/requestSequence'
+import { createTenantHealthTrendHistoryRange, isTenantHealthTrendBucketSelectable } from '../utils/healthTrend'
+import { createTenantHealthHistoryQuery, loadLatestTenantHealthTrend } from '../utils/healthTrendInteraction'
+import { tenantHealthLeaseStatusLabel, tenantHealthLeaseStatusType, type TenantHealthLeaseStatus } from '../utils/tenantHealthLease'
 
 interface DataSource {
   id: string
@@ -77,12 +82,80 @@ interface TenantInput {
   data_source_id: string
   status: 'active' | 'suspended'
 }
+
+interface TenantHealthTrendBucket {
+  bucket_start: string
+  checks: number
+  healthy: number
+  unhealthy: number
+  success_rate: number
+}
+interface TenantHealthTrends {
+  range: '24h' | '7d'
+  window_started_at: string
+  window_ended_at: string
+  buckets: TenantHealthTrendBucket[]
+}
+interface TenantHealthSummary {
+  window_started_at: string
+  tenant_count: number
+  checked_tenant_count: number
+  healthy_tenant_count: number
+  unhealthy_tenant_count: number
+  unchecked_tenant_count: number
+  checks_last_24_hours: number
+  healthy_checks_last_24_hours: number
+  unhealthy_checks_last_24_hours: number
+  success_rate_last_24_hours: number
+}
+interface TenantHealthSettings {
+  enabled: boolean
+  interval_seconds: number
+  timeout_seconds: number
+  history_retention_days: number
+  updated_at: string
+}
+interface TenantHealthSchedulerSnapshot {
+  enabled: boolean
+  running: boolean
+  interval_seconds: number
+  total_runs: number
+  success_count: number
+  failure_count: number
+  lease_skipped_count: number
+  lease_lost_count: number
+  lease_acquire_failure_count: number
+  last_started_at: string | null
+  last_finished_at: string | null
+  last_success_at: string | null
+  next_run_at: string | null
+  last_duration_ms: number
+  last_error?: string
+  lease_status: TenantHealthLeaseStatus
+  lease_expires_at: string | null
+  lease_generation: number
+  lease_remaining_seconds: number
+}
+interface TenantHealthHistory {
+  id: number
+  tenant_id: string
+  source: 'manual' | 'scheduled'
+  status: 'healthy' | 'unhealthy'
+  checked_at: string
+  duration_ms: number
+  message: string
+  error_code: string
+}
+
 interface TenantHealth {
   tenant_id: string
   status: 'healthy' | 'unhealthy'
   checked_at: string
   duration_ms: number
   message: string
+  error_code: string
+  consecutive_failures: number
+  last_success_at: string | null
 }
 
 const { canManageTenants, canTestConnections, canRunMigrations } = useAdminPermissions()
@@ -90,6 +163,40 @@ const { canManageTenants, canTestConnections, canRunMigrations } = useAdminPermi
 const items = ref<Tenant[]>([])
 const dataSources = ref<DataSource[]>([])
 const healthByTenant = ref<Record<string, TenantHealth>>({})
+const healthSettings = reactive<TenantHealthSettings>({ enabled: false, interval_seconds: 300, timeout_seconds: 5, history_retention_days: 30, updated_at: "" })
+const healthScheduler = reactive<TenantHealthSchedulerSnapshot>({
+  enabled: false, running: false, interval_seconds: 300, total_runs: 0,
+  success_count: 0, failure_count: 0, lease_skipped_count: 0, lease_lost_count: 0, lease_acquire_failure_count: 0, last_started_at: null, last_finished_at: null,
+  last_success_at: null, next_run_at: null, last_duration_ms: 0,
+  lease_status: "not_configured", lease_expires_at: null, lease_generation: 0, lease_remaining_seconds: 0,
+})
+const healthSchedulerLoading = ref(false)
+const healthSummary = reactive<TenantHealthSummary>({
+  window_started_at: '', tenant_count: 0, checked_tenant_count: 0,
+  healthy_tenant_count: 0, unhealthy_tenant_count: 0, unchecked_tenant_count: 0,
+  checks_last_24_hours: 0, healthy_checks_last_24_hours: 0,
+  unhealthy_checks_last_24_hours: 0, success_rate_last_24_hours: 0,
+})
+const healthSummaryLoading = ref(false)
+const healthTrendsRange = ref<'24h' | '7d'>('24h')
+const healthTrendBuckets = ref<TenantHealthTrendBucket[]>([])
+const healthTrendsLoading = ref(false)
+const healthTrendMax = computed(() => Math.max(1, ...healthTrendBuckets.value.map((bucket) => bucket.checks)))
+const healthSettingsLoading = ref(false)
+const healthSettingsSaving = ref(false)
+const healthHistory = ref<TenantHealthHistory[]>([])
+const healthHistoryLoading = ref(false)
+const healthHistoryDetailVisible = ref(false)
+const selectedHealthHistory = ref<TenantHealthHistory | null>(null)
+const selectedHealthHistoryTenant = computed(() =>
+  items.value.find(item => item.id === selectedHealthHistory.value?.tenant_id),
+)
+const healthHistoryNext = ref("")
+const healthHistorySource = ref("")
+const healthHistoryStatus = ref("")
+const healthHistoryTenant = ref("")
+const healthHistoryTimeRange = ref<[Date, Date] | null>(null)
+const healthHistoryExactTo = ref('')
 const loading = ref(false)
 const healthBatching = ref(false)
 const saving = ref(false)
@@ -129,6 +236,36 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+function tenantHealthErrorLabel(code?: string): string {
+  const labels: Record<string, string> = {
+    none: '无错误', timeout: '连接超时', canceled: '检查已取消',
+    authentication_failed: '认证失败', connection_refused: '连接被拒绝',
+    network_unreachable: '网络不可达', dns_resolution_failed: 'DNS 解析失败',
+    unavailable: '巡检不可用', unknown: '未知连接错误',
+  }
+  return labels[code ?? 'unknown'] ?? '未知连接错误'
+}
+
+function tenantHealthDiagnosis(code?: string): string {
+  const advice: Record<string, string> = {
+    timeout: '检查数据库负载、防火墙策略和网络延迟；确认目标地址与端口可达。',
+    canceled: '本次检查被请求取消或服务关闭中断；确认调度任务仍在运行后再重新巡检。',
+    authentication_failed: '核对数据源账号、密码及认证方式，并确认账号未过期或被锁定。',
+    connection_refused: '确认数据库服务已启动并监听目标端口，检查端口映射、防火墙和安全组规则。',
+    network_unreachable: '检查应用主机路由、网络接口、防火墙及目标网段连通性。',
+    dns_resolution_failed: '检查数据源主机名、DNS 配置和解析服务是否正常。',
+    unavailable: '检查健康巡检组件和数据源连接池是否已正确初始化。',
+    unknown: '无法根据当前错误安全地确定原因；请核对数据源配置和数据库服务状态，并在受控环境查看服务端日志。',
+  }
+  return advice[code ?? 'unknown'] ?? advice.unknown
+}
+
+function tenantHealthLastSuccessLabel(item: TenantHealth): string {
+  if (!item.last_success_at) return '保留范围内无成功记录'
+  const checkedAt = new Date(item.last_success_at)
+  return Number.isNaN(checkedAt.getTime()) ? '时间不可用' : checkedAt.toLocaleString()
 }
 
 function openCreate() {
@@ -329,6 +466,172 @@ async function viewAudit(item: Tenant) {
     auditLoading.value = false
   }
 }
+
+async function loadHealthSettings() {
+  healthSettingsLoading.value = true
+  try {
+    const { data } = await api.get<TenantHealthSettings>('/tenant-health/settings')
+    Object.assign(healthSettings, data)
+  } catch {
+    ElMessage.error('读取定时巡检配置失败')
+  } finally {
+    healthSettingsLoading.value = false
+  }
+}
+
+async function loadHealthSummary() {
+  healthSummaryLoading.value = true
+  try {
+    const { data } = await api.get<TenantHealthSummary>('/tenant-health/summary')
+    Object.assign(healthSummary, data)
+  } catch {
+    ElMessage.error('读取租户健康统计失败')
+  } finally {
+    healthSummaryLoading.value = false
+  }
+}
+
+const healthTrendRequests = createRequestSequence()
+
+async function loadHealthTrends() {
+  healthTrendsLoading.value = true
+  const range = healthTrendsRange.value
+  await loadLatestTenantHealthTrend(healthTrendRequests, range, async requestedRange => {
+    const { data } = await api.get<TenantHealthTrends>('/tenant-health/trends', {
+      params: { range: requestedRange },
+    })
+    return data
+  }, {
+    onSuccess: buckets => { healthTrendBuckets.value = buckets },
+    onError: () => {
+      healthTrendBuckets.value = []
+      ElMessage.error('读取租户健康趋势失败')
+    },
+    onFinally: () => { healthTrendsLoading.value = false },
+  })
+}
+
+function changeHealthTrendRange(value: string) {
+  if (value !== '24h' && value !== '7d') return
+  healthTrendsRange.value = value
+  healthTrendBuckets.value = []
+  void loadHealthTrends()
+}
+
+function healthTrendBarHeight(bucket: TenantHealthTrendBucket): string {
+  return String(bucket.checks / healthTrendMax.value * 100) + '%'
+}
+
+function healthTrendSegmentHeight(bucket: TenantHealthTrendBucket, count: number): string {
+  return bucket.checks > 0 ? String(count / bucket.checks * 100) + '%' : '0%'
+}
+
+function healthTrendLabel(bucket: TenantHealthTrendBucket): string {
+  return healthTrendsRange.value === '24h' ? bucket.bucket_start.slice(11, 16) : bucket.bucket_start.slice(5, 10)
+}
+
+async function loadHealthScheduler() {
+  healthSchedulerLoading.value = true
+  try {
+    const { data } = await api.get<TenantHealthSchedulerSnapshot>('/tenant-health/scheduler')
+    Object.assign(healthScheduler, data, {
+      last_started_at: data.last_started_at ?? null,
+      last_finished_at: data.last_finished_at ?? null,
+      last_success_at: data.last_success_at ?? null,
+      next_run_at: data.next_run_at ?? null,
+      last_error: data.last_error ?? '',
+      lease_status: data.lease_status ?? "unavailable",
+      lease_expires_at: data.lease_expires_at ?? null,
+      lease_generation: data.lease_generation ?? 0,
+      lease_remaining_seconds: data.lease_remaining_seconds ?? 0,
+    })
+  } catch {
+    ElMessage.error('读取巡检运行状态失败')
+  } finally {
+    healthSchedulerLoading.value = false
+  }
+}
+
+async function saveHealthSettings() {
+  if (!canManageTenants.value || healthSettingsSaving.value) return
+  healthSettingsSaving.value = true
+  try {
+    const payload = { ...healthSettings }
+    const { data } = await api.put<TenantHealthSettings>('/tenant-health/settings', payload)
+    Object.assign(healthSettings, data)
+    await loadHealthScheduler()
+    ElMessage.success(data.enabled ? '定时巡检已启用' : '定时巡检已关闭')
+  } catch (error: unknown) {
+    const response = (error as { response?: { data?: { message?: string } } })?.response
+    ElMessage.error(response?.data?.message ?? '保存定时巡检配置失败')
+  } finally {
+    healthSettingsSaving.value = false
+  }
+}
+
+const healthHistoryRequests = createRequestSequence()
+
+async function loadHealthHistory(next = false) {
+  if (next && !canLoadNextPage(healthHistoryLoading.value, healthHistoryNext.value)) return
+  if (!next) {
+    healthHistory.value = []
+    healthHistoryNext.value = ''
+  }
+  const query = createTenantHealthHistoryQuery({
+    source: healthHistorySource.value,
+    status: healthHistoryStatus.value,
+    tenantID: healthHistoryTenant.value,
+    timeRange: healthHistoryTimeRange.value,
+    exactTo: healthHistoryExactTo.value,
+    cursor: next ? healthHistoryNext.value : undefined,
+  })
+  healthHistoryLoading.value = true
+  await runLatestRequest(healthHistoryRequests, async () => {
+    const { data } = await api.get<{ items: TenantHealthHistory[]; next_cursor?: string }>('/tenant-health/history', {
+      params: query,
+    })
+    return data
+  }, {
+    onSuccess: data => {
+      healthHistory.value = next ? [...healthHistory.value, ...data.items] : data.items
+      healthHistoryNext.value = data.next_cursor ?? ''
+    },
+    onError: () => { ElMessage.error('读取巡检历史失败') },
+    onFinally: () => { healthHistoryLoading.value = false },
+  })
+}
+
+function selectHealthTrendBucket(bucket: TenantHealthTrendBucket) {
+  if (!isTenantHealthTrendBucketSelectable(bucket)) return
+  try {
+    const range = createTenantHealthTrendHistoryRange(bucket.bucket_start, healthTrendsRange.value)
+    healthHistoryTimeRange.value = range.pickerRange
+    healthHistoryExactTo.value = range.to
+    healthHistoryStatus.value = 'unhealthy'
+    void loadHealthHistory()
+  } catch {
+    ElMessage.error('无法按该趋势时间桶筛选巡检历史')
+  }
+}
+
+function changeHealthHistoryTimeRange() {
+  healthHistoryExactTo.value = ''
+  void loadHealthHistory()
+}
+
+function viewHealthHistoryDetail(item: TenantHealthHistory) {
+  selectedHealthHistory.value = item
+  healthHistoryDetailVisible.value = true
+}
+
+function healthHistoryStatusLabel(status: TenantHealthHistory['status']): string {
+  return status === 'healthy' ? '正常' : '异常'
+}
+
+function healthHistorySourceLabel(source: TenantHealthHistory['source']): string {
+  return source === 'scheduled' ? '定时巡检' : '手动巡检'
+}
+
 function auditActionLabel(action: TenantAuditEvent['action']): string {
   return action === 'created' ? '创建租户' : action === 'updated' ? '修改租户' : '删除租户'
 }
@@ -337,13 +640,13 @@ function auditSnapshotLabel(snapshot?: TenantAuditSnapshot | null): string {
   return `${snapshot.name}（${snapshot.code}） · ${snapshot.data_source_id} · ${snapshot.status}`
 }
 
-onMounted(load)
+onMounted(() => { void load(); void loadHealthSettings(); void loadHealthScheduler(); void loadHealthSummary(); void loadHealthTrends(); void loadHealthHistory() })
 </script>
 
 <template>
   <div class="page-heading">
     <div>
-      <div class="eyebrow">TENANT CONTROL PLANE</div>
+      <div class="eyebrow">租户控制台</div>
       <h1>多租户管理</h1>
       <p>维护租户标识与目标数据源映射。每个租户映射到一个已登记的数据源，连接凭据仍由数据源管理统一加密保管。</p>
     </div>
@@ -415,6 +718,21 @@ onMounted(load)
           <span v-else>—</span>
         </template>
       </el-table-column>
+      <el-table-column label="连续失败（保留范围）" width="170">
+        <template #default="{ row }">
+          <el-tag v-if="healthByTenant[row.id] && healthByTenant[row.id].consecutive_failures > 0" type="danger" effect="plain">
+            {{ healthByTenant[row.id].consecutive_failures }} 次
+          </el-tag>
+          <span v-else-if="healthByTenant[row.id]">0 次</span>
+          <span v-else>—</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="最近成功" min-width="190">
+        <template #default="{ row }">
+          <span v-if="healthByTenant[row.id]">{{ tenantHealthLastSuccessLabel(healthByTenant[row.id]) }}</span>
+          <span v-else>—</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="updated_at" label="最近更新" min-width="190">
         <template #default="{ row }">{{ new Date(row.updated_at).toLocaleString() }}</template>
       </el-table-column>
@@ -428,6 +746,152 @@ onMounted(load)
         </template>
       </el-table-column>
     </el-table>
+  </el-card>
+
+
+  <el-card shadow="never" class="tenant-card health-schedule-card">
+    <div class="table-toolbar">
+      <div>
+        <strong>定时连接巡检</strong>
+        <span>默认关闭，仅巡检运行中的租户</span>
+      </div>
+      <el-tag :type="healthSettings.enabled ? 'success' : 'info'">{{ healthSettings.enabled ? '已启用' : '已关闭' }}</el-tag>
+    </div>
+    <section v-loading="healthSummaryLoading" class="health-summary">
+      <div class="health-summary-heading">
+        <strong>健康统计概览</strong>
+        <el-button text :loading="healthSummaryLoading" @click="loadHealthSummary">刷新统计</el-button>
+      </div>
+      <div class="health-summary-group">
+        <span class="health-summary-label">当前租户状态</span>
+        <div class="health-summary-grid">
+          <div><span>租户总数</span><strong>{{ healthSummary.tenant_count }}</strong></div>
+          <div><span>已巡检</span><strong>{{ healthSummary.checked_tenant_count }}</strong></div>
+          <div><span>连接正常</span><strong>{{ healthSummary.healthy_tenant_count }}</strong></div>
+          <div><span>连接异常</span><strong>{{ healthSummary.unhealthy_tenant_count }}</strong></div>
+          <div><span>未巡检</span><strong>{{ healthSummary.unchecked_tenant_count }}</strong></div>
+        </div>
+      </div>
+      <div class="health-summary-group">
+        <span class="health-summary-label">最近 24 小时 · 检查次数</span>
+        <div class="health-summary-grid health-summary-grid-four">
+          <div><span>检查总次数</span><strong>{{ healthSummary.checks_last_24_hours }}</strong></div>
+          <div><span>正常次数</span><strong>{{ healthSummary.healthy_checks_last_24_hours }}</strong></div>
+          <div><span>异常次数</span><strong>{{ healthSummary.unhealthy_checks_last_24_hours }}</strong></div>
+          <div><span>成功率</span><strong>{{ healthSummary.success_rate_last_24_hours.toFixed(1) }}%</strong></div>
+        </div>
+      </div>
+      <span class="health-summary-hint">当前状态按每个租户最新结果统计；24 小时指标按巡检历史次数统计。</span>
+      <div v-loading="healthTrendsLoading" class="health-trends">
+        <div class="health-trends-heading">
+          <span class="health-summary-label">巡检趋势</span>
+          <el-radio-group :model-value="healthTrendsRange" size="small" @change="changeHealthTrendRange">
+            <el-radio-button label="24h">24 小时</el-radio-button>
+            <el-radio-button label="7d">7 天</el-radio-button>
+          </el-radio-group>
+        </div>
+        <div class="health-trend-legend">
+          <span><i class="trend-legend-healthy" />正常</span>
+          <span><i class="trend-legend-unhealthy" />异常</span>
+        </div>
+        <div class="health-trend-chart-scroll">
+          <div class="health-trend-chart" role="group" :aria-label="healthTrendsRange === '24h' ? '最近 24 个完整小时的巡检次数趋势' : '最近 7 个 UTC 日历日的巡检次数趋势'">
+            <button v-for="bucket in healthTrendBuckets" :key="bucket.bucket_start" type="button"
+              class="health-trend-column"
+              :class="{ 'is-selectable': isTenantHealthTrendBucketSelectable(bucket) }"
+              :disabled="!isTenantHealthTrendBucketSelectable(bucket)"
+              :aria-label="bucket.bucket_start + '，共 ' + bucket.checks + ' 次，正常 ' + bucket.healthy + ' 次，异常 ' + bucket.unhealthy + ' 次' + (isTenantHealthTrendBucketSelectable(bucket) ? '，点击筛选异常历史' : '，无异常记录')"
+              :title="bucket.bucket_start + ' · 总计 ' + bucket.checks + ' · 正常 ' + bucket.healthy + ' · 异常 ' + bucket.unhealthy"
+              @click="selectHealthTrendBucket(bucket)">
+              <div class="health-trend-bar-area">
+                <div class="health-trend-bar-stack" :style="{ height: healthTrendBarHeight(bucket) }">
+                  <span class="trend-bar-healthy" :style="{ height: healthTrendSegmentHeight(bucket, bucket.healthy) }" />
+                  <span class="trend-bar-unhealthy" :style="{ height: healthTrendSegmentHeight(bucket, bucket.unhealthy) }" />
+                </div>
+              </div>
+              <span class="health-trend-tick">{{ healthTrendLabel(bucket) }}</span>
+            </button>
+          </div>
+        </div>
+        <span class="health-summary-hint">{{ healthTrendsRange === '24h' ? '按 UTC 完整小时统计，不包含当前未结束小时。' : '按 UTC 日历日统计，今天的数据截至当前查询时间。' }} 空时间桶按 0 显示。</span>
+      </div>
+    </section>
+    <div v-loading="healthSchedulerLoading" class="health-scheduler-overview">
+      <div><span>进程内轮次</span><strong>{{ healthScheduler.total_runs }}</strong></div>
+      <div><span>成功 / 失败</span><strong>{{ healthScheduler.success_count }} / {{ healthScheduler.failure_count }}</strong></div>
+      <div><span>租约跳过 / 丢失</span><strong>{{ healthScheduler.lease_skipped_count }} / {{ healthScheduler.lease_lost_count }}</strong></div>
+      <div><span>租约获取失败</span><strong>{{ healthScheduler.lease_acquire_failure_count }}</strong></div>
+      <div><span>最近开始</span><strong>{{ healthScheduler.last_started_at ? new Date(healthScheduler.last_started_at).toLocaleString() : '尚未执行' }}</strong></div>
+      <div><span>最近成功</span><strong>{{ healthScheduler.last_success_at ? new Date(healthScheduler.last_success_at).toLocaleString() : '尚无成功记录' }}</strong></div>
+      <div><span>下次执行</span><strong>{{ healthScheduler.running ? '正在执行' : healthScheduler.next_run_at ? new Date(healthScheduler.next_run_at).toLocaleString() : '未安排' }}</strong></div>
+      <div><span>最近耗时</span><strong>{{ healthScheduler.last_duration_ms }} ms</strong></div>
+      <div><span>共享租约</span><strong><el-tag :type="tenantHealthLeaseStatusType(healthScheduler.lease_status)" effect="plain">{{ tenantHealthLeaseStatusLabel(healthScheduler.lease_status) }}</el-tag></strong></div>
+      <div><span>租约到期</span><strong>{{ healthScheduler.lease_expires_at ? new Date(healthScheduler.lease_expires_at).toLocaleString() : '—' }}</strong></div>
+      <div><span>剩余 / 代次</span><strong>{{ healthScheduler.lease_remaining_seconds }} 秒 / {{ healthScheduler.lease_generation }}</strong></div>
+      <div class="scheduler-refresh"><el-button text :loading="healthSchedulerLoading" @click="loadHealthScheduler">刷新运行状态</el-button></div>
+    </div>
+    <el-alert v-if="healthScheduler.last_error" :title="healthScheduler.last_error" type="warning" :closable="false" show-icon class="scheduler-error" />
+    <TenantHealthRunsPanel />
+
+    <el-form v-loading="healthSettingsLoading" label-position="top" class="health-settings-form">
+      <el-form-item label="定时巡检">
+        <el-switch v-model="healthSettings.enabled" :disabled="!canManageTenants || healthSettingsSaving" active-text="启用" inactive-text="关闭" />
+      </el-form-item>
+      <el-form-item label="巡检间隔（秒）">
+        <el-input-number v-model="healthSettings.interval_seconds" :min="30" :max="86400" :step="30" :disabled="!canManageTenants || healthSettingsSaving" />
+      </el-form-item>
+      <el-form-item label="单租户超时（秒）">
+        <el-input-number v-model="healthSettings.timeout_seconds" :min="1" :max="30" :disabled="!canManageTenants || healthSettingsSaving" />
+      </el-form-item>
+      <el-form-item label="历史保留天数">
+        <el-input-number v-model="healthSettings.history_retention_days" :min="1" :max="365" :disabled="!canManageTenants || healthSettingsSaving" />
+      </el-form-item>
+      <el-form-item>
+        <el-button v-if="canManageTenants" type="primary" :loading="healthSettingsSaving" @click="saveHealthSettings">保存配置</el-button>
+        <span class="field-hint">最多 4 个并发；停用租户会自动跳过。修改配置后调度器会重新加载。</span>
+      </el-form-item>
+    </el-form>
+    <el-divider content-position="left">巡检历史</el-divider>
+    <div class="table-toolbar history-toolbar">
+      <div><strong>历史记录</strong><span>按检查时间倒序</span></div>
+      <div class="toolbar-actions">
+        <el-date-picker v-model="healthHistoryTimeRange" type="datetimerange" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" clearable style="width: 330px" @change="changeHealthHistoryTimeRange" />
+        <el-select v-model="healthHistoryTenant" clearable filterable placeholder="全部租户" style="width: 180px" @change="loadHealthHistory()">
+          <el-option v-for="tenant in items" :key="tenant.id" :label="tenant.name + '（' + tenant.code + '）'" :value="tenant.id" />
+        </el-select>
+        <el-select v-model="healthHistoryStatus" clearable placeholder="全部结果" style="width: 120px" @change="loadHealthHistory()">
+          <el-option label="正常" value="healthy" />
+          <el-option label="异常" value="unhealthy" />
+        </el-select>
+        <el-select v-model="healthHistorySource" clearable placeholder="全部来源" style="width: 130px" @change="loadHealthHistory()">
+          <el-option label="手动巡检" value="manual" />
+          <el-option label="定时巡检" value="scheduled" />
+        </el-select>
+        <el-button text :loading="healthHistoryLoading" @click="loadHealthHistory()">刷新</el-button>
+      </div>
+    </div>
+    <el-table :data="healthHistory" v-loading="healthHistoryLoading" size="small" empty-text="暂无巡检历史">
+      <el-table-column prop="tenant_id" label="租户 ID" min-width="190" />
+      <el-table-column label="来源" width="110">
+        <template #default="{ row }">{{ row.source === 'scheduled' ? '定时巡检' : '手动巡检' }}</template>
+      </el-table-column>
+      <el-table-column label="结果" width="100">
+        <template #default="{ row }"><el-tag :type="row.status === 'healthy' ? 'success' : 'danger'">{{ row.status === 'healthy' ? '正常' : '异常' }}</el-tag></template>
+      </el-table-column>
+      <el-table-column prop="duration_ms" label="耗时（ms）" width="110" />
+      <el-table-column label="检查时间" min-width="190">
+        <template #default="{ row }">{{ new Date(row.checked_at).toLocaleString() }}</template>
+      </el-table-column>
+      <el-table-column prop="message" label="结果摘要" min-width="220" show-overflow-tooltip />
+      <el-table-column label="详情" width="90" fixed="right">
+        <template #default="{ row }">
+          <el-button link type="primary" @click="viewHealthHistoryDetail(row)">查看详情</el-button>
+        </template>
+      </el-table-column>
+    </el-table>
+    <div v-if="healthHistoryNext" class="history-more">
+      <el-button plain :loading="healthHistoryLoading" @click="loadHealthHistory(true)">加载更多历史</el-button>
+    </div>
   </el-card>
 
   <el-dialog v-model="batchDialogVisible" title="批量迁移进度" width="760px">
@@ -491,6 +955,57 @@ onMounted(load)
     </template>
   </el-dialog>
 
+  <el-drawer v-model="healthHistoryDetailVisible" title="巡检记录详情" size="560px">
+    <template v-if="selectedHealthHistory">
+      <el-descriptions :column="1" border>
+        <el-descriptions-item label="记录 ID">{{ selectedHealthHistory.id }}</el-descriptions-item>
+        <el-descriptions-item label="巡检结果">
+          <el-tag :type="selectedHealthHistory.status === 'healthy' ? 'success' : 'danger'">
+            {{ healthHistoryStatusLabel(selectedHealthHistory.status) }}
+          </el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item label="租户名称">{{ selectedHealthHistoryTenant?.name ?? '租户信息已不可用' }}</el-descriptions-item>
+        <el-descriptions-item label="租户标识">{{ selectedHealthHistoryTenant?.code ?? selectedHealthHistory.tenant_id }}</el-descriptions-item>
+        <el-descriptions-item label="租户 ID">{{ selectedHealthHistory.tenant_id }}</el-descriptions-item>
+        <el-descriptions-item label="目标数据源">
+          {{ selectedHealthHistoryTenant ? selectedHealthHistoryTenant.data_source_name + ' · ' + selectedHealthHistoryTenant.driver : '—' }}
+        </el-descriptions-item>
+        <el-descriptions-item label="巡检来源">{{ healthHistorySourceLabel(selectedHealthHistory.source) }}</el-descriptions-item>
+        <el-descriptions-item label="检查时间（本地）">{{ new Date(selectedHealthHistory.checked_at).toLocaleString() }}</el-descriptions-item>
+        <el-descriptions-item label="检查时间（UTC）">{{ new Date(selectedHealthHistory.checked_at).toISOString() }}</el-descriptions-item>
+        <el-descriptions-item label="执行耗时">{{ selectedHealthHistory.duration_ms }} ms</el-descriptions-item>
+        <el-descriptions-item label="错误分类">
+          <el-tag :type="selectedHealthHistory.error_code === 'none' ? 'success' : 'warning'">
+            {{ tenantHealthErrorLabel(selectedHealthHistory.error_code) }}
+          </el-tag>
+        </el-descriptions-item>
+      </el-descriptions>
+      <el-alert
+        v-if="selectedHealthHistory.status === 'unhealthy'"
+        title="排查建议"
+        :description="tenantHealthDiagnosis(selectedHealthHistory.error_code)"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="health-history-diagnosis"
+      />
+      <section class="health-history-detail-message">
+        <strong>巡检结果摘要</strong>
+        <pre>{{ selectedHealthHistory.message || '未提供结果摘要' }}</pre>
+      </section>
+      <el-alert
+        title="安全说明"
+        description="此处展示已保存的巡检摘要，不包含数据库连接串、密码或驱动原始堆栈。"
+        type="info"
+        :closable="false"
+        show-icon
+      />
+    </template>
+    <template #footer>
+      <el-button @click="healthHistoryDetailVisible = false">关闭</el-button>
+    </template>
+  </el-drawer>
+
   <el-dialog v-model="auditVisible" :title="`租户审计 · ${auditTenantName}`" width="760px">
     <div class="audit-total">共 {{ auditTotal }} 条生命周期记录</div>
     <el-timeline v-loading="auditLoading" v-if="auditEvents.length">
@@ -551,12 +1066,68 @@ onMounted(load)
 .heading-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .tenant-card { border: 1px solid #e8edf4; border-radius: 12px; }
 .tenant-alert { margin-bottom: 20px; }
+.health-schedule-card { margin-top: 18px; }
+.health-summary { margin: 8px 0 18px; }
+.health-summary-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.health-summary-group + .health-summary-group { margin-top: 14px; }
+.health-summary-label { display: block; margin-bottom: 8px; color: #667085; font-size: 12px; font-weight: 600; }
+.health-summary-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.health-summary-grid-four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.health-summary-grid > div { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 12px; border: 1px solid #e8edf4; border-radius: 8px; }
+.health-summary-grid span { color: #98a2b3; font-size: 11px; }
+.health-summary-grid strong { color: #34445d; font-size: 18px; font-weight: 650; }
+.health-summary-hint { display: block; margin-top: 10px; color: #98a2b3; font-size: 11px; }
+.health-trends { margin-top: 18px; padding-top: 14px; border-top: 1px solid #edf0f5; }
+.health-trends-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.health-trend-legend { display: flex; gap: 14px; margin: 8px 0 2px; color: #667085; font-size: 11px; }
+.health-trend-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.health-trend-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; }
+.trend-legend-healthy, .trend-bar-healthy { background: #39a879; }
+.trend-legend-unhealthy, .trend-bar-unhealthy { background: #e36b6b; }
+.health-trend-chart-scroll { max-width: 100%; overflow-x: auto; }
+.health-trend-chart { display: flex; align-items: stretch; gap: 3px; min-width: 560px; min-height: 150px; padding: 8px 2px 0; border-bottom: 1px solid #e8edf4; }
+.health-trend-column { display: flex; flex: 1; flex-direction: column; min-width: 0; padding: 0; border: 0; border-radius: 4px 4px 0 0; background: transparent; color: inherit; font: inherit; }
+.health-trend-column:disabled { cursor: default; opacity: 1; }
+.health-trend-column.is-selectable { cursor: pointer; }
+.health-trend-column.is-selectable:hover, .health-trend-column.is-selectable:focus-visible { background: #f1f6fc; outline: 2px solid #8bb7e8; outline-offset: -2px; }
+.health-trend-bar-area { display: flex; flex: 1; align-items: flex-end; justify-content: center; min-height: 112px; }
+.health-trend-bar-stack { display: flex; flex-direction: column-reverse; width: min(100%, 18px); min-height: 0; overflow: hidden; border-radius: 3px 3px 0 0; }
+.trend-bar-healthy, .trend-bar-unhealthy { display: block; flex: none; min-height: 0; }
+.health-trend-tick { display: block; overflow: hidden; margin-top: 6px; color: #98a2b3; font-size: 9px; line-height: 1.2; text-align: center; white-space: nowrap; }
+.health-scheduler-overview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 4px 0 18px; }
+.health-scheduler-overview > div { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 12px; border: 1px solid #e8edf4; border-radius: 8px; }
+.health-scheduler-overview span { color: #98a2b3; font-size: 11px; }
+.health-scheduler-overview strong { overflow-wrap: anywhere; color: #34445d; font-size: 13px; font-weight: 600; }
+.health-scheduler-overview .scheduler-refresh { justify-content: center; align-items: flex-start; }
+.scheduler-error { margin-bottom: 14px; }
+.health-settings-form { display: flex; flex-wrap: wrap; gap: 0 24px; align-items: flex-end; }
+.health-settings-form :deep(.el-form-item) { min-width: 170px; }
+.history-more { display: flex; justify-content: center; padding-top: 14px; }
+.history-toolbar .toolbar-actions { flex-wrap: wrap; justify-content: flex-end; }
+@media (max-width: 900px) {
+  .health-summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .health-summary-grid-four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .health-scheduler-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .table-toolbar { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .history-toolbar .toolbar-actions { width: 100%; justify-content: flex-start; }
+  .history-toolbar .toolbar-actions :deep(.el-date-editor) { max-width: 100%; }
+}
+@media (max-width: 460px) {
+  .health-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .health-scheduler-overview { grid-template-columns: 1fr; }
+  .health-trend-chart { min-width: 520px; }
+  .history-toolbar .toolbar-actions { align-items: stretch; flex-direction: column; }
+  .history-toolbar .toolbar-actions > * { width: 100% !important; }
+}
 .batch-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; font-size: 12px; }
 .batch-summary span { margin-right: 8px; color: #667085; }
 .batch-alert { margin-top: 14px; }
 .audit-total { margin-bottom: 14px; color: #8a95a5; font-size: 11px; }
 .audit-event-title { color: #34445d; font-size: 12px; font-weight: 600; }
 .audit-event-meta, .audit-snapshot { margin-top: 5px; color: #8a95a5; font-size: 11px; line-height: 1.6; }
+.health-history-detail-message { margin: 18px 0; }
+.health-history-detail-message strong { color: #34445d; font-size: 13px; }
+.health-history-detail-message pre { margin: 8px 0 0; padding: 12px; overflow-wrap: anywhere; white-space: pre-wrap; word-break: break-word; border: 1px solid #e8edf4; border-radius: 8px; background: #f8fafc; color: #34445d; font: inherit; font-size: 12px; line-height: 1.7; }
 .table-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
 .table-toolbar > div { display: flex; align-items: center; gap: 10px; }
 .toolbar-actions { display: flex; align-items: center; gap: 10px; }

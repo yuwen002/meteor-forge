@@ -12,12 +12,19 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"database/sql"
 
 	_ "modernc.org/sqlite"
 )
+
+const currentMetadataSchemaVersion = 20
+
+// metadataOpenLocks prevents two goroutines in the same process from racing
+// through SQLite connection setup and schema initialization for one file.
+var metadataOpenLocks sync.Map
 
 var (
 	ErrNotFound = errors.New("data source not found")
@@ -72,20 +79,46 @@ func Open(ctx context.Context, path, keyHex string) (*Store, error) {
 		return nil, errors.New("metadata database path is required")
 	}
 	if path != ":memory:" {
+		absolutePath, err := filepath.Abs(path)
+		if err != nil {
+			return nil, fmt.Errorf("resolve metadata database path: %w", err)
+		}
+		value, _ := metadataOpenLocks.LoadOrStore(absolutePath, &sync.Mutex{})
+		openLock := value.(*sync.Mutex)
+		openLock.Lock()
+		defer openLock.Unlock()
+	}
+	if path != ":memory:" {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return nil, fmt.Errorf("create metadata directory: %w", err)
 		}
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", metadataSQLiteDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open metadata database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	store := &Store{db: db, aead: aead, path: path}
-	if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout = 5000"); err != nil {
+	// Connection-scoped SQLite settings are applied by the driver to every
+	// physical connection through the DSN, not just the first pooled connection.
+	var foreignKeysEnabled int
+	if err := db.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&foreignKeysEnabled); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("configure metadata database: %w", err)
+		return nil, fmt.Errorf("verify metadata foreign keys: %w", err)
+	}
+	if foreignKeysEnabled != 1 {
+		_ = db.Close()
+		return nil, errors.New("metadata SQLite foreign-key enforcement is unavailable")
+	}
+	var busyTimeout int
+	if err := db.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("verify metadata busy timeout: %w", err)
+	}
+	if busyTimeout != 5000 {
+		_ = db.Close()
+		return nil, fmt.Errorf("metadata SQLite busy timeout is %d ms, want 5000 ms", busyTimeout)
 	}
 	if path != ":memory:" {
 		if _, err := db.ExecContext(ctx, "PRAGMA journal_mode = WAL"); err != nil {
@@ -110,6 +143,9 @@ func Open(ctx context.Context, path, keyHex string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) migrate(ctx context.Context) error {
+	if err := s.checkMetadataSchemaCompatibility(ctx); err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin metadata schema migration: %w", err)
@@ -499,29 +535,92 @@ func (s *Store) migrate(ctx context.Context) error {
 		ON admin_security_audit_events(occurred_at DESC, id DESC)`); err != nil {
 		return fmt.Errorf("index security audit events: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
-		VALUES (11, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return fmt.Errorf("record metadata schema version: %w", err)
+
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admin_tenant_health_settings (
+		id INTEGER PRIMARY KEY CHECK(id = 1),
+		enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+		interval_seconds INTEGER NOT NULL DEFAULT 300 CHECK(interval_seconds BETWEEN 30 AND 86400),
+		timeout_seconds INTEGER NOT NULL DEFAULT 5 CHECK(timeout_seconds BETWEEN 1 AND 30),
+		history_retention_days INTEGER NOT NULL DEFAULT 30 CHECK(history_retention_days BETWEEN 1 AND 365),
+		updated_at TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("create tenant health settings table: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
-		VALUES (12, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return fmt.Errorf("record security audit schema version: %w", err)
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_tenant_health_settings
+		(id, enabled, interval_seconds, timeout_seconds, history_retention_days, updated_at)
+		VALUES (1, 0, 300, 5, 30, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("initialize tenant health settings: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
-		VALUES (13, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return fmt.Errorf("record tenant migration batch audit schema version: %w", err)
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admin_tenant_connection_health_history (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		tenant_id TEXT NOT NULL,
+		source TEXT NOT NULL CHECK(source IN ('manual','scheduled')),
+		status TEXT NOT NULL CHECK(status IN ('healthy','unhealthy')),
+		checked_at TEXT NOT NULL,
+		duration_ms INTEGER NOT NULL DEFAULT 0 CHECK(duration_ms >= 0),
+		message TEXT NOT NULL DEFAULT ''
+	)`); err != nil {
+		return fmt.Errorf("create tenant connection health history table: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
-		VALUES (14, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return fmt.Errorf("record tenant lifecycle audit schema version: %w", err)
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_admin_tenant_health_history_tenant_time
+		ON admin_tenant_connection_health_history(tenant_id, checked_at DESC, id DESC)`); err != nil {
+		return fmt.Errorf("index tenant connection health history by tenant: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
-		VALUES (15, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return fmt.Errorf("record tenant connection health schema version: %w", err)
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_admin_tenant_health_history_time
+		ON admin_tenant_connection_health_history(checked_at DESC, id DESC)`); err != nil {
+		return fmt.Errorf("index tenant connection health history by time: %w", err)
 	}
-	return tx.Commit()
+	for _, table := range []string{"admin_tenant_connection_health", "admin_tenant_connection_health_history"} {
+		if err := ensureTenantHealthErrorCodeColumn(ctx, tx, table); err != nil { return err }
+	}
+	if err := recordMetadataSchemaMigrations(ctx, tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit legacy metadata schema bootstrap: %w", err)
+	}
+	return applyMetadataSchemaMigrations(ctx, s.db, metadataSchemaMigrations, currentMetadataSchemaVersion)
 }
 
+// checkMetadataSchemaCompatibility prevents an older binary from modifying a
+// metadata database created by a newer release. It runs before the migration
+// transaction so no schema objects or data are changed on this failure path.
+func (s *Store) checkMetadataSchemaCompatibility(ctx context.Context) error {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'admin_schema_migrations'`).Scan(&exists); err != nil {
+		return fmt.Errorf("inspect metadata schema history: %w", err)
+	}
+	if exists == 0 {
+		return nil
+	}
+	var version int
+	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM admin_schema_migrations").Scan(&version); err != nil {
+		return fmt.Errorf("read metadata schema version: %w", err)
+	}
+	if version > currentMetadataSchemaVersion {
+		return fmt.Errorf("metadata schema version %d is newer than supported version %d; upgrade meteor-forge before opening this database", version, currentMetadataSchemaVersion)
+	}
+	return nil
+}
+
+func ensureTenantHealthErrorCodeColumn(ctx context.Context, tx *sql.Tx, table string) error {
+	rows, err := tx.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil { return fmt.Errorf("inspect %s schema: %w", table, err) }
+	has := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, typ string
+		var def sql.NullString
+		if err := rows.Scan(&cid,&name,&typ,&notNull,&def,&primaryKey); err != nil { rows.Close(); return fmt.Errorf("scan %s schema: %w",table,err) }
+		if name=="error_code" { has=true }
+	}
+	if err:=rows.Err(); err!=nil { rows.Close(); return fmt.Errorf("iterate %s schema: %w",table,err) }
+	if err:=rows.Close(); err!=nil { return fmt.Errorf("close %s schema inspection: %w",table,err) }
+	if has { return nil }
+	if _,err:=tx.ExecContext(ctx,"ALTER TABLE "+table+" ADD COLUMN error_code TEXT NOT NULL DEFAULT 'unknown'"); err!=nil { return fmt.Errorf("add error code to %s: %w",table,err) }
+	return nil
+}
 func (s *Store) encrypt(plain string) ([]byte, error) {
 	nonce := make([]byte, s.aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {

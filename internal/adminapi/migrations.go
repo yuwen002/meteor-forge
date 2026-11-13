@@ -52,6 +52,9 @@ func (s *Server) registerMigrationRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+apiPrefix+"/tenant-migration-batches/{id}", s.getTenantMigrationBatch)
 	mux.HandleFunc("GET "+apiPrefix+"/migration-tasks", s.listMigrationTasks)
 	mux.HandleFunc("GET "+apiPrefix+"/migration-tasks/{id}", s.getMigrationTask)
+	mux.HandleFunc("GET "+apiPrefix+"/migration-tasks/{id}/reconciliation", s.reconcileMigrationTask)
+	mux.HandleFunc("POST "+apiPrefix+"/migration-tasks/{id}/disposition", s.createMigrationTaskDisposition)
+	mux.HandleFunc("GET "+apiPrefix+"/migration-tasks/{id}/disposition", s.getMigrationTaskDisposition)
 	mux.HandleFunc("POST "+apiPrefix+"/migration-tasks/{id}/cancel", s.cancelMigrationTask)
 	mux.HandleFunc("GET "+apiPrefix+"/migration-tasks/{id}/audit", s.listMigrationTaskAudit)
 }
@@ -332,4 +335,123 @@ func (s *Server) listMigrationTaskAudit(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+
+// migrationTaskReconciliation is a read-only comparison between the last
+// persisted worker progress and the target database migration history.
+type migrationTaskReconciliation struct {
+	TaskID                    string    `json:"task_id"`
+	Status                    string    `json:"status"`
+	ObservedAt                time.Time `json:"observed_at"`
+	HistoryAvailable          bool      `json:"history_available"`
+	CurrentVersion            string    `json:"current_version,omitempty"`
+	CurrentAction             string    `json:"current_action,omitempty"`
+	CurrentVersionState       string    `json:"current_version_state"`
+	CurrentVersionChecksum    string    `json:"current_version_checksum_state"`
+	AppliedVersionCount       int       `json:"applied_version_count"`
+	UnknownAppliedVersionCount int      `json:"unknown_applied_version_count"`
+	Assessment                string    `json:"assessment"`
+}
+
+// reconcileMigrationTask deliberately does not call EnsureTable and never
+// changes task state or executes migration SQL. A missing/unreadable history
+// is reported as unknown rather than being initialized or guessed.
+func (s *Server) reconcileMigrationTask(w http.ResponseWriter, r *http.Request) {
+	if !s.requireStore(w) || s.tasks == nil {
+		return
+	}
+	task, err := s.tasks.store.GetMigrationTask(r.Context(), r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, adminstore.ErrNotFound) {
+			writeAPIError(w, http.StatusNotFound, "not_found", "migration task not found")
+		} else {
+			writeAPIError(w, http.StatusInternalServerError, "task_query_failed", "unable to read migration task")
+		}
+		return
+	}
+	if task.Status != "interrupted" {
+		writeAPIError(w, http.StatusConflict, "task_not_interrupted", "only interrupted migration tasks can be reconciled")
+		return
+	}
+
+	response := migrationTaskReconciliation{
+		TaskID: task.ID, Status: task.Status, ObservedAt: time.Now().UTC(),
+		CurrentVersion: task.CurrentVersion, CurrentAction: task.CurrentAction,
+		CurrentVersionState: "unknown", CurrentVersionChecksum: "unknown",
+		Assessment: "无法判断：尚未读取目标数据库迁移历史",
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	driver, err := s.migrationDriver(ctx, task.DataSourceID)
+	if err != nil {
+		response.Assessment = "无法判断：目标数据源连接不可用，请检查连接配置和网络"
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
+	records, err := driver.GetAppliedVersions(ctx)
+	if err != nil {
+		response.Assessment = "无法判断：目标数据库迁移历史不可读取；接口未创建或修改历史表"
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
+	response.HistoryAvailable = true
+	response.AppliedVersionCount = len(records)
+
+	loader := migration.NewFileSystemLoader(os.DirFS(s.migrationDir), ".")
+	scripts, err := loader.LoadScripts(ctx)
+	if err != nil {
+		response.Assessment = "无法完整核对：本地迁移脚本目录不可读取"
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
+	scriptByVersion := make(map[string]*migration.Script, len(scripts))
+	for _, script := range scripts {
+		scriptByVersion[script.Version] = script
+	}
+	appliedByVersion := make(map[string]migration.Record, len(records))
+	for _, record := range records {
+		appliedByVersion[record.Version] = record
+		if _, ok := scriptByVersion[record.Version]; !ok {
+			response.UnknownAppliedVersionCount++
+		}
+	}
+
+	if task.CurrentVersion == "" {
+		response.Assessment = "无法判断：任务没有持久化当前迁移版本；请结合目标库结构和审计记录人工核对"
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
+	record, applied := appliedByVersion[task.CurrentVersion]
+	if applied {
+		response.CurrentVersionState = "present"
+	} else {
+		response.CurrentVersionState = "absent"
+	}
+	script, scriptExists := scriptByVersion[task.CurrentVersion]
+	switch {
+	case !scriptExists:
+		response.CurrentVersionChecksum = "local_script_missing"
+	case !applied:
+		response.CurrentVersionChecksum = "not_comparable"
+	case record.Checksum == "":
+		response.CurrentVersionChecksum = "legacy_unverified"
+	case record.Checksum == script.Checksum():
+		response.CurrentVersionChecksum = "matched"
+	default:
+		response.CurrentVersionChecksum = "mismatch"
+	}
+	switch {
+	case response.UnknownAppliedVersionCount > 0:
+		response.Assessment = "发现目标库存在本地脚本目录中缺失的已应用版本；需要人工核对，不能自动恢复"
+	case response.CurrentVersionChecksum == "mismatch":
+		response.Assessment = "当前版本校验和不一致；禁止自动恢复，请先核对脚本与目标库"
+	case response.CurrentVersionState == "present":
+		response.Assessment = "目标库迁移历史中存在当前进度版本；这只能证明历史记录存在，仍需核对实际结构后再决定后续操作"
+	case response.CurrentVersionState == "absent":
+		response.Assessment = "目标库迁移历史中未发现当前进度版本；这不代表 SQL 一定未执行，尤其不能排除非事务型 DDL 的部分执行"
+	default:
+		response.Assessment = "证据不足，无法判断；请人工核对目标库结构和迁移历史"
+	}
+	writeJSON(w, http.StatusOK, response)
 }

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"net/http"
 	"time"
@@ -31,6 +32,8 @@ type Server struct {
 	tasks        *MigrationTaskManager
 	shardDDL     *shardDDLTaskManager
 	healthChecker *tenant.HealthChecker
+	healthScheduler *tenantHealthScheduler
+	tenantHealthLeaseOwnerID string
 	migrationDir string
 }
 
@@ -57,6 +60,8 @@ func newServerWithMigrationDir(store *adminstore.Store, migrationDir string, enf
 	healthChecker, _ := tenant.NewHealthChecker(5*time.Second, 4)
 	server := &Server{pools: NewPoolManager(), migrationDir: migrationDir, authStore: store, loginLimiter: newLoginLimiter(), healthChecker: healthChecker}
 	if store != nil {
+		ownerID, ownerErr := newTenantHealthSchedulerOwnerID()
+		if ownerErr != nil { log.Printf("tenant health scheduler: unable to create lease owner: %v", ownerErr) } else { server.tenantHealthLeaseOwnerID = ownerID }
 		server.store = store
 		server.tenants = store
 		server.shards = store
@@ -107,6 +112,17 @@ func newServerWithMigrationDir(store *adminstore.Store, migrationDir string, enf
 		server.registerDataSourceRoutes(mux)
 		server.registerTenantRoutes(mux)
 		server.registerTenantHealthRoutes(mux)
+		server.healthScheduler = newTenantHealthScheduler(
+			store.GetTenantHealthSettings,
+			server.runScheduledTenantHealthChecks,
+			func(ctx context.Context, retentionDays int) error {
+				return cleanupTenantHealthHistory(ctx, store.DeleteExpiredTenantConnectionHealthHistory, retentionDays)
+			},
+			func(err error) {
+				log.Printf("tenant health scheduler: %v", err)
+			},
+		)
+		server.healthScheduler.Start(context.Background())
 		server.registerTenantDiscoveryRoutes(mux)
 		server.registerMigrationRoutes(mux)
 		server.registerShardingRoutes(mux)
@@ -125,8 +141,9 @@ func newServerWithMigrationDir(store *adminstore.Store, migrationDir string, enf
 // Handler returns the HTTP handler. It is exposed to support embedding and tests.
 func (s *Server) Handler() http.Handler { return s.handler }
 
-// Close releases all cached target database pools owned by the API server.
+// Close stops background work before releasing cached target database pools.
 func (s *Server) Close() error {
+	if s.healthScheduler != nil { s.healthScheduler.Close() }
 	if s.shardDDL != nil {
 		if err := s.shardDDL.Close(); err != nil { return err }
 	}

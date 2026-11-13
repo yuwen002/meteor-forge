@@ -232,6 +232,38 @@ Down、DownSteps 和 ToVersion 必须显式提交 `confirm: true`，并且仅 ad
 
 任务状态：`queued`、`running`、`succeeded`、`failed`、`canceled`、`interrupted`。任务详情和列表同时返回进度字段：`current_version`（当前迁移版本）、`completed_steps`、`total_steps`、`current_action`（`up` / `down`）和 `progress_updated_at`。进度在每条迁移开始及成功完成时写入管理元数据库；没有待执行迁移时这些计数保持为 0。开始时间与结束时间可用于计算任务耗时。进度只反映已成功完成的迁移步骤，不代表单条 SQL 内部的执行百分比；单条 SQL 执行期间当前版本会保持不变。状态转换由管理元数据库原子约束：`queued` 只能进入 `running`、`failed`、`canceled` 或 `interrupted`；`running` 只能进入 `succeeded`、`failed`、`canceled` 或 `interrupted`；终态不可重新打开或改写。无效转换会被拒绝。任务响应只包含安全的状态摘要，不包含 DSN、SQL 内容或数据库驱动原始错误。
 
+### GET /migration-tasks/{id}/reconciliation
+
+只读核对一条 `interrupted` 迁移任务的最后进度与目标数据库迁移历史。仅对中断任务开放；其他状态返回 HTTP 409。响应包含：
+
+- `history_available`：是否成功读取目标库已有迁移历史。连接失败或历史表不可读时为 false；接口不会调用 `EnsureTable`，不会创建历史表。
+- `current_version_state`：当前进度版本在目标库历史中的事实状态，`present` / `absent` / `unknown`。
+- `current_version_checksum_state`：脚本校验和状态，可能为 `matched`、`mismatch`、`legacy_unverified`、`local_script_missing`、`not_comparable` 或 `unknown`。
+- `unknown_applied_version_count`：目标库已应用、但本地脚本目录中不存在的版本数量。
+- `assessment`：供操作者参考的安全摘要。
+
+该接口不更新任务状态、不执行 SQL、不重放任务。特别注意：`absent` 只表示迁移历史中没有该版本记录，不能证明 SQL 从未执行；非事务型 DDL 可能已经部分生效。即使状态为 `present` 且校验和匹配，也仍应检查目标库实际结构，再由管理员决定下一步。该接口不提供自动恢复或自动标记完成。
+
+### POST /migration-tasks/{id}/disposition
+
+仅管理员可为一条 `interrupted` 迁移任务提交一次人工处置记录。请求示例：
+
+```json
+{
+  "action": "authorize_retry",
+  "operator_note": "已检查目标库实际表结构、DDL 执行记录和备份，批准由值班 DBA 后续创建新的迁移任务。",
+  "confirmation": "我已核对目标数据库实际结构并理解中断迁移风险"
+}
+```
+
+`action` 仅允许 `confirm_completed`、`authorize_retry`、`terminate`；必须提供 1–2000 字的 `operator_note`，并在 `confirmation` 字段完整填写：`我已核对目标数据库实际结构并理解中断迁移风险`。核对快照由服务端在提交时重新读取生成，客户端不能提交或覆盖快照。接口按决定分别校验：`confirm_completed` 要求目标库历史可读、当前进度版本为 `present`，且校验和为 `matched` 或兼容旧版的 `legacy_unverified`；`authorize_retry` 要求目标库历史可读、当前进度版本为 `absent`，且校验和状态为 `not_comparable`（本地脚本存在、目标历史中尚无该版本）。版本已存在时禁止授权重试，版本不存在时禁止确认完成；历史不可读、状态未知、校验和不一致或本地脚本缺失时均拒绝这两种高风险决定。`terminate` 可在无法连接时记录人工终止决定。以上证据仍不能替代对目标库实际结构的人工检查。
+
+每个任务最多有一条处置记录，重复提交返回 HTTP 409。该接口只保存管理员决定与服务端核对快照：不会改变原任务状态、不会执行 SQL，也不会自动创建重试任务。授权重试后，管理员仍需在后续流程中基于实际核查结果创建新的任务。
+
+### GET /migration-tasks/{id}/disposition
+
+读取任务已保存的人工处置记录；尚无记录返回 HTTP 404。记录包含动作、操作者、备注、服务端核对快照、请求来源和时间。处置记录不可覆盖。
+
 ### GET /migration-tasks/{id}/audit
 
 按时间顺序返回任务审计事件，包含数据源 ID、租户 ID（租户级任务）、动作、状态变更前后值、操作者标识、请求来源、事件摘要和时间戳。当前任务审计事件记录已认证的管理员用户名；请求来源取管理 API 连接的远端地址，不信任转发头。认证登录、登出、密码变更和管理员账号生命周期另记入管理员专属安全审计流。事件与任务创建/状态变更在同一 SQLite 事务内写入，避免任务状态更新成功但审计事件丢失。 服务启动时将遗留的 queued/running 任务标记为 interrupted 时，也会写入对应的恢复审计事件。
@@ -550,6 +582,75 @@ GET /api/v1/tenant-discovery/preview?data_source_id=control-source-id
 {"tenant_ids":["tenant-id-1","tenant-id-2"]}
 ```
 
-巡检最多 4 个并发，每个连接检查最多 5 秒。结果包含 `tenant_id`、`status`（healthy/unhealthy）、`checked_at`、`duration_ms` 和脱敏后的 `message`。管理元数据库只保留每个租户最近一次结果；暂不提供历史趋势和定时调度。
+巡检最多 4 个并发，手动检查超时 5 秒。结果包含 `tenant_id`、`status`（healthy/unhealthy）、`checked_at`、`duration_ms` 和脱敏后的 `message`。管理元数据库保留最新状态，并追加每次巡检历史。 `GET /tenant-health` 还返回 `consecutive_failures`（最近一次成功之后的连续失败数）和可选的 `last_success_at`（保留历史中的最近成功时间）。相同检查时间按历史记录 ID 决定先后，成功记录会重置失败计数。历史按配置保留天数清理，因此失败次数只统计当前保留范围；`last_success_at` 为空表示保留范围内没有成功记录，不代表租户从未成功。
 
 原有 `POST /tenants/{id}/test` 保持兼容，现同样会记录最近一次巡检结果。巡检失败不会自动停用租户、修改租户配置或触发修复。原始驱动错误、DSN 和密码不会写入响应或巡检记录。
+
+### GET /tenant-health/settings
+
+读取定时巡检配置。所有已认证角色可读取。
+
+### PUT /tenant-health/settings
+
+更新完整配置，仅 administrator 可操作。请求示例：
+
+```json
+{"enabled":true,"interval_seconds":300,"timeout_seconds":5,"history_retention_days":30}
+```
+
+- `interval_seconds`：30–86400。
+- `timeout_seconds`：1–30。
+- `history_retention_days`：1–365。
+- 默认关闭定时巡检；更新成功后调度器立即重新加载配置。
+
+
+### GET /tenant-health/scheduler
+
+读取当前 API 进程内的定时巡检运行快照，所有已认证角色可读取。响应字段：
+
+| 字段 | 说明 |
+|---|---|
+| `enabled` / `running` | 当前配置是否启用、是否正在执行巡检轮次 |
+| `interval_seconds` | 最近一次成功读取的巡检间隔（秒） |
+| `total_runs` / `success_count` / `failure_count` | 当前进程启动以来的轮次总数、成功数和失败数 |
+| `lease_skipped_count` | 因其他实例持有租约而跳过的轮次数 |
+| `lease_lost_count` | 巡检过程中租约丢失次数 |
+| `lease_acquire_failure_count` | 获取租约时元数据库访问失败次数 |
+| `last_started_at` / `last_finished_at` / `last_success_at` | 最近轮次开始、结束和成功时间；尚无记录时省略 |
+| `next_run_at` | 当前预计下一轮开始时间；禁用、运行中或尚未安排时省略 |
+| `last_duration_ms` | 最近一轮巡检执行耗时（毫秒） |
+| `last_error` | 最近一次调度错误的固定脱敏摘要，不包含数据库驱动原始错误或连接凭据 |
+| `lease_status` | 当前共享租约状态：`held_by_this_instance`、`held_by_other_instance`、`expired_or_unclaimed`、`unavailable` 或 `not_configured` |
+| `lease_expires_at` / `lease_remaining_seconds` | 当前有效租约的到期时间和剩余秒数；无有效租约时省略到期时间并返回 0 |
+| `lease_generation` | 租约 fencing 代次；每次新持有者接管时递增 |
+
+统计仅在当前进程内维护，服务重启后归零；不代表多实例全局统计。多个 API 进程共享同一管理元数据库时，每轮巡检通过数据库租约选出唯一执行者；租约 30 秒、每 10 秒续约，进程异常退出后可在租约过期后接管；结果写入事务会校验租约 owner 和 generation，阻止旧持有者写入过期结果。未取得租约的实例跳过该轮。配置读取或历史清理错误可能更新 `last_error`，但不会计入巡检轮次失败数。调度状态接口会额外实时读取共享租约并返回脱敏的 `lease_status`、`lease_expires_at`、`lease_remaining_seconds` 和 `lease_generation`；不会返回随机 owner ID。租约状态读取失败时仍返回进程内统计，`lease_status` 为 `unavailable`。
+
+### GET /tenant-health/runs
+
+查询定时巡检的全局运行轮次记录，所有已认证角色可读取。支持 `status`（running/succeeded/failed/lease_lost/interrupted）、`from`、`to`（RFC3339，按开始时间筛选且两端包含）、`limit`（1–100，默认 20）和 `offset`（0–1,000,000，默认 0）。响应包含 `items`、当前筛选条件下的 `total`，以及 `summary`。列表按 `started_at DESC, id DESC` 排序；`summary` 按时间范围统计总轮次、各状态数量和已结束轮次的平均耗时，刻意忽略 `status` 筛选，避免选择单一状态后丢失整体运行情况。记录字段包括 `id`、`lease_generation`、`started_at`、可选的 `finished_at`、`duration_ms`、`status`、可选的 `error_code` 和脱敏的 `error_message`。
+
+只有取得共享调度租约的实例才会创建运行记录；租约竞争失败不会生成轮次记录。新 generation 接管时，旧 generation 遗留的 running 记录会标记为 interrupted。该接口记录的是全局调度轮次，不是每个租户的连接检查历史；租户级结果仍通过 `GET /tenant-health/history` 查询。Web Admin 在定时巡检区域展示运行轮次列表及汇总卡片。
+
+### GET /tenant-health/summary
+
+读取租户健康概览，所有已认证角色可读。响应字段分为两组：
+- 当前状态：`tenant_count`、`checked_tenant_count`、`healthy_tenant_count`、`unhealthy_tenant_count`、`unchecked_tenant_count`。按每个租户最新状态统计；未检查租户计入 unchecked。
+- 最近 24 小时：`checks_last_24_hours`、`healthy_checks_last_24_hours`、`unhealthy_checks_last_24_hours`、`success_rate_last_24_hours`。按历史检查次数统计，窗口起点和终点均包含；成功率 = 正常检查次数 / 窗口内总检查次数 × 100。窗口内没有检查时成功率为 0。
+
+`window_started_at` 返回本次查询采用的 24 小时窗口起点。当前状态统计与历史窗口统计口径不同，不应将租户数量与检查次数混用。
+
+### GET /tenant-health/trends
+
+查询租户连接健康趋势，所有已认证角色可读。支持可选参数 `range`：
+- `24h`：最近 24 个完整 UTC 小时，返回 24 个小时桶；当前尚未结束的小时不纳入统计，`window_ended_at` 是不包含在查询内的结束边界。
+- `7d`：最近 7 个 UTC 日历日（包含今天），返回 7 个日桶；今天是截至查询时刻的部分数据。该范围的 `window_ended_at` 是本次查询时刻，查询上界包含该时刻。
+- 不传 `range` 时默认使用 `24h`；其他值返回 HTTP 400。
+
+响应包含 `range`、`window_started_at`、`window_ended_at` 和 `buckets`。每个桶包含 `bucket_start`（UTC RFC3339 时间）、`checks`、`healthy`、`unhealthy` 和 `success_rate`。无巡检记录的时间桶也会返回，计数和成功率均为 0；桶数量固定为 24 或 7。`24h` 查询窗口为左闭右开 `[window_started_at, window_ended_at)`；`7d` 查询窗口为左闭右闭 `[window_started_at, window_ended_at]`，终点包含查询时刻，最后一个日桶可能是不完整的当天数据。成功率 = 正常次数 / 检查总次数 × 100；没有检查时为 0。趋势只统计历史检查记录，不代表租户当前状态。
+
+前端点击包含异常检查的时间桶时，会将历史列表筛选为该桶的 `unhealthy` 记录，并同时传入 UTC `from` / `to`。历史接口的两个时间筛选边界均为包含关系；为避免相邻桶在边界处重复，客户端将 `to` 设置为下一桶起点之前的最后 1 纳秒。24h 桶范围为单个完整 UTC 小时，7d 桶范围为单个 UTC 日历日。没有异常记录的桶不可点击；筛选结果为空时显示「暂无巡检历史」。
+
+### GET /tenant-health/history
+
+查询巡检历史，所有已认证角色可读取。支持 `tenant_id`、`status`（healthy/unhealthy）、`source`（manual/scheduled）、`from`、`to`（RFC3339，支持纳秒精度，起止边界均包含）、`limit`（1–100，默认 50）和 `cursor`。结果按 `checked_at DESC, id DESC` 稳定分页，响应包含 `items` 和可选的 `next_cursor`；游标为不透明值，应原样传回，不要自行解码或构造。非法筛选、反向时间范围或非法游标返回 HTTP 400。 每条记录包含 `id`、`tenant_id`、`source`、`status`、`checked_at`、`duration_ms`、`message` 和 `error_code`。其中 `message` 是经过归一化的巡检结果摘要，`error_code` 是白名单错误分类：`none`、`timeout`、`canceled`、`authentication_failed`、`connection_refused`、`network_unreachable`、`dns_resolution_failed`、`unavailable` 或 `unknown`。分类覆盖连接池建连和 Ping 阶段；无法可靠判断时使用 `unknown`。接口不会返回数据库驱动原始错误文本、堆栈、DSN 或密码。管理后台可从历史列表打开记录详情，查看该记录的租户、数据源元信息、UTC/本地检查时间、耗时和已保存摘要。

@@ -2,9 +2,13 @@ package adminstore
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 const testKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -70,5 +74,758 @@ func TestDataSourceValidationAndDuplicateName(t *testing.T) {
 func TestOpenRejectsInvalidEncryptionKey(t *testing.T) {
 	if _, err := Open(context.Background(), ":memory:", "short"); err == nil {
 		t.Fatal("Open() expected invalid encryption key error")
+	}
+}
+
+
+func TestTenantHealthErrorCodeMigrationFromLegacySchemaIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy-metadata.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacySchema := []string{
+		`CREATE TABLE admin_tenant_connection_health (
+			tenant_id TEXT PRIMARY KEY,
+			status TEXT NOT NULL CHECK(status IN ('healthy','unhealthy')),
+			checked_at TEXT NOT NULL,
+			duration_ms INTEGER NOT NULL DEFAULT 0,
+			message TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE TABLE admin_tenant_connection_health_history (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			tenant_id TEXT NOT NULL,
+			source TEXT NOT NULL CHECK(source IN ('manual','scheduled')),
+			status TEXT NOT NULL CHECK(status IN ('healthy','unhealthy')),
+			checked_at TEXT NOT NULL,
+			duration_ms INTEGER NOT NULL DEFAULT 0,
+			message TEXT NOT NULL DEFAULT ''
+		)`,
+		`INSERT INTO admin_tenant_connection_health
+			(tenant_id,status,checked_at,duration_ms,message)
+			VALUES ('legacy-tenant','unhealthy','2026-11-08T10:00:00Z',12,'legacy failure')`,
+		`INSERT INTO admin_tenant_connection_health_history
+			(tenant_id,source,status,checked_at,duration_ms,message)
+			VALUES ('legacy-tenant','manual','unhealthy','2026-11-08T10:00:00Z',12,'legacy failure')`,
+	}
+	for _, statement := range legacySchema {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			_ = db.Close()
+			t.Fatalf("prepare legacy schema: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		store, err := Open(ctx, path, testKey)
+		if err != nil {
+			t.Fatalf("Open() attempt %d: %v", attempt+1, err)
+		}
+		for _, table := range []string{"admin_tenant_connection_health", "admin_tenant_connection_health_history"} {
+			var count int
+			err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = 'error_code'", table).Scan(&count)
+			if err != nil {
+				_ = store.Close()
+				t.Fatalf("inspect %s error_code column: %v", table, err)
+			}
+			if count != 1 {
+				_ = store.Close()
+				t.Fatalf("%s error_code column count=%d, want 1", table, count)
+			}
+		}
+		var latestCode, historyCode string
+		if err := store.db.QueryRowContext(ctx, "SELECT error_code FROM admin_tenant_connection_health WHERE tenant_id = 'legacy-tenant'").Scan(&latestCode); err != nil {
+			_ = store.Close()
+			t.Fatal(err)
+		}
+		if err := store.db.QueryRowContext(ctx, "SELECT error_code FROM admin_tenant_connection_health_history WHERE tenant_id = 'legacy-tenant'").Scan(&historyCode); err != nil {
+			_ = store.Close()
+			t.Fatal(err)
+		}
+		if latestCode != "unknown" || historyCode != "unknown" {
+			_ = store.Close()
+			t.Fatalf("legacy rows not safely backfilled: latest=%q history=%q", latestCode, historyCode)
+		}
+		var version17 int
+		if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM admin_schema_migrations WHERE version = 17").Scan(&version17); err != nil {
+			_ = store.Close()
+			t.Fatal(err)
+		}
+		if version17 != 1 {
+			_ = store.Close()
+			t.Fatalf("schema version 17 count=%d, want 1", version17)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestTenantHealthMessageNormalizationNeverPersistsRawDetails(t *testing.T) {
+	secrets := []string{
+		"postgres://root:secret@db.internal/app",
+		"mysql://admin:p%40ss@db:3306/app",
+		"password authentication failed for user admin: private stack trace",
+		"driver error: dial tcp 10.0.0.1:5432: connection refused",
+	}
+	for _, input := range secrets {
+		if got := normalizeTenantHealthMessage(input); got != "connection check failed; verify the registered data source" {
+			t.Errorf("normalizeTenantHealthMessage(%q)=%q", input, got)
+		}
+	}
+}
+
+
+func TestOpenEnablesForeignKeysAndEnforcesRelationships(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	var enabled int
+	if err := store.db.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&enabled); err != nil {
+		t.Fatal(err)
+	}
+	if enabled != 1 {
+		t.Fatalf("PRAGMA foreign_keys=%d, want 1", enabled)
+	}
+
+	_, err := store.db.ExecContext(ctx, `INSERT INTO admin_tenants
+		(id,name,code,data_source_id,status,created_at,updated_at)
+		VALUES ('orphan-tenant','orphan','orphan','missing-source','active','now','now')`)
+	if err == nil {
+		t.Fatal("expected tenant insert with missing data source to fail")
+	}
+
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO admin_data_sources
+		(id,name,driver,dsn_ciphertext,created_at,updated_at)
+		VALUES ('source-1','source','sqlite',X'01','now','now')`); err != nil {
+		t.Fatalf("insert data source: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO admin_tenants
+		(id,name,code,data_source_id,status,created_at,updated_at)
+		VALUES ('tenant-1','tenant','tenant','source-1','active','now','now')`); err != nil {
+		t.Fatalf("insert tenant: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, "DELETE FROM admin_data_sources WHERE id = 'source-1'"); err == nil {
+		t.Fatal("expected data source referenced by tenant to be protected")
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO admin_tenant_connection_health
+		(tenant_id,status,checked_at,duration_ms,message)
+		VALUES ('tenant-1','healthy','now',1,'')`); err != nil {
+		t.Fatalf("insert tenant health: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, "DELETE FROM admin_tenants WHERE id = 'tenant-1'"); err != nil {
+		t.Fatalf("delete tenant: %v", err)
+	}
+	var healthRows int
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM admin_tenant_connection_health WHERE tenant_id = 'tenant-1'").Scan(&healthRows); err != nil {
+		t.Fatal(err)
+	}
+	if healthRows != 0 {
+		t.Fatalf("cascaded health rows=%d, want 0", healthRows)
+	}
+	violations, err := store.CheckForeignKeys(ctx)
+	if err != nil {
+		t.Fatalf("CheckForeignKeys(): %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("unexpected foreign-key violations: %+v", violations)
+	}
+}
+
+func TestCheckForeignKeysReportsLegacyOrphansWithoutDeletingData(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy-orphan.db")
+	store, err := Open(ctx, path, testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	legacyDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacyDB.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		_ = legacyDB.Close()
+		t.Fatal(err)
+	}
+	if _, err := legacyDB.ExecContext(ctx, `INSERT INTO admin_tenants
+		(id,name,code,data_source_id,status,created_at,updated_at)
+		VALUES ('legacy-orphan','legacy','legacy','missing-source','active','now','now')`); err != nil {
+		_ = legacyDB.Close()
+		t.Fatalf("seed legacy orphan: %v", err)
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = Open(ctx, path, testKey)
+	if err != nil {
+		t.Fatalf("Open() must preserve legacy data and allow inspection: %v", err)
+	}
+	defer store.Close()
+	violations, err := store.CheckForeignKeys(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 1 {
+		t.Fatalf("foreign-key violations=%d, want 1: %+v", len(violations), violations)
+	}
+	if violations[0].Table != "admin_tenants" || violations[0].Parent != "admin_data_sources" {
+		t.Fatalf("unexpected violation: %+v", violations[0])
+	}
+	var preserved int
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM admin_tenants WHERE id='legacy-orphan'").Scan(&preserved); err != nil {
+		t.Fatal(err)
+	}
+	if preserved != 1 {
+		t.Fatalf("legacy orphan rows preserved=%d, want 1", preserved)
+	}
+}
+
+
+func TestMetadataMigrationRegistryIsOrderedAndComplete(t *testing.T) {
+	if err := validateMetadataMigrationRegistry(metadataSchemaMigrations, currentMetadataSchemaVersion); err != nil {
+		t.Fatalf("validateMetadataMigrationRegistry(): %v", err)
+	}
+	if got := metadataSchemaVersion(); got != currentMetadataSchemaVersion {
+		t.Fatalf("metadataSchemaVersion()=%d, want %d", got, currentMetadataSchemaVersion)
+	}
+	if len(metadataSchemaMigrations) != currentMetadataSchemaVersion-metadataSchemaMigrations[0].Version+1 {
+		t.Fatalf("migration registry has a gap: %+v", metadataSchemaMigrations)
+	}
+}
+
+
+func TestOpenRejectsNewerMetadataSchemaWithoutModifyingIt(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "future-schema.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TABLE admin_schema_migrations (
+		version INTEGER PRIMARY KEY,
+		applied_at TEXT NOT NULL
+	)`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO admin_schema_migrations(version, applied_at)
+		VALUES (21, 'future-release')`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(ctx, path, testKey)
+	if err == nil {
+		_ = store.Close()
+		t.Fatal("Open() should reject a metadata database from a newer schema version")
+	}
+	if !strings.Contains(err.Error(), "metadata schema version 21 is newer than supported version 20") {
+		t.Fatalf("unexpected Open() error: %v", err)
+	}
+
+	verifyDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer verifyDB.Close()
+	var version int
+	if err := verifyDB.QueryRowContext(ctx, "SELECT MAX(version) FROM admin_schema_migrations").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 21 {
+		t.Fatalf("future schema version after rejected open=%d, want 21", version)
+	}
+	var dataSourceTableCount int
+	if err := verifyDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'admin_data_sources'`).Scan(&dataSourceTableCount); err != nil {
+		t.Fatal(err)
+	}
+	if dataSourceTableCount != 0 {
+		t.Fatal("rejected open modified the newer metadata schema")
+	}
+}
+
+func TestRepeatedOpenPreservesInitializedMetadata(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "repeated-open.db")
+	for attempt := 0; attempt < 3; attempt++ {
+		store, err := Open(ctx, path, testKey)
+		if err != nil {
+			t.Fatalf("Open() attempt %d: %v", attempt+1, err)
+		}
+		version, err := store.SchemaVersion(ctx)
+		if err != nil {
+			_ = store.Close()
+			t.Fatal(err)
+		}
+		if version != 20 {
+			_ = store.Close()
+			t.Fatalf("schema version after open=%d, want 20", version)
+		}
+		if attempt == 0 {
+			if _, err := store.db.ExecContext(ctx, `INSERT INTO admin_data_sources
+				(id,name,driver,dsn_ciphertext,created_at,updated_at)
+				VALUES ('persistent-source','persistent','sqlite',X'01','now','now')`); err != nil {
+				_ = store.Close()
+				t.Fatal(err)
+			}
+		}
+		var count int
+		if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM admin_data_sources WHERE id='persistent-source'").Scan(&count); err != nil {
+			_ = store.Close()
+			t.Fatal(err)
+		}
+		if attempt > 0 && count != 1 {
+			_ = store.Close()
+			t.Fatalf("persistent data count after restart=%d, want 1", count)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+
+func TestMetadataMigrationRunnerCommitsEachVersionAndIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, `CREATE TABLE admin_schema_migrations (
+		version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	for version := 11; version <= legacyMetadataSchemaVersion; version++ {
+		if _, err := db.ExecContext(ctx, "INSERT INTO admin_schema_migrations(version, applied_at) VALUES (?, 'legacy')", version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	called := false
+	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations[:len(metadataSchemaMigrations)-3]...)
+	migrations = append(migrations, metadataSchemaMigration{
+		Version: 18, Name: "迁移执行器测试",
+		Up: func(ctx context.Context, tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, "CREATE TABLE migration_v18_marker (id INTEGER PRIMARY KEY)"); err != nil {
+				return err
+			}
+			called = true
+			return nil
+		},
+	})
+	if err := applyMetadataSchemaMigrations(ctx, db, migrations, 18); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	if !called {
+		t.Fatal("migration Up function was not called")
+	}
+	var version int
+	if err := db.QueryRowContext(ctx, "SELECT MAX(version) FROM admin_schema_migrations").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 18 {
+		t.Fatalf("schema version=%d, want 18", version)
+	}
+	if err := applyMetadataSchemaMigrations(ctx, db, migrations, 18); err != nil {
+		t.Fatalf("repeat migration: %v", err)
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM admin_schema_migrations WHERE version=18").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("version 18 records=%d, want 1", count)
+	}
+}
+
+func TestMetadataMigrationRunnerRollsBackFailedVersion(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, `CREATE TABLE admin_schema_migrations (
+		version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	for version := 11; version <= legacyMetadataSchemaVersion; version++ {
+		if _, err := db.ExecContext(ctx, "INSERT INTO admin_schema_migrations(version, applied_at) VALUES (?, 'legacy')", version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations[:len(metadataSchemaMigrations)-3]...)
+	migrations = append(migrations, metadataSchemaMigration{
+		Version: 18, Name: "失败迁移测试",
+		Up: func(ctx context.Context, tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, "CREATE TABLE should_rollback (id INTEGER PRIMARY KEY)"); err != nil {
+				return err
+			}
+			return errors.New("intentional migration failure")
+		},
+	})
+	if err := applyMetadataSchemaMigrations(ctx, db, migrations, 18); err == nil {
+		t.Fatal("expected migration failure")
+	}
+	var version int
+	if err := db.QueryRowContext(ctx, "SELECT MAX(version) FROM admin_schema_migrations").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != legacyMetadataSchemaVersion {
+		t.Fatalf("schema version after rollback=%d, want %d", version, legacyMetadataSchemaVersion)
+	}
+	var tableCount int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='should_rollback'").Scan(&tableCount); err != nil {
+		t.Fatal(err)
+	}
+	if tableCount != 0 {
+		t.Fatal("failed migration left schema changes behind")
+	}
+}
+
+func TestMetadataMigrationRegistryRejectsMissingUpForNewVersion(t *testing.T) {
+	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations[:len(metadataSchemaMigrations)-3]...)
+	migrations = append(migrations, metadataSchemaMigration{Version: 18, Name: "缺少执行函数"})
+	if err := validateMetadataMigrationRegistry(migrations, 18); err == nil || !strings.Contains(err.Error(), "has no Up function") {
+		t.Fatalf("expected missing Up validation error, got %v", err)
+	}
+}
+
+
+func TestMetadataMigrationRunnerSerializesConcurrentStarts(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "concurrent-migrations.db")
+	openDB := func() *sql.DB {
+		db, err := sql.Open("sqlite", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
+		if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout = 5000"); err != nil {
+			_ = db.Close()
+			t.Fatal(err)
+		}
+		return db
+	}
+	seed := openDB()
+	if _, err := seed.ExecContext(ctx, `CREATE TABLE admin_schema_migrations (
+		version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	for version := 11; version <= legacyMetadataSchemaVersion; version++ {
+		if _, err := seed.ExecContext(ctx, "INSERT INTO admin_schema_migrations(version, applied_at) VALUES (?, 'legacy')", version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db1, db2 := openDB(), openDB()
+	defer db1.Close()
+	defer db2.Close()
+
+	var upCalls atomic.Int32
+	upEntered := make(chan struct{})
+	releaseUp := make(chan struct{})
+	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations[:len(metadataSchemaMigrations)-3]...)
+	migrations = append(migrations, metadataSchemaMigration{
+		Version: 18, Name: "并发迁移测试",
+		Up: func(ctx context.Context, tx *sql.Tx) error {
+			upCalls.Add(1)
+			close(upEntered)
+			<-releaseUp
+			_, err := tx.ExecContext(ctx, "CREATE TABLE concurrent_v18_marker (id INTEGER PRIMARY KEY)")
+			return err
+		},
+	})
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for _, db := range []*sql.DB{db1, db2} {
+		go func(db *sql.DB) {
+			<-start
+			results <- applyMetadataSchemaMigrations(ctx, db, migrations, 18)
+		}(db)
+	}
+	close(start)
+	select {
+	case <-upEntered:
+	case <-time.After(3 * time.Second):
+		close(releaseUp)
+		t.Fatal("no migration runner entered Up")
+	}
+	// Let the second runner reach the SQLite writer lock while the first
+	// runner keeps its transaction open.
+	time.Sleep(150 * time.Millisecond)
+	close(releaseUp)
+
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-results:
+			if err != nil {
+				t.Fatalf("concurrent migration runner %d: %v", i+1, err)
+			}
+		case <-time.After(7 * time.Second):
+			t.Fatal("concurrent migration runners did not finish")
+		}
+	}
+	if got := upCalls.Load(); got != 1 {
+		t.Fatalf("migration Up called %d times, want exactly once", got)
+	}
+	var version int
+	if err := db1.QueryRowContext(ctx, "SELECT MAX(version) FROM admin_schema_migrations").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 18 {
+		t.Fatalf("schema version after concurrent starts=%d, want 18", version)
+	}
+}
+
+
+func TestMetadataMigrationRunnerResumesAfterCanceledVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "migration-recovery.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`CREATE TABLE admin_schema_migrations (
+		version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	for version := 11; version <= legacyMetadataSchemaVersion; version++ {
+		if _, err := db.Exec("INSERT INTO admin_schema_migrations(version, applied_at) VALUES (?, 'legacy')", version); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var version18Calls, version19Calls atomic.Int32
+	version19Entered := make(chan struct{})
+	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations[:len(metadataSchemaMigrations)-3]...)
+	migrations = append(migrations,
+		metadataSchemaMigration{
+			Version: 18, Name: "恢复测试 v18",
+			Up: func(ctx context.Context, tx *sql.Tx) error {
+				version18Calls.Add(1)
+				_, err := tx.ExecContext(ctx, "CREATE TABLE migration_v18_committed (id INTEGER PRIMARY KEY)")
+				return err
+			},
+		},
+		metadataSchemaMigration{
+			Version: 19, Name: "恢复测试 v19",
+			Up: func(ctx context.Context, tx *sql.Tx) error {
+				if version19Calls.Add(1) == 1 {
+					if _, err := tx.ExecContext(ctx, "CREATE TABLE migration_v19_rolled_back (id INTEGER PRIMARY KEY)"); err != nil {
+						return err
+					}
+					close(version19Entered)
+					<-ctx.Done()
+					return ctx.Err()
+				}
+				_, err := tx.ExecContext(ctx, "CREATE TABLE migration_v19_retried (id INTEGER PRIMARY KEY)")
+				return err
+			},
+		},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- applyMetadataSchemaMigrations(ctx, db, migrations, 19)
+	}()
+	select {
+	case <-version19Entered:
+		cancel()
+	case <-time.After(3 * time.Second):
+		cancel()
+		t.Fatal("version 19 migration did not start")
+	}
+	if err := <-result; err == nil || !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("expected canceled migration error, got %v", err)
+	}
+
+	var current int
+	if err := db.QueryRow("SELECT MAX(version) FROM admin_schema_migrations").Scan(&current); err != nil {
+		t.Fatal(err)
+	}
+	if current != 18 {
+		t.Fatalf("schema version after cancellation=%d, want 18", current)
+	}
+	for _, table := range []string{"migration_v18_committed", "migration_v19_rolled_back"} {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		want := 0
+		if table == "migration_v18_committed" {
+			want = 1
+		}
+		if count != want {
+			t.Fatalf("table %s exists=%v, want %v", table, count == 1, want == 1)
+		}
+	}
+
+	if err := applyMetadataSchemaMigrations(context.Background(), db, migrations, 19); err != nil {
+		t.Fatalf("retry migrations after cancellation: %v", err)
+	}
+	if got := version18Calls.Load(); got != 1 {
+		t.Fatalf("version 18 Up calls=%d, want 1", got)
+	}
+	if got := version19Calls.Load(); got != 2 {
+		t.Fatalf("version 19 Up calls=%d, want 2", got)
+	}
+	if err := db.QueryRow("SELECT MAX(version) FROM admin_schema_migrations").Scan(&current); err != nil {
+		t.Fatal(err)
+	}
+	if current != 19 {
+		t.Fatalf("schema version after retry=%d, want 19", current)
+	}
+	var retriedTableCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='migration_v19_retried'").Scan(&retriedTableCount); err != nil {
+		t.Fatal(err)
+	}
+	if retriedTableCount != 1 {
+		t.Fatalf("retried migration table count=%d, want 1", retriedTableCount)
+	}
+}
+
+
+// TestMetadataMigrationRunnerRollsBackSQLExecutionError verifies that a real
+// SQLite statement error rolls back schema changes and leaves the version
+// history ready for a retry.
+func TestMetadataMigrationRunnerRollsBackSQLExecutionError(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, `CREATE TABLE admin_schema_migrations (
+		version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	for version := 11; version <= legacyMetadataSchemaVersion; version++ {
+		if _, err := db.ExecContext(ctx,
+			"INSERT INTO admin_schema_migrations(version, applied_at) VALUES (?, 'legacy')", version); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations[:len(metadataSchemaMigrations)-3]...)
+	migrations = append(migrations, metadataSchemaMigration{
+		Version: 18, Name: "SQL 执行错误回滚测试",
+		Up: func(ctx context.Context, tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, "CREATE TABLE sql_error_marker (id INTEGER PRIMARY KEY)"); err != nil {
+				return err
+			}
+			_, err := tx.ExecContext(ctx, "INSERT INTO missing_migration_table(id) VALUES (1)")
+			return err
+		},
+	})
+	if err := applyMetadataSchemaMigrations(ctx, db, migrations, 18); err == nil {
+		t.Fatal("expected SQL execution error")
+	} else if !strings.Contains(err.Error(), "apply metadata migration 18") {
+		t.Fatalf("migration error = %v, want migration context", err)
+	}
+
+	assertMigrationVersionAndTableRollback(t, ctx, db, legacyMetadataSchemaVersion, "sql_error_marker")
+}
+
+// TestMetadataMigrationRunnerRollsBackCommitFailure uses a deferred foreign
+// key violation to make SQLite reject COMMIT after Up and the version marker
+// have both executed. The failed transaction must not leak partial state.
+func TestMetadataMigrationRunnerRollsBackCommitFailure(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TABLE admin_schema_migrations (
+		version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	for version := 11; version <= legacyMetadataSchemaVersion; version++ {
+		if _, err := db.ExecContext(ctx,
+			"INSERT INTO admin_schema_migrations(version, applied_at) VALUES (?, 'legacy')", version); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	migrations := append([]metadataSchemaMigration(nil), metadataSchemaMigrations[:len(metadataSchemaMigrations)-3]...)
+	migrations = append(migrations, metadataSchemaMigration{
+		Version: 18, Name: "提交失败回滚测试",
+		Up: func(ctx context.Context, tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, `CREATE TABLE migration_commit_parent (
+				id INTEGER PRIMARY KEY
+			)`); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `CREATE TABLE migration_commit_child (
+				parent_id INTEGER,
+				FOREIGN KEY(parent_id) REFERENCES migration_commit_parent(id)
+					DEFERRABLE INITIALLY DEFERRED
+			)`); err != nil {
+				return err
+			}
+			_, err := tx.ExecContext(ctx, "INSERT INTO migration_commit_child(parent_id) VALUES (999)")
+			return err
+		},
+	})
+	if err := applyMetadataSchemaMigrations(ctx, db, migrations, 18); err == nil {
+		t.Fatal("expected deferred foreign-key commit failure")
+	} else if !strings.Contains(err.Error(), "commit metadata migration 18") {
+		t.Fatalf("migration error = %v, want commit failure context", err)
+	}
+
+	assertMigrationVersionAndTableRollback(t, ctx, db, legacyMetadataSchemaVersion,
+		"migration_commit_parent", "migration_commit_child")
+}
+
+func assertMigrationVersionAndTableRollback(t *testing.T, ctx context.Context, db *sql.DB, wantVersion int, tableNames ...string) {
+	t.Helper()
+	var version int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COALESCE(MAX(version), 0) FROM admin_schema_migrations").Scan(&version); err != nil {
+		t.Fatalf("read schema version after failed migration: %v", err)
+	}
+	if version != wantVersion {
+		t.Fatalf("schema version after failed migration = %d, want %d", version, wantVersion)
+	}
+	for _, tableName := range tableNames {
+		var count int
+		if err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", tableName).Scan(&count); err != nil {
+			t.Fatalf("inspect rolled-back table %q: %v", tableName, err)
+		}
+		if count != 0 {
+			t.Errorf("failed migration left table %q behind", tableName)
+		}
 	}
 }
