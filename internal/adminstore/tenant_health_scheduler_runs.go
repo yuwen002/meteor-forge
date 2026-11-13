@@ -54,6 +54,41 @@ func (s *Store) StartTenantHealthSchedulerRun(ctx context.Context, generation in
 	return id, nil
 }
 
+
+// StartTenantHealthSchedulerRunWithLease inserts a run only while the supplied
+// owner and fencing generation still hold an unexpired shared lease. The
+// INSERT ... SELECT keeps the ownership check and insert in one database
+// statement, so an expired or superseded instance cannot create a new run.
+func (s *Store) StartTenantHealthSchedulerRunWithLease(ctx context.Context, ownerID string, generation int64, startedAt time.Time) (int64, error) {
+	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || generation <= 0 || startedAt.IsZero() {
+		return 0, ErrTenantHealthSchedulerLeaseInvalid
+	}
+	startedAt = startedAt.UTC()
+	result, err := s.db.ExecContext(ctx, `INSERT INTO admin_tenant_health_scheduler_runs
+		(lease_generation, started_at, status)
+		SELECT ?, ?, 'running'
+		WHERE EXISTS (
+			SELECT 1 FROM admin_tenant_health_scheduler_lease
+			WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?
+		)`,
+		generation, formatTenantHealthTime(startedAt), ownerID, generation, startedAt.UnixNano())
+	if err != nil {
+		return 0, fmt.Errorf("start tenant health scheduler run with lease: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("read leased tenant health scheduler run insert count: %w", err)
+	}
+	if affected != 1 {
+		return 0, ErrTenantHealthSchedulerLeaseLost
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("read tenant health scheduler run ID: %w", err)
+	}
+	return id, nil
+}
+
 // FinishTenantHealthSchedulerRun finalizes one run with a whitelisted error classification.
 func (s *Store) FinishTenantHealthSchedulerRun(ctx context.Context, id int64, finishedAt time.Time, durationMS int64, status, errorCode string) error {
 	if id <= 0 || finishedAt.IsZero() || durationMS < 0 {

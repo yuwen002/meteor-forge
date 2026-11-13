@@ -59,3 +59,35 @@ func TestTenantHealthSchedulerRunRecoveryAndValidation(t *testing.T) {
 		t.Fatalf("invalid offset error=%v", err)
 	}
 }
+
+func TestTenantHealthSchedulerRunStartRequiresCurrentLease(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 11, 13, 3, 0, 0, 0, time.UTC)
+
+	acquired, generation, err := store.AcquireTenantHealthSchedulerLease(ctx, "owner-one", base, 5*time.Second)
+	if err != nil || !acquired || generation != 1 {
+		t.Fatalf("first lease acquired=%v generation=%d err=%v", acquired, generation, err)
+	}
+	if _, err := store.StartTenantHealthSchedulerRunWithLease(ctx, "owner-two", generation, base.Add(time.Second)); !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
+		t.Fatalf("wrong owner start error=%v", err)
+	}
+	if _, err := store.StartTenantHealthSchedulerRunWithLease(ctx, "owner-one", generation+1, base.Add(time.Second)); !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
+		t.Fatalf("wrong generation start error=%v", err)
+	}
+	if _, err := store.StartTenantHealthSchedulerRunWithLease(ctx, "owner-one", generation, base.Add(5*time.Second)); !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
+		t.Fatalf("expired lease start error=%v", err)
+	}
+
+	acquired, nextGeneration, err := store.AcquireTenantHealthSchedulerLease(ctx, "owner-two", base.Add(5*time.Second), 5*time.Second)
+	if err != nil || !acquired || nextGeneration != generation+1 {
+		t.Fatalf("takeover acquired=%v generation=%d err=%v", acquired, nextGeneration, err)
+	}
+	id, err := store.StartTenantHealthSchedulerRunWithLease(ctx, "owner-two", nextGeneration, base.Add(5*time.Second))
+	if err != nil || id <= 0 {
+		t.Fatalf("current owner start id=%d err=%v", id, err)
+	}
+	if _, err := store.ListTenantHealthSchedulerRuns(ctx, TenantHealthSchedulerRunFilter{}); err != nil {
+		t.Fatal(err)
+	}
+}

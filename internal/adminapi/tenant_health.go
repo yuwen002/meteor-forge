@@ -318,7 +318,7 @@ func (s *Server) runScheduledTenantHealthChecks(ctx context.Context, settings ad
 		if _, err := s.authStore.RecoverStaleTenantHealthSchedulerRuns(leaseCtx, lease.generation, now); err != nil {
 			return fmt.Errorf("recover stale scheduled health runs: %w", err)
 		}
-		id, err := s.authStore.StartTenantHealthSchedulerRun(leaseCtx, lease.generation, now)
+		id, err := s.authStore.StartTenantHealthSchedulerRunWithLease(leaseCtx, lease.ownerID, lease.generation, now)
 		if err != nil {
 			return fmt.Errorf("record scheduled health run start: %w", err)
 		}
