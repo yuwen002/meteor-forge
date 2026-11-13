@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { api } from '../api'
+import { api, listTenantHealthSchedulerRuns, type TenantHealthSchedulerRun, type TenantHealthSchedulerRunStatus } from '../api'
+import TenantHealthRunsPanel from '../components/TenantHealthRunsPanel.vue'
 import { useAdminPermissions } from '../permissions'
 import TenantDiscoveryDialog from '../components/TenantDiscoveryDialog.vue'
 import { canLoadNextPage, createRequestSequence, runLatestRequest } from '../utils/requestSequence'
@@ -830,6 +831,8 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
       <div class="scheduler-refresh"><el-button text :loading="healthSchedulerLoading" @click="loadHealthScheduler">刷新运行状态</el-button></div>
     </div>
     <el-alert v-if="healthScheduler.last_error" :title="healthScheduler.last_error" type="warning" :closable="false" show-icon class="scheduler-error" />
+    <TenantHealthRunsPanel />
+
     <el-form v-loading="healthSettingsLoading" label-position="top" class="health-settings-form">
       <el-form-item label="定时巡检">
         <el-switch v-model="healthSettings.enabled" :disabled="!canManageTenants || healthSettingsSaving" active-text="启用" inactive-text="关闭" />
