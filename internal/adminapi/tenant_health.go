@@ -307,9 +307,46 @@ func (s *Server) runTenantHealthCheckWithOptions(ctx context.Context, tenantID s
 
 
 func (s *Server) runScheduledTenantHealthChecks(ctx context.Context, settings adminstore.TenantHealthSettings) error {
-	return runWithTenantHealthSchedulerLease(ctx, s.authStore, s.tenantHealthLeaseOwnerID, func(leaseCtx context.Context) error {
+	var runID int64
+	var startedAt time.Time
+	runErr := runWithTenantHealthSchedulerLease(ctx, s.authStore, s.tenantHealthLeaseOwnerID, func(leaseCtx context.Context) error {
+		lease, ok := leaseCtx.Value(tenantHealthSchedulerLeaseContextKey{}).(tenantHealthSchedulerLeaseContext)
+		if !ok {
+			return errors.New("scheduled health run is missing its lease context")
+		}
+		now := time.Now().UTC()
+		if _, err := s.authStore.RecoverStaleTenantHealthSchedulerRuns(leaseCtx, lease.generation, now); err != nil {
+			return fmt.Errorf("recover stale scheduled health runs: %w", err)
+		}
+		id, err := s.authStore.StartTenantHealthSchedulerRun(leaseCtx, lease.generation, now)
+		if err != nil {
+			return fmt.Errorf("record scheduled health run start: %w", err)
+		}
+		runID, startedAt = id, now
 		return s.runScheduledTenantHealthChecksAsLeaseOwner(leaseCtx, settings)
 	})
+	if runID == 0 {
+		return runErr
+	}
+
+	status, errorCode := "succeeded", ""
+	switch {
+	case errors.Is(runErr, errTenantHealthSchedulerLeaseLost):
+		status, errorCode = "lease_lost", "lease_lost"
+	case errors.Is(runErr, context.Canceled), errors.Is(runErr, context.DeadlineExceeded):
+		status, errorCode = "failed", "canceled"
+	case runErr != nil:
+		status, errorCode = "failed", "tenant_checks_failed"
+	}
+	finishCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	duration := time.Since(startedAt).Milliseconds()
+	if duration < 0 { duration = 0 }
+	if err := s.authStore.FinishTenantHealthSchedulerRun(finishCtx, runID, time.Now().UTC(), duration, status, errorCode); err != nil {
+		if runErr != nil { return errors.Join(runErr, fmt.Errorf("finalize scheduled health run: %w", err)) }
+		return fmt.Errorf("finalize scheduled health run: %w", err)
+	}
+	return runErr
 }
 
 func (s *Server) runScheduledTenantHealthChecksAsLeaseOwner(ctx context.Context, settings adminstore.TenantHealthSettings) error {
