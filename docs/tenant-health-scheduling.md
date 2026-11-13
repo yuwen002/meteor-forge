@@ -1,6 +1,6 @@
 # 租户定时健康巡检设计
 
-> 状态：Schema v16、Store、调度器、Server 生命周期、配置/历史 API 与前端配置/历史页面已实现；持续补充生命周期、权限边界与前端请求竞态回归测试  
+> 状态：Schema v19、Store、调度器、Server 生命周期、配置/历史 API 与前端配置/历史页面已实现；持续补充生命周期、权限边界与前端请求竞态回归测试  
 > 前置分支：`feat/tenant-connection-health-check`（PR #12）  
 > 目标分支：`main`
 
@@ -179,6 +179,14 @@
 
 
 - **SQLite 短暂写锁恢复**：使用两个独立 Store 连接同一 SQLite 文件，第二个连接持有元数据库写事务时，第一个连接获取租约应返回数据库访问错误；释放写事务后，复用第一个 Store 再次获取租约应成功，且首次持有 generation 为 1。该测试验证 SQLite 锁释放后的连接复用，不代表覆盖了所有数据库驱动或网络故障恢复。
+
+## 管理元数据库与目标数据库驱动的覆盖边界
+
+- 当前 `adminstore.Open` 使用 `modernc.org/sqlite` 打开管理元数据库；租户巡检配置、历史、调度租约以及租约 fencing 均存储在该 SQLite 管理库中。租约 SQL 的条件更新、事务锁与恢复语义因此属于 SQLite 管理库行为。
+- CI 的 `Database Driver Integration`（`go test -tags=integration ./pkg/driver/integration`）验证的是迁移执行器对 SQLite、MySQL、PostgreSQL、ClickHouse 目标数据库的迁移生命周期；它不会将 `adminstore.Store` 或租约表切换到这些目标数据库，也不构成 MySQL/PostgreSQL/ClickHouse 租约故障恢复验收。
+- 因此当前租约恢复验收以 SQLite 实际写锁测试、多个 SQLite Store 竞争测试、租约过期接管和 generation fencing 测试为准。不得把目标数据库迁移驱动集成测试的通过解释为租约机制已通过多数据库验证。
+- 若未来需要让管理元数据库也支持 PostgreSQL/MySQL，必须单独设计元数据库连接配置、迁移方言、原子租约竞争/续约语句与并发事务语义，再为每种受支持的管理库增加真实服务端故障恢复测试；在此之前不增加虚假的跨驱动租约测试，也不扩大当前管理库支持范围。
+
 
 ## 多实例并发与重复执行验收补充
 
