@@ -317,7 +317,7 @@ func TestOpenRejectsNewerMetadataSchemaWithoutModifyingIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO admin_schema_migrations(version, applied_at)
-		VALUES (20, 'future-release')`); err != nil {
+		VALUES (21, 'future-release')`); err != nil {
 		_ = db.Close()
 		t.Fatal(err)
 	}
@@ -330,7 +330,7 @@ func TestOpenRejectsNewerMetadataSchemaWithoutModifyingIt(t *testing.T) {
 		_ = store.Close()
 		t.Fatal("Open() should reject a metadata database from a newer schema version")
 	}
-	if !strings.Contains(err.Error(), "metadata schema version 20 is newer than supported version 19") {
+	if !strings.Contains(err.Error(), "metadata schema version 21 is newer than supported version 20") {
 		t.Fatalf("unexpected Open() error: %v", err)
 	}
 
@@ -343,7 +343,7 @@ func TestOpenRejectsNewerMetadataSchemaWithoutModifyingIt(t *testing.T) {
 	if err := verifyDB.QueryRowContext(ctx, "SELECT MAX(version) FROM admin_schema_migrations").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 20 {
+	if version != 21 {
 		t.Fatalf("future schema version after rejected open=%d, want 20", version)
 	}
 	var dataSourceTableCount int

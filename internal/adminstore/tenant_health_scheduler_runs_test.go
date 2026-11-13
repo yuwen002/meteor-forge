@@ -1,0 +1,61 @@
+package adminstore
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+)
+
+func TestTenantHealthSchedulerRunLifecycleAndPaging(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 11, 13, 1, 0, 0, 0, time.UTC)
+
+	firstID, err := store.StartTenantHealthSchedulerRun(ctx, 2, base)
+	if err != nil { t.Fatal(err) }
+	secondID, err := store.StartTenantHealthSchedulerRun(ctx, 3, base.Add(time.Minute))
+	if err != nil { t.Fatal(err) }
+	if err := store.FinishTenantHealthSchedulerRun(ctx, firstID, base.Add(10*time.Second), 10000, "failed", "tenant_checks_failed"); err != nil { t.Fatal(err) }
+	if err := store.FinishTenantHealthSchedulerRun(ctx, secondID, base.Add(70*time.Second), 10000, "succeeded", ""); err != nil { t.Fatal(err) }
+	if err := store.FinishTenantHealthSchedulerRun(ctx, secondID, base.Add(71*time.Second), 11000, "succeeded", ""); !errors.Is(err, ErrTenantHealthSchedulerRunFinalized) {
+		t.Fatalf("second finalization error=%v", err)
+	}
+
+	page, err := store.ListTenantHealthSchedulerRuns(ctx, TenantHealthSchedulerRunFilter{Limit: 1})
+	if err != nil { t.Fatal(err) }
+	if page.Total != 2 || len(page.Items) != 1 || page.Items[0].ID != secondID || page.Items[0].Status != "succeeded" || page.Items[0].FinishedAt == nil {
+		t.Fatalf("unexpected newest run page: %+v", page)
+	}
+	failed, err := store.ListTenantHealthSchedulerRuns(ctx, TenantHealthSchedulerRunFilter{Status: "failed"})
+	if err != nil { t.Fatal(err) }
+	if failed.Total != 1 || len(failed.Items) != 1 || failed.Items[0].ErrorCode != "tenant_checks_failed" || failed.Items[0].ErrorMessage != "一个或多个租户巡检失败" {
+		t.Fatalf("failed run was not safely classified: %+v", failed)
+	}
+}
+
+func TestTenantHealthSchedulerRunRecoveryAndValidation(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 11, 13, 2, 0, 0, 0, time.UTC)
+	oldID, err := store.StartTenantHealthSchedulerRun(ctx, 4, base)
+	if err != nil { t.Fatal(err) }
+	currentID, err := store.StartTenantHealthSchedulerRun(ctx, 5, base.Add(time.Second))
+	if err != nil { t.Fatal(err) }
+	recovered, err := store.RecoverStaleTenantHealthSchedulerRuns(ctx, 5, base.Add(2*time.Second))
+	if err != nil { t.Fatal(err) }
+	if recovered != 1 { t.Fatalf("recovered=%d, want 1", recovered) }
+	page, err := store.ListTenantHealthSchedulerRuns(ctx, TenantHealthSchedulerRunFilter{})
+	if err != nil { t.Fatal(err) }
+	statuses := map[int64]string{}
+	for _, item := range page.Items { statuses[item.ID] = item.Status }
+	if statuses[oldID] != "interrupted" || statuses[currentID] != "running" {
+		t.Fatalf("unexpected recovered run states: %+v", statuses)
+	}
+	if _, err := store.ListTenantHealthSchedulerRuns(ctx, TenantHealthSchedulerRunFilter{Status: "invalid"}); !errors.Is(err, ErrTenantHealthInvalidInput) {
+		t.Fatalf("invalid status error=%v", err)
+	}
+	if _, err := store.ListTenantHealthSchedulerRuns(ctx, TenantHealthSchedulerRunFilter{Offset: -1}); !errors.Is(err, ErrTenantHealthInvalidInput) {
+		t.Fatalf("invalid offset error=%v", err)
+	}
+}
