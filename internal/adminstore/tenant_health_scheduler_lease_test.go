@@ -184,3 +184,43 @@ func TestTenantHealthSchedulerLeaseAcquisitionRecoversAfterTransientSQLiteLock(t
 		t.Fatalf("unexpected lease after recovery: %+v", info)
 	}
 }
+
+
+// TestTenantHealthSchedulerLeaseExpiryBoundary verifies the lease deadline is
+// exclusive for the current owner and inclusive for takeover: renewal/acquisition
+// immediately before expiry remain valid, while takeover at the exact deadline
+// advances the fencing generation.
+func TestTenantHealthSchedulerLeaseExpiryBoundary(t *testing.T) {
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "lease-boundary.db"), testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	start := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
+	const ttl = 5 * time.Second
+	acquired, generation, err := store.AcquireTenantHealthSchedulerLease(context.Background(), "boundary-owner-a", start, ttl)
+	if err != nil || !acquired || generation != 1 {
+		t.Fatalf("initial acquisition: acquired=%v generation=%d err=%v", acquired, generation, err)
+	}
+
+	beforeExpiry := start.Add(ttl - time.Nanosecond)
+	acquired, _, err = store.AcquireTenantHealthSchedulerLease(context.Background(), "boundary-owner-b", beforeExpiry, ttl)
+	if err != nil || acquired {
+		t.Fatalf("takeover immediately before expiry: acquired=%v err=%v, want not acquired", acquired, err)
+	}
+	renewed, err := store.RenewTenantHealthSchedulerLease(context.Background(), "boundary-owner-a", beforeExpiry, ttl)
+	if err != nil || !renewed {
+		t.Fatalf("renew immediately before expiry: renewed=%v err=%v, want renewed", renewed, err)
+	}
+
+	renewed, err = store.RenewTenantHealthSchedulerLease(context.Background(), "boundary-owner-a", beforeExpiry.Add(ttl), ttl)
+	if err != nil || renewed {
+		t.Fatalf("renew exactly at renewed expiry: renewed=%v err=%v, want expired", renewed, err)
+	}
+	exactExpiry := beforeExpiry.Add(ttl)
+	acquired, generation, err = store.AcquireTenantHealthSchedulerLease(context.Background(), "boundary-owner-b", exactExpiry, ttl)
+	if err != nil || !acquired || generation != 2 {
+		t.Fatalf("takeover exactly at expiry: acquired=%v generation=%d err=%v, want generation 2", acquired, generation, err)
+	}
+}
