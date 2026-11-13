@@ -31,9 +31,20 @@ type TenantHealthSchedulerRunFilter struct {
 	Offset int
 }
 
+type TenantHealthSchedulerRunSummary struct {
+	Total            int64 `json:"total"`
+	Running          int64 `json:"running"`
+	Succeeded        int64 `json:"succeeded"`
+	Failed           int64 `json:"failed"`
+	LeaseLost        int64 `json:"lease_lost"`
+	Interrupted      int64 `json:"interrupted"`
+	AverageDurationMS int64 `json:"average_duration_ms"`
+}
+
 type TenantHealthSchedulerRunPage struct {
-	Items []TenantHealthSchedulerRun `json:"items"`
-	Total int64                     `json:"total"`
+	Items   []TenantHealthSchedulerRun       `json:"items"`
+	Total   int64                            `json:"total"`
+	Summary TenantHealthSchedulerRunSummary  `json:"summary"`
 }
 
 // StartTenantHealthSchedulerRunWithLease inserts a run only while the supplied
@@ -179,6 +190,39 @@ func (s *Store) ListTenantHealthSchedulerRuns(ctx context.Context, filter Tenant
 	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM admin_tenant_health_scheduler_runs"+where, args...).Scan(&total); err != nil {
 		return TenantHealthSchedulerRunPage{}, fmt.Errorf("count tenant health scheduler runs: %w", err)
 	}
+
+	// Summary follows the selected time range but intentionally ignores the
+	// status filter, so status filtering never hides the other outcome counts.
+	summaryConditions := make([]string, 0, 2)
+	summaryArgs := make([]any, 0, 2)
+	if filter.From != nil {
+		summaryConditions = append(summaryConditions, "started_at >= ?")
+		summaryArgs = append(summaryArgs, formatTenantHealthTime(*filter.From))
+	}
+	if filter.To != nil {
+		summaryConditions = append(summaryConditions, "started_at <= ?")
+		summaryArgs = append(summaryArgs, formatTenantHealthTime(*filter.To))
+	}
+	summaryWhere := ""
+	if len(summaryConditions) > 0 {
+		summaryWhere = " WHERE " + strings.Join(summaryConditions, " AND ")
+	}
+	var summary TenantHealthSchedulerRunSummary
+	err := s.db.QueryRowContext(ctx, `SELECT
+		COUNT(*),
+		COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status = 'lease_lost' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status = 'interrupted' THEN 1 ELSE 0 END), 0),
+		COALESCE(CAST(AVG(CASE WHEN status <> 'running' THEN duration_ms END) AS INTEGER), 0)
+		FROM admin_tenant_health_scheduler_runs`+summaryWhere, summaryArgs...).Scan(
+		&summary.Total, &summary.Running, &summary.Succeeded, &summary.Failed,
+		&summary.LeaseLost, &summary.Interrupted, &summary.AverageDurationMS,
+	)
+	if err != nil {
+		return TenantHealthSchedulerRunPage{}, fmt.Errorf("summarize tenant health scheduler runs: %w", err)
+	}
 	queryArgs := append(append([]any(nil), args...), limit, filter.Offset)
 	rows, err := s.db.QueryContext(ctx, `SELECT id, lease_generation, started_at, finished_at, duration_ms, status, error_code, error_message
 		FROM admin_tenant_health_scheduler_runs`+where+` ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?`, queryArgs...)
@@ -210,5 +254,5 @@ func (s *Store) ListTenantHealthSchedulerRuns(ctx context.Context, filter Tenant
 	if err := rows.Err(); err != nil {
 		return TenantHealthSchedulerRunPage{}, fmt.Errorf("iterate tenant health scheduler runs: %w", err)
 	}
-	return TenantHealthSchedulerRunPage{Items: items, Total: total}, nil
+	return TenantHealthSchedulerRunPage{Items: items, Total: total, Summary: summary}, nil
 }

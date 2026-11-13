@@ -8,6 +8,7 @@ import { createTenantHealthSchedulerRunQuery, tenantHealthSchedulerRunDuration, 
 const pageSize = 20
 const items = ref<TenantHealthSchedulerRun[]>([])
 const total = ref(0)
+const summary = ref({ total: 0, running: 0, succeeded: 0, failed: 0, lease_lost: 0, interrupted: 0, average_duration_ms: 0 })
 const page = ref(1)
 const status = ref<TenantHealthSchedulerRunStatus | ''>('')
 const timeRange = ref<[Date, Date] | null>(null)
@@ -27,10 +28,12 @@ function loadRuns(resetPage = false) {
     onSuccess: result => {
       items.value = result.items
       total.value = result.total
+      summary.value = result.summary
     },
     onError: () => {
       items.value = []
       total.value = 0
+      summary.value = { total: 0, running: 0, succeeded: 0, failed: 0, lease_lost: 0, interrupted: 0, average_duration_ms: 0 }
       ElMessage.error('读取定时巡检运行记录失败')
     },
     onFinally: () => { loading.value = false },
@@ -58,6 +61,14 @@ onMounted(() => loadRuns())
         <span>全局巡检轮次，不等同于单租户巡检历史</span>
       </div>
       <el-button text :loading="loading" @click="loadRuns()">刷新</el-button>
+    </div>
+    <div class="runs-summary" aria-label="运行记录统计">
+      <div class="summary-item"><span>总轮次</span><strong>{{ summary.total }}</strong></div>
+      <div class="summary-item"><span>执行中</span><strong>{{ summary.running }}</strong></div>
+      <div class="summary-item"><span>成功</span><strong>{{ summary.succeeded }}</strong></div>
+      <div class="summary-item"><span>失败</span><strong>{{ summary.failed + summary.lease_lost }}</strong></div>
+      <div class="summary-item"><span>接管中断</span><strong>{{ summary.interrupted }}</strong></div>
+      <div class="summary-item"><span>平均耗时</span><strong>{{ tenantHealthSchedulerRunDuration(summary.average_duration_ms) }}</strong></div>
     </div>
     <div class="runs-filters">
       <el-select v-model="status" clearable placeholder="全部运行状态" @change="loadRuns(true)">
@@ -118,11 +129,16 @@ onMounted(() => loadRuns())
 .runs-heading { margin-bottom: 12px; }
 .runs-heading > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .runs-heading span, .runs-pagination > span { color: #98a2b3; font-size: 11px; }
+.runs-summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.summary-item { display: flex; flex-direction: column; gap: 5px; min-width: 0; padding: 10px 12px; border: 1px solid #edf0f5; border-radius: 6px; }
+.summary-item span { color: #98a2b3; font-size: 11px; }
+.summary-item strong { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .runs-filters { justify-content: flex-start; flex-wrap: wrap; margin-bottom: 12px; }
 .runs-filters > * { max-width: 100%; }
 .runs-pagination { justify-content: flex-end; margin-top: 12px; }
 @media (max-width: 640px) {
   .runs-heading { align-items: flex-start; }
+  .runs-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .runs-filters { align-items: stretch; flex-direction: column; }
   .runs-filters > * { width: 100%; }
   .runs-pagination { align-items: flex-start; flex-direction: column; }

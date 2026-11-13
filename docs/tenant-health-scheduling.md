@@ -231,7 +231,7 @@
 - `limit`：1–100，默认 20。
 - `offset`：0–1,000,000，默认 0。
 
-响应为 `items` 和 `total`，按开始时间和 ID 倒序。当前仅提供 API 和 Store 层，Web Admin 运行记录页面及汇总统计将在后续阶段接入。
+响应包含 `items`、按当前状态/时间条件筛选后的 `total`，以及 `summary`。列表按开始时间和 ID 倒序。`summary` 仅受时间范围影响，不受 status 条件影响，提供总轮次、running/succeeded/failed/lease_lost/interrupted 数量和已结束轮次的平均耗时。Web Admin 已展示这些汇总指标。
 
 
 ### 运行记录写入的租约 fencing

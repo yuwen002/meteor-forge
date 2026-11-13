@@ -37,6 +37,15 @@ func TestTenantHealthSchedulerRunLifecycleAndPaging(t *testing.T) {
 	if failed.Total != 1 || len(failed.Items) != 1 || failed.Items[0].ErrorCode != "tenant_checks_failed" || failed.Items[0].ErrorMessage != "一个或多个租户巡检失败" {
 		t.Fatalf("failed run was not safely classified: %+v", failed)
 	}
+	if failed.Summary.Total != 2 || failed.Summary.Succeeded != 1 || failed.Summary.Failed != 1 || failed.Summary.AverageDurationMS != 10000 {
+		t.Fatalf("status filter must not narrow time-range summary: %+v", failed.Summary)
+	}
+	from := secondStartedAt
+	filteredByTime, err := store.ListTenantHealthSchedulerRuns(ctx, TenantHealthSchedulerRunFilter{Status: "failed", From: &from})
+	if err != nil { t.Fatal(err) }
+	if filteredByTime.Total != 0 || filteredByTime.Summary.Total != 1 || filteredByTime.Summary.Succeeded != 1 {
+		t.Fatalf("time-range summary should ignore status filter: %+v", filteredByTime)
+	}
 }
 
 func TestTenantHealthSchedulerRunRecoveryAndValidation(t *testing.T) {

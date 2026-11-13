@@ -91,9 +91,20 @@ export interface TenantHealthSchedulerRun {
   error_message?: string
 }
 
+export interface TenantHealthSchedulerRunSummary {
+  total: number
+  running: number
+  succeeded: number
+  failed: number
+  lease_lost: number
+  interrupted: number
+  average_duration_ms: number
+}
+
 export interface TenantHealthSchedulerRunPage {
   items: TenantHealthSchedulerRun[]
   total: number
+  summary: TenantHealthSchedulerRunSummary
 }
 
 export async function listTenantHealthSchedulerRuns(params: {

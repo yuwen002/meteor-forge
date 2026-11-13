@@ -182,6 +182,9 @@ func TestTenantHealthSchedulerRunsAPIAndScheduledLifecycle(t *testing.T) {
 	if response.Total != 1 || len(response.Items) != 1 || response.Items[0].ID != page.Items[0].ID {
 		t.Fatalf("unexpected runs API response: %+v", response)
 	}
+	if response.Summary.Total != 1 || response.Summary.Succeeded != 1 || response.Summary.AverageDurationMS < 0 {
+		t.Fatalf("unexpected runs API summary: %+v", response.Summary)
+	}
 
 	invalid := httptest.NewRecorder()
 	server.Handler().ServeHTTP(invalid, httptest.NewRequest(http.MethodGet, "/api/v1/tenant-health/runs?status=unknown", nil))
