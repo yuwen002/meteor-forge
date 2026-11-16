@@ -108,3 +108,37 @@ func TestExecuteTenantHealthRetentionCleanupJoinsCleanupAndRecordFailures(t *tes
 		t.Fatalf("cleanup error=%v, want both cleanup and record errors", err)
 	}
 }
+
+
+func TestExecuteTenantHealthRetentionCleanupStopsAfterContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	historyCalls := 0
+	var gotStatus, gotCode string
+	var gotHistory int64
+	err := executeTenantHealthRetentionCleanup(ctx, 30,
+		func(context.Context, time.Time, int) (int64, error) {
+			historyCalls++
+			if historyCalls == 1 {
+				cancel()
+				return 500, nil
+			}
+			t.Fatal("cleanup started another batch after context cancellation")
+			return 0, nil
+		},
+		func(context.Context, time.Time, int) (int64, error) {
+			t.Fatal("run history cleanup started after context cancellation")
+			return 0, nil
+		},
+		func(_ context.Context, _ time.Time, _ time.Time, status string, history, _ int64, code string) error {
+			gotStatus, gotHistory, gotCode = status, history, code
+			return nil
+		},
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cleanup error=%v, want context.Canceled", err)
+	}
+	if historyCalls != 1 || gotStatus != "failed" || gotCode != "cleanup_failed" || gotHistory != 500 {
+		t.Fatalf("calls=%d status=%q code=%q history=%d", historyCalls, gotStatus, gotCode, gotHistory)
+	}
+}
