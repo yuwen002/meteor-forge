@@ -130,7 +130,14 @@ func TestExecuteTenantHealthRetentionCleanupStopsAfterContextCancellation(t *tes
 			t.Fatal("run history cleanup started after context cancellation")
 			return 0, nil
 		},
-		func(_ context.Context, _ time.Time, _ time.Time, status string, history, _ int64, code string) error {
+		func(recordCtx context.Context, _ time.Time, _ time.Time, status string, history, _ int64, code string) error {
+			if recordCtx.Err() != nil {
+				t.Fatalf("record context error=%v, want independent active context", recordCtx.Err())
+			}
+			deadline, ok := recordCtx.Deadline()
+			if !ok || time.Until(deadline) <= 0 || time.Until(deadline) > 2*time.Second {
+				t.Fatalf("record context deadline=%v present=%v, want a deadline within 2 seconds", deadline, ok)
+			}
 			gotStatus, gotHistory, gotCode = status, history, code
 			return nil
 		},
