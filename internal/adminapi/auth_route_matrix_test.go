@@ -23,6 +23,8 @@ func TestRoleAuthorizationRegisteredRouteMatrix(t *testing.T) {
 		{http.MethodGet, "/api/v1/tenant-health/trends", map[string]bool{"viewer": true, "migration_operator": true, "shard_operator": true}},
 		{http.MethodGet, "/api/v1/tenant-health/scheduler", map[string]bool{"viewer": true, "migration_operator": true, "shard_operator": true}},
 		{http.MethodGet, "/api/v1/tenant-health/history", map[string]bool{"viewer": true, "migration_operator": true, "shard_operator": true}},
+		{http.MethodGet, "/api/v1/tenant-health/runs", map[string]bool{"viewer": true, "migration_operator": true, "shard_operator": true}},
+		{http.MethodGet, "/api/v1/tenant-health/retention", map[string]bool{"viewer": true, "migration_operator": true, "shard_operator": true}},
 		{http.MethodPut, "/api/v1/tenant-health/settings", map[string]bool{}},
 		{http.MethodPost, "/api/v1/tenants/tenant-1/health-check", map[string]bool{}},
 		{http.MethodPost, "/api/v1/tenant-health-checks", map[string]bool{}},
