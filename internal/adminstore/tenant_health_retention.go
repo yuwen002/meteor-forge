@@ -36,7 +36,7 @@ func (s *Store) RecordTenantHealthRetentionCleanupWithLease(
 	} else if errorCode != "cleanup_failed" {
 		errorCode = "cleanup_failed"
 	}
-	now := finishedAt.UTC()
+	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `UPDATE admin_tenant_health_retention_cleanup
 		SET started_at = ?, finished_at = ?, status = ?,
 			deleted_history_count = ?, deleted_run_count = ?, error_code = ?

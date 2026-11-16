@@ -42,17 +42,24 @@ func TestTenantHealthRetentionCleanupRequiresCurrentLease(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	acquired, generation, err := store.AcquireTenantHealthSchedulerLease(ctx, "retention-summary-owner-a", now, 5*time.Second)
 	if err != nil || !acquired { t.Fatalf("acquire lease: acquired=%v err=%v", acquired, err) }
-	for _, tc := range []struct{name, owner string; generation int64; at time.Time}{
-		{name:"wrong owner", owner:"retention-summary-owner-b", generation:generation, at:now},
-		{name:"wrong generation", owner:"retention-summary-owner-a", generation:generation+1, at:now},
-		{name:"expired lease", owner:"retention-summary-owner-a", generation:generation, at:now.Add(6*time.Second)},
+	for _, tc := range []struct{name, owner string; generation int64}{
+		{name:"wrong owner", owner:"retention-summary-owner-b", generation:generation},
+		{name:"wrong generation", owner:"retention-summary-owner-a", generation:generation+1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := store.RecordTenantHealthRetentionCleanupWithLease(ctx, tc.owner, tc.generation, now, tc.at, "succeeded", 1, 1, "")
+			err := store.RecordTenantHealthRetentionCleanupWithLease(ctx, tc.owner, tc.generation, now, now, "succeeded", 1, 1, "")
 			if !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
 				t.Fatalf("record result error=%v, want lease lost", err)
 			}
 		})
+	}
+	// Expire the persisted lease while keeping finishedAt in the past. The
+	// write must compare against wall-clock time, not trust the caller timestamp.
+	if _, err := store.db.ExecContext(ctx, "UPDATE admin_tenant_health_scheduler_lease SET lease_until = ? WHERE id = 1", time.Now().UTC().Add(-time.Second).UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordTenantHealthRetentionCleanupWithLease(ctx, "retention-summary-owner-a", generation, now, now, "succeeded", 1, 1, ""); !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
+		t.Fatalf("expired lease record error=%v, want lease lost", err)
 	}
 	item, err := store.GetTenantHealthRetentionCleanup(ctx)
 	if err != nil { t.Fatal(err) }
