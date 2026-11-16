@@ -1,6 +1,6 @@
 # 租户定时健康巡检设计
 
-> 状态：Schema v20、Store、调度器、Server 生命周期、配置/历史 API 与前端配置/历史页面已实现；持续补充生命周期、权限边界与前端请求竞态回归测试  
+> 状态：Schema v21、Store、调度器、Server 生命周期、配置/历史 API 与前端配置/历史页面已实现；持续补充生命周期、权限边界与前端请求竞态回归测试  
 > 前置分支：`feat/tenant-connection-health-check`（PR #12）  
 > 目标分支：`main`
 
