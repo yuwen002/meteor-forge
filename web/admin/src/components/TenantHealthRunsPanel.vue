@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getTenantHealthRetentionCleanup, listTenantHealthSchedulerRuns, type TenantHealthRetentionCleanup, type TenantHealthSchedulerRun, type TenantHealthSchedulerRunStatus, type TenantHealthSchedulerRunSummary } from '../api'
 import { createRequestSequence, runLatestRequest } from '../utils/requestSequence'
+import { tenantHealthRetentionStatusLabel, tenantHealthRetentionStatusType, tenantHealthRetentionErrorLabel } from '../utils/tenantHealthRetention'
 import { createTenantHealthSchedulerRunQuery, tenantHealthSchedulerRunDuration, tenantHealthSchedulerRunStatusLabel, tenantHealthSchedulerRunStatusType, tenantHealthSchedulerRunSummaryMetrics } from '../utils/tenantHealthRuns'
 
 const pageSize = 20
@@ -65,12 +66,6 @@ function loadRetention() {
   })
 }
 
-function retentionStatusLabel(value?: TenantHealthRetentionCleanup['status']): string {
-  if (value === 'succeeded') return '成功'
-  if (value === 'failed') return '失败'
-  return '尚未执行'
-}
-
 function changePage(value: number) {
   page.value = value
   loadRuns()
@@ -95,8 +90,8 @@ onMounted(() => { loadRuns(); loadRetention() })
     <div class="retention-status" aria-label="历史清理状态" aria-live="polite">
       <div class="retention-heading">
         <strong>历史清理状态</strong>
-        <el-tag v-if="retention" :type="retention.status === 'succeeded' ? 'success' : retention.status === 'failed' ? 'danger' : 'info'">
-          {{ retentionStatusLabel(retention.status) }}
+        <el-tag v-if="retention" :type="tenantHealthRetentionStatusType(retention.status)">
+          {{ tenantHealthRetentionStatusLabel(retention.status) }}
         </el-tag>
         <span v-else-if="retentionLoading">正在读取…</span>
         <el-tag v-else type="danger">读取失败</el-tag>
@@ -107,7 +102,7 @@ onMounted(() => { loadRuns(); loadRetention() })
           <span>最近完成：{{ formatTime(retention.finished_at) }}</span>
           <span>清理巡检历史：{{ retention.deleted_history_count }} 条</span>
           <span>清理调度记录：{{ retention.deleted_run_count }} 条</span>
-          <span v-if="retention.error_code" class="retention-error">错误分类：{{ retention.error_code === 'cleanup_failed' ? '清理失败' : '未知错误' }}</span>
+          <span v-if="retention.error_code" class="retention-error">错误分类：{{ tenantHealthRetentionErrorLabel(retention.error_code) }}</span>
         </div>
       </template>
       <div v-else-if="retentionError" class="retention-error">无法读取历史清理状态，请点击刷新重试</div>
