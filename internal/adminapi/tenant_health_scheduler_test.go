@@ -487,3 +487,36 @@ func TestTenantHealthSchedulerRecoversAfterTransientLeaseAcquisitionFailure(t *t
 		t.Fatalf("unexpected counters after recovery: %+v", snapshot)
 	}
 }
+
+
+// A later batch failure must not erase the count from earlier committed
+// batches. The caller persists this partial count together with the failed
+// cleanup status, so operators can distinguish no-op failures from partial work.
+func TestCleanupTenantHealthHistoryPreservesCompletedBatchCountOnLaterFailure(t *testing.T) {
+	var deletedHistory int64
+	calls := 0
+	wantErr := errors.New("second batch failed")
+	err := cleanupTenantHealthHistory(context.Background(), func(_ context.Context, _ time.Time, limit int) (int64, error) {
+		calls++
+		if limit != 500 {
+			t.Fatalf("batch limit=%d, want 500", limit)
+		}
+		if calls == 1 {
+			deleted := int64(500)
+			deletedHistory += deleted
+			return deleted, nil
+		}
+		deleted := int64(7)
+		deletedHistory += deleted
+		return deleted, wantErr
+	}, 30)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("cleanup error=%v, want second batch failure", err)
+	}
+	if calls != 2 {
+		t.Fatalf("cleanup batches=%d, want 2", calls)
+	}
+	if deletedHistory != 507 {
+		t.Fatalf("deleted history count=%d, want 507 including the partial failing batch", deletedHistory)
+	}
+}
