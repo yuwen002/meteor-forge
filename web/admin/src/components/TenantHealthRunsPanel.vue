@@ -45,7 +45,7 @@ function loadRuns(resetPage = false) {
   })
 }
 
-function loadRetention() {
+function refreshAll() {\n  loadRuns()\n  loadRetention()\n}\n\nfunction loadRetention() {
   retentionLoading.value = true
   void runLatestRequest(retentionRequests, () => getTenantHealthRetentionCleanup(), {
     onSuccess: result => {
@@ -85,7 +85,7 @@ onMounted(() => { loadRuns(); loadRetention() })
         <strong>调度运行记录</strong>
         <span>全局巡检轮次，不等同于单租户巡检历史</span>
       </div>
-      <el-button text :loading="loading || retentionLoading" @click="() => { loadRuns(); loadRetention() }">刷新</el-button>
+      <el-button text :loading="loading || retentionLoading" @click="refreshAll">刷新</el-button>
     </div>
     <div class="retention-status" aria-label="历史清理状态" aria-live="polite">
       <div class="retention-heading">

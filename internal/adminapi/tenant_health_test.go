@@ -258,6 +258,7 @@ func TestTenantHealthEndpointsRejectAnonymousRequests(t *testing.T) {
 		{method: http.MethodGet, path: "/api/v1/tenant-health/settings"},
 		{method: http.MethodGet, path: "/api/v1/tenant-health/history"},
 		{method: http.MethodGet, path: "/api/v1/tenant-health/runs"},
+		{method: http.MethodGet, path: "/api/v1/tenant-health/retention"},
 		{method: http.MethodGet, path: "/api/v1/tenant-health/summary"},
 		{method: http.MethodGet, path: "/api/v1/tenant-health/trends"},
 		{method: http.MethodPut, path: "/api/v1/tenant-health/settings", body: `{"enabled":true,"interval_seconds":300,"timeout_seconds":5,"history_retention_days":30}`},
@@ -475,4 +476,36 @@ func TestTenantHealthSchedulerAPIReportsSharedLeaseState(t *testing.T) {
 	local = nil
 	if err := json.Unmarshal(rec.Body.Bytes(), &local); err != nil { t.Fatal(err) }
 	if local["lease_status"] != "held_by_other_instance" { t.Fatalf("unexpected other lease status: %+v", local) }
+}
+
+
+func TestTenantHealthRetentionAPIReportsPersistedCleanup(t *testing.T) {
+	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	server := newTestServerWithStore(store)
+	defer server.Close()
+
+	get := func() adminstore.TenantHealthRetentionCleanup {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/tenant-health/retention", nil))
+		if rec.Code != http.StatusOK { t.Fatalf("retention API status=%d body=%s", rec.Code, rec.Body.String()) }
+		var item adminstore.TenantHealthRetentionCleanup
+		if err := json.Unmarshal(rec.Body.Bytes(), &item); err != nil { t.Fatal(err) }
+		return item
+	}
+	initial := get()
+	if initial.Status != "never_run" { t.Fatalf("initial retention state=%+v", initial) }
+
+	now := time.Now().UTC().Truncate(time.Second)
+	acquired, generation, err := store.AcquireTenantHealthSchedulerLease(context.Background(), "retention-api-owner", now, time.Minute)
+	if err != nil || !acquired { t.Fatalf("acquire lease: acquired=%v err=%v", acquired, err) }
+	if err := store.RecordTenantHealthRetentionCleanupWithLease(context.Background(), "retention-api-owner", generation, now, now.Add(time.Second), "succeeded", 9, 2, ""); err != nil {
+		t.Fatal(err)
+	}
+	got := get()
+	if got.Status != "succeeded" || got.DeletedHistoryCount != 9 || got.DeletedRunCount != 2 || got.StartedAt == nil || got.FinishedAt == nil {
+		t.Fatalf("unexpected retention API response: %+v", got)
+	}
 }
