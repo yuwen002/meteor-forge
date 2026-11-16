@@ -129,8 +129,8 @@ func (s *Store) FinishTenantHealthSchedulerRun(ctx context.Context, id int64, fi
 	return nil
 }
 
-// RecoverStaleTenantHealthSchedulerRuns marks unfinished runs from older lease generations as interrupted.
-// RecoverStaleTenantHealthSchedulerRuns marks older unfinished runs interrupted and records elapsed time.\nfunc (s *Store) RecoverStaleTenantHealthSchedulerRuns(ctx context.Context, currentGeneration int64, recoveredAt time.Time) (int64, error) {
+// RecoverStaleTenantHealthSchedulerRuns marks older unfinished runs interrupted and records elapsed time.
+func (s *Store) RecoverStaleTenantHealthSchedulerRuns(ctx context.Context, currentGeneration int64, recoveredAt time.Time) (int64, error) {
 	if currentGeneration <= 0 || recoveredAt.IsZero() {
 		return 0, ErrTenantHealthSchedulerLeaseInvalid
 	}
