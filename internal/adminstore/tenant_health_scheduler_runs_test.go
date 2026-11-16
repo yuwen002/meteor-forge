@@ -71,6 +71,14 @@ func TestTenantHealthSchedulerRunRecoveryAndValidation(t *testing.T) {
 	if statuses[oldID] != "interrupted" || statuses[currentID] != "running" {
 		t.Fatalf("unexpected recovered run states: %+v", statuses)
 	}
+	for _, item := range page.Items {
+		if item.ID == oldID {
+			wantDuration := takeoverAt.Add(time.Second).Sub(base).Milliseconds()
+			if item.FinishedAt == nil || !item.FinishedAt.Equal(takeoverAt.Add(time.Second)) || item.DurationMS != wantDuration {
+				t.Fatalf("recovered run should preserve finish time and elapsed duration: %+v, want duration %d", item, wantDuration)
+			}
+		}
+	}
 	if _, err := store.ListTenantHealthSchedulerRuns(ctx, TenantHealthSchedulerRunFilter{Status: "invalid"}); !errors.Is(err, ErrTenantHealthInvalidInput) {
 		t.Fatalf("invalid status error=%v", err)
 	}

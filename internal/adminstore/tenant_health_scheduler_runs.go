@@ -130,23 +130,68 @@ func (s *Store) FinishTenantHealthSchedulerRun(ctx context.Context, id int64, fi
 }
 
 // RecoverStaleTenantHealthSchedulerRuns marks unfinished runs from older lease generations as interrupted.
-func (s *Store) RecoverStaleTenantHealthSchedulerRuns(ctx context.Context, currentGeneration int64, recoveredAt time.Time) (int64, error) {
+// RecoverStaleTenantHealthSchedulerRuns marks older unfinished runs interrupted and records elapsed time.\nfunc (s *Store) RecoverStaleTenantHealthSchedulerRuns(ctx context.Context, currentGeneration int64, recoveredAt time.Time) (int64, error) {
 	if currentGeneration <= 0 || recoveredAt.IsZero() {
 		return 0, ErrTenantHealthSchedulerLeaseInvalid
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE admin_tenant_health_scheduler_runs
-		SET finished_at = ?, status = 'interrupted', error_code = 'interrupted',
-			error_message = '实例退出后租约已被新实例接管'
-		WHERE status = 'running' AND lease_generation < ?`,
-		formatTenantHealthTime(recoveredAt), currentGeneration)
+	recoveredAt = recoveredAt.UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, fmt.Errorf("recover stale tenant health scheduler runs: %w", err)
+		return 0, fmt.Errorf("begin stale tenant health scheduler run recovery: %w", err)
 	}
-	affected, err := result.RowsAffected()
+	defer tx.Rollback()
+
+	type staleRun struct {
+		id        int64
+		startedAt time.Time
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id, started_at
+		FROM admin_tenant_health_scheduler_runs
+		WHERE status = 'running' AND lease_generation < ?`, currentGeneration)
 	if err != nil {
-		return 0, fmt.Errorf("count recovered tenant health scheduler runs: %w", err)
+		return 0, fmt.Errorf("list stale tenant health scheduler runs: %w", err)
 	}
-	return affected, nil
+	stale := make([]staleRun, 0)
+	for rows.Next() {
+		var item staleRun
+		var startedAt string
+		if err := rows.Scan(&item.id, &startedAt); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan stale tenant health scheduler run: %w", err)
+		}
+		item.startedAt, err = time.Parse(time.RFC3339Nano, startedAt)
+		if err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("parse stale tenant health scheduler run start: %w", err)
+		}
+		stale = append(stale, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("iterate stale tenant health scheduler runs: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("close stale tenant health scheduler runs: %w", err)
+	}
+
+	for _, item := range stale {
+		duration := recoveredAt.Sub(item.startedAt).Milliseconds()
+		if duration < 0 {
+			// Clock skew must not create a negative duration.
+			duration = 0
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE admin_tenant_health_scheduler_runs
+			SET finished_at = ?, duration_ms = ?, status = 'interrupted', error_code = 'interrupted',
+				error_message = '实例退出后租约已被新实例接管'
+			WHERE id = ? AND status = 'running' AND lease_generation < ?`,
+			formatTenantHealthTime(recoveredAt), duration, item.id, currentGeneration); err != nil {
+			return 0, fmt.Errorf("mark stale tenant health scheduler run interrupted: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit stale tenant health scheduler run recovery: %w", err)
+	}
+	return int64(len(stale)), nil
 }
 
 // ListTenantHealthSchedulerRuns returns a bounded, newest-first page of durable scheduler rounds.
