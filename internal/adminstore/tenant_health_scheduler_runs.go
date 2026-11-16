@@ -139,7 +139,7 @@ func (s *Store) RecoverStaleTenantHealthSchedulerRuns(ctx context.Context, curre
 	if err != nil {
 		return 0, fmt.Errorf("begin stale tenant health scheduler run recovery: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	type staleRun struct {
 		id        int64
