@@ -29,6 +29,7 @@ func (s *Server) registerTenantHealthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT "+apiPrefix+"/tenant-health/settings", s.updateTenantHealthSettings)
 	mux.HandleFunc("GET "+apiPrefix+"/tenant-health/history", s.listTenantHealthHistory)
 	mux.HandleFunc("GET "+apiPrefix+"/tenant-health/runs", s.listTenantHealthSchedulerRuns)
+	mux.HandleFunc("GET "+apiPrefix+"/tenant-health/retention", s.getTenantHealthRetention)
 	mux.HandleFunc("POST "+apiPrefix+"/tenant-health-checks", s.batchTenantHealthCheck)
 }
 
@@ -132,6 +133,20 @@ func (s *Server) updateTenantHealthSettings(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if s.healthScheduler != nil { s.healthScheduler.Refresh() }
+	writeJSON(w, http.StatusOK, item)
+}
+
+
+func (s *Server) getTenantHealthRetention(w http.ResponseWriter, r *http.Request) {
+	if s.authStore == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "metadata_unavailable", "management metadata store is not configured")
+		return
+	}
+	item, err := s.authStore.GetTenantHealthRetentionCleanup(r.Context())
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "tenant_health_retention_failed", "unable to read tenant health retention status")
+		return
+	}
 	writeJSON(w, http.StatusOK, item)
 }
 
