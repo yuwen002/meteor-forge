@@ -58,3 +58,26 @@ func TestTenantHealthRetentionCleanupRequiresCurrentLease(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	if item.Status != "never_run" { t.Fatalf("stale instance changed retention state: %+v", item) }
 }
+
+
+func TestTenantConnectionHealthHistoryRetentionRequiresCurrentLease(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	source, err := store.Create(ctx, DataSourceInput{Name: "retention-history", Driver: "sqlite", DSN: ":memory:"})
+	if err != nil { t.Fatal(err) }
+	tenant, err := store.CreateTenant(ctx, TenantInput{Name: "Retention tenant", Code: "retention-history", DataSourceID: source.ID})
+	if err != nil { t.Fatal(err) }
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := store.RecordTenantConnectionHealth(ctx, TenantConnectionHealth{
+		TenantID: tenant.ID, Status: "healthy", CheckedAt: now.Add(-40*24*time.Hour), Message: "old result",
+	}); err != nil { t.Fatal(err) }
+	acquired, generation, err := store.AcquireTenantHealthSchedulerLease(ctx, "history-retention-owner", now, time.Minute)
+	if err != nil || !acquired { t.Fatalf("acquire lease: acquired=%v err=%v", acquired, err) }
+	before := now.Add(-30*24*time.Hour)
+	if deleted, err := store.DeleteExpiredTenantConnectionHealthHistoryWithLease(ctx, "wrong-owner", generation, now, before, 500); deleted != 0 || !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
+		t.Fatalf("wrong owner deletion=(%d,%v), want lease lost", deleted, err)
+	}
+	if deleted, err := store.DeleteExpiredTenantConnectionHealthHistoryWithLease(ctx, "history-retention-owner", generation, now, before, 500); err != nil || deleted != 1 {
+		t.Fatalf("current owner deletion=(%d,%v), want one row", deleted, err)
+	}
+}

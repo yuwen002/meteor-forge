@@ -124,7 +124,7 @@ func newServerWithMigrationDir(store *adminstore.Store, migrationDir string, enf
 					cleanupStartedAt := time.Now().UTC()
 					var deletedHistory, deletedRuns int64
 					countHistoryBatch := func(batchCtx context.Context, before time.Time, limit int) (int64, error) {
-						deleted, err := store.DeleteExpiredTenantConnectionHealthHistory(batchCtx, before, limit)
+						deleted, err := store.DeleteExpiredTenantConnectionHealthHistoryWithLease(batchCtx, lease.ownerID, lease.generation, time.Now().UTC(), before, limit)
 						deletedHistory += deleted
 						return deleted, err
 					}
