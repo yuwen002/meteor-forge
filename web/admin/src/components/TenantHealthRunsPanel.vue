@@ -48,7 +48,9 @@ function loadRuns(resetPage = false) {
 function refreshAll() {
   loadRuns()
   loadRetention()
-}\n\nfunction loadRetention() {
+}
+
+function loadRetention() {
   retentionLoading.value = true
   void runLatestRequest(retentionRequests, () => getTenantHealthRetentionCleanup(), {
     onSuccess: result => {
