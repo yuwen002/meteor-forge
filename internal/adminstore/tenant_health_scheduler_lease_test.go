@@ -16,7 +16,7 @@ func TestTenantHealthSchedulerLeaseCoordinatesIndependentStoreHandles(t *testing
 	second, err := Open(context.Background(), path, testKey)
 	if err != nil { t.Fatal(err) }
 	defer second.Close()
-	now := time.Date(2026, 11, 11, 6, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	ttl := 30 * time.Second
 	ok, generation, err := first.AcquireTenantHealthSchedulerLease(context.Background(), "process-a", now, ttl)
 	if err != nil || !ok || generation != 1 { t.Fatalf("first acquire: ok=%v generation=%d err=%v", ok, generation, err) }
@@ -209,12 +209,12 @@ func TestTenantHealthSchedulerLeaseExpiryBoundary(t *testing.T) {
 	if err != nil || acquired {
 		t.Fatalf("takeover immediately before expiry: acquired=%v err=%v, want not acquired", acquired, err)
 	}
-	renewed, err := store.RenewTenantHealthSchedulerLease(context.Background(), "boundary-owner-a", beforeExpiry, ttl)
+	renewed, err := store.renewTenantHealthSchedulerLeaseAt(context.Background(), "boundary-owner-a", beforeExpiry, ttl)
 	if err != nil || !renewed {
 		t.Fatalf("renew immediately before expiry: renewed=%v err=%v, want renewed", renewed, err)
 	}
 
-	renewed, err = store.RenewTenantHealthSchedulerLease(context.Background(), "boundary-owner-a", beforeExpiry.Add(ttl), ttl)
+	renewed, err = store.renewTenantHealthSchedulerLeaseAt(context.Background(), "boundary-owner-a", beforeExpiry.Add(ttl), ttl)
 	if err != nil || renewed {
 		t.Fatalf("renew exactly at renewed expiry: renewed=%v err=%v, want expired", renewed, err)
 	}
@@ -224,3 +224,43 @@ func TestTenantHealthSchedulerLeaseExpiryBoundary(t *testing.T) {
 		t.Fatalf("takeover exactly at expiry: acquired=%v generation=%d err=%v, want generation 2", acquired, generation, err)
 	}
 }
+func TestTenantHealthSchedulerLeaseRenewalUsesLiveTimeInsteadOfStaleCallerTime(t *testing.T) {
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "stale-renewal.db"), testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	startedAt := time.Now().UTC()
+	const ttl = 5 * time.Second
+	acquired, generation, err := store.AcquireTenantHealthSchedulerLease(context.Background(), "stale-renewal-owner", startedAt, ttl)
+	if err != nil || !acquired || generation != 1 {
+		t.Fatalf("initial acquisition: acquired=%v generation=%d err=%v", acquired, generation, err)
+	}
+
+	expiredAt := time.Now().UTC().Add(-time.Second)
+	if _, err := store.db.ExecContext(context.Background(), `UPDATE admin_tenant_health_scheduler_lease
+		SET lease_until = ? WHERE id = 1 AND owner_id = ? AND generation = ?`,
+		expiredAt.UnixNano(), "stale-renewal-owner", generation); err != nil {
+		t.Fatalf("expire lease before renewal: %v", err)
+	}
+
+	renewed, err := store.RenewTenantHealthSchedulerLease(
+		context.Background(), "stale-renewal-owner", startedAt, ttl,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renewed {
+		t.Fatal("renewal with a stale caller timestamp revived an expired lease")
+	}
+	var leaseUntil int64
+	if err := store.db.QueryRowContext(context.Background(), `SELECT lease_until
+		FROM admin_tenant_health_scheduler_lease WHERE id = 1`).Scan(&leaseUntil); err != nil {
+		t.Fatal(err)
+	}
+	if leaseUntil != expiredAt.UnixNano() {
+		t.Fatalf("expired lease deadline changed to %d, want %d", leaseUntil, expiredAt.UnixNano())
+	}
+}
+

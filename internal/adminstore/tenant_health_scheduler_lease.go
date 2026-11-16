@@ -38,15 +38,27 @@ func (s *Store) AcquireTenantHealthSchedulerLease(ctx context.Context, ownerID s
 }
 
 // RenewTenantHealthSchedulerLease extends only a currently valid lease owned by ownerID.
+// The caller timestamp is validated for compatibility, but lease validity and the
+// new deadline use the time observed immediately before the database statement.
 func (s *Store) RenewTenantHealthSchedulerLease(ctx context.Context, ownerID string, now time.Time, ttl time.Duration) (bool, error) {
 	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || now.IsZero() || ttl < 5*time.Second || ttl > 5*time.Minute {
 		return false, ErrTenantHealthSchedulerLeaseInvalid
 	}
-	now = now.UTC()
+	return s.renewTenantHealthSchedulerLeaseAt(ctx, ownerID, time.Now().UTC(), ttl)
+}
+
+// renewTenantHealthSchedulerLeaseAt keeps the lease comparison and extension
+// anchored to one timestamp. It is split out so expiry-boundary tests can use
+// deterministic logical times without weakening the production wrapper.
+func (s *Store) renewTenantHealthSchedulerLeaseAt(ctx context.Context, ownerID string, checkedAt time.Time, ttl time.Duration) (bool, error) {
+	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || checkedAt.IsZero() || ttl < 5*time.Second || ttl > 5*time.Minute {
+		return false, ErrTenantHealthSchedulerLeaseInvalid
+	}
+	checkedAt = checkedAt.UTC()
 	result, err := s.db.ExecContext(ctx, `UPDATE admin_tenant_health_scheduler_lease
 		SET lease_until = ?, updated_at = ?
 		WHERE id = 1 AND owner_id = ? AND lease_until > ?`,
-		now.Add(ttl).UnixNano(), formatTenantHealthTime(now), ownerID, now.UnixNano())
+		checkedAt.Add(ttl).UnixNano(), formatTenantHealthTime(checkedAt), ownerID, checkedAt.UnixNano())
 	if err != nil { return false, fmt.Errorf("renew tenant health scheduler lease: %w", err) }
 	affected, err := result.RowsAffected()
 	if err != nil { return false, fmt.Errorf("read renewed tenant health scheduler lease result: %w", err) }
