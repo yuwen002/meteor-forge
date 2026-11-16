@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { listTenantHealthSchedulerRuns, type TenantHealthSchedulerRun, type TenantHealthSchedulerRunStatus, type TenantHealthSchedulerRunSummary } from '../api'
+import { getTenantHealthRetentionCleanup, listTenantHealthSchedulerRuns, type TenantHealthRetentionCleanup, type TenantHealthSchedulerRun, type TenantHealthSchedulerRunStatus, type TenantHealthSchedulerRunSummary } from '../api'
 import { createRequestSequence, runLatestRequest } from '../utils/requestSequence'
 import { createTenantHealthSchedulerRunQuery, tenantHealthSchedulerRunDuration, tenantHealthSchedulerRunStatusLabel, tenantHealthSchedulerRunStatusType, tenantHealthSchedulerRunSummaryMetrics } from '../utils/tenantHealthRuns'
 
@@ -15,6 +15,10 @@ const status = ref<TenantHealthSchedulerRunStatus | ''>('')
 const timeRange = ref<[Date, Date] | null>(null)
 const loading = ref(false)
 const requests = createRequestSequence()
+const retention = ref<TenantHealthRetentionCleanup | null>(null)
+const retentionLoading = ref(false)
+const retentionError = ref(false)
+const retentionRequests = createRequestSequence()
 
 function loadRuns(resetPage = false) {
   if (resetPage) page.value = 1
@@ -41,6 +45,27 @@ function loadRuns(resetPage = false) {
   })
 }
 
+function loadRetention() {
+  retentionLoading.value = true
+  void runLatestRequest(retentionRequests, () => getTenantHealthRetentionCleanup(), {
+    onSuccess: result => {
+      retention.value = result
+      retentionError.value = false
+    },
+    onError: () => {
+      retention.value = null
+      retentionError.value = true
+    },
+    onFinally: () => { retentionLoading.value = false },
+  })
+}
+
+function retentionStatusLabel(value?: TenantHealthRetentionCleanup['status']): string {
+  if (value === 'succeeded') return '成功'
+  if (value === 'failed') return '失败'
+  return '尚未执行'
+}
+
 function changePage(value: number) {
   page.value = value
   loadRuns()
@@ -50,7 +75,7 @@ function formatTime(value?: string): string {
   return value ? new Date(value).toLocaleString() : '—'
 }
 
-onMounted(() => loadRuns())
+onMounted(() => { loadRuns(); loadRetention() })
 </script>
 
 <template>
@@ -60,7 +85,27 @@ onMounted(() => loadRuns())
         <strong>调度运行记录</strong>
         <span>全局巡检轮次，不等同于单租户巡检历史</span>
       </div>
-      <el-button text :loading="loading" @click="loadRuns()">刷新</el-button>
+      <el-button text :loading="loading || retentionLoading" @click="() => { loadRuns(); loadRetention() }">刷新</el-button>
+    </div>
+    <div class="retention-status" aria-label="历史清理状态" aria-live="polite">
+      <div class="retention-heading">
+        <strong>历史清理状态</strong>
+        <el-tag v-if="retention" :type="retention.status === 'succeeded' ? 'success' : retention.status === 'failed' ? 'danger' : 'info'">
+          {{ retentionStatusLabel(retention.status) }}
+        </el-tag>
+        <span v-else-if="retentionLoading">正在读取…</span>
+        <el-tag v-else type="danger">读取失败</el-tag>
+      </div>
+      <template v-if="retention">
+        <div class="retention-details">
+          <span>最近开始：{{ formatTime(retention.started_at) }}</span>
+          <span>最近完成：{{ formatTime(retention.finished_at) }}</span>
+          <span>清理巡检历史：{{ retention.deleted_history_count }} 条</span>
+          <span>清理调度记录：{{ retention.deleted_run_count }} 条</span>
+          <span v-if="retention.error_code" class="retention-error">错误分类：{{ retention.error_code === 'cleanup_failed' ? '清理失败' : '未知错误' }}</span>
+        </div>
+      </template>
+      <div v-else-if="retentionError" class="retention-error">无法读取历史清理状态，请点击刷新重试</div>
     </div>
     <div class="runs-summary" aria-label="运行记录统计">
       <div v-for="item in summaryItems" :key="item.key" class="summary-item">
@@ -127,6 +172,10 @@ onMounted(() => loadRuns())
 .runs-heading { margin-bottom: 12px; }
 .runs-heading > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .runs-heading span, .runs-pagination > span { color: #98a2b3; font-size: 11px; }
+.retention-status { margin: 0 0 14px; padding: 10px 12px; border: 1px solid #edf0f5; border-radius: 6px; }
+.retention-heading { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.retention-details { display: flex; flex-wrap: wrap; gap: 8px 18px; color: #667085; font-size: 12px; }
+.retention-error { color: #d92d20; font-size: 12px; }
 .runs-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
 .summary-item { display: flex; flex-direction: column; gap: 5px; min-width: 0; padding: 10px 12px; border: 1px solid #edf0f5; border-radius: 6px; }
 .summary-item span { color: #98a2b3; font-size: 11px; }

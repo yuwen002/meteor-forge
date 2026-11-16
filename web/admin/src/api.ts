@@ -117,3 +117,18 @@ export async function listTenantHealthSchedulerRuns(params: {
   const { data } = await api.get<TenantHealthSchedulerRunPage>('/tenant-health/runs', { params })
   return data
 }
+
+
+export interface TenantHealthRetentionCleanup {
+  status: 'never_run' | 'succeeded' | 'failed'
+  started_at?: string
+  finished_at?: string
+  deleted_history_count: number
+  deleted_run_count: number
+  error_code?: string
+}
+
+export async function getTenantHealthRetentionCleanup(): Promise<TenantHealthRetentionCleanup> {
+  const { data } = await api.get<TenantHealthRetentionCleanup>('/tenant-health/retention')
+  return data
+}
