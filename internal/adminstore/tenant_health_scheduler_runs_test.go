@@ -118,3 +118,83 @@ func TestTenantHealthSchedulerRunStartRequiresCurrentLease(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+
+func TestTenantHealthSchedulerRunRetentionDeletesOnlyExpiredFinalizedRowsInBatches(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	acquired, generation, err := store.AcquireTenantHealthSchedulerLease(ctx, "retention-owner", now, 5*time.Minute)
+	if err != nil || !acquired { t.Fatalf("acquire retention lease: acquired=%v err=%v", acquired, err) }
+	createRun := func(startedAt, finishedAt time.Time, finalize bool) int64 {
+		t.Helper()
+		id, err := store.StartTenantHealthSchedulerRunWithLease(ctx, "retention-owner", generation, startedAt)
+		if err != nil { t.Fatalf("start run: %v", err) }
+		if finalize {
+			if err := store.FinishTenantHealthSchedulerRun(ctx, id, finishedAt, 1000, "succeeded", ""); err != nil { t.Fatalf("finish run: %v", err) }
+		}
+		return id
+	}
+	oldID := createRun(now.Add(-40*24*time.Hour), now.Add(-31*24*time.Hour), true)
+	boundaryID := createRun(now.Add(-31*24*time.Hour), now.Add(-30*24*time.Hour), true)
+	recentID := createRun(now.Add(-2*24*time.Hour), now.Add(-24*time.Hour), true)
+	runningID := createRun(now.Add(-40*24*time.Hour), time.Time{}, false)
+	before := now.Add(-30*24*time.Hour)
+	deleted, err := store.DeleteExpiredTenantHealthSchedulerRunsWithLease(ctx, "retention-owner", generation, now, before, 500)
+	if err != nil { t.Fatal(err) }
+	if deleted != 1 { t.Fatalf("deleted=%d, want only one expired finalized row", deleted) }
+	page, err := store.ListTenantHealthSchedulerRuns(ctx, TenantHealthSchedulerRunFilter{Limit: 100})
+	if err != nil { t.Fatal(err) }
+	states := make(map[int64]string, len(page.Items))
+	for _, item := range page.Items { states[item.ID] = item.Status }
+	if _, exists := states[oldID]; exists { t.Fatalf("expired run %d was not deleted", oldID) }
+	if states[boundaryID] != "succeeded" || states[recentID] != "succeeded" || states[runningID] != "running" {
+		t.Fatalf("retention removed a boundary, recent, or running record: %+v", states)
+	}
+}
+
+func TestTenantHealthSchedulerRunRetentionRequiresCurrentUnexpiredLease(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	acquired, generation, err := store.AcquireTenantHealthSchedulerLease(ctx, "retention-owner-a", now, 5*time.Second)
+	if err != nil || !acquired { t.Fatalf("acquire lease: acquired=%v err=%v", acquired, err) }
+	id, err := store.StartTenantHealthSchedulerRunWithLease(ctx, "retention-owner-a", generation, now.Add(-48*time.Hour))
+	if err != nil { t.Fatal(err) }
+	if err := store.FinishTenantHealthSchedulerRun(ctx, id, now.Add(-24*time.Hour), 1000, "succeeded", ""); err != nil { t.Fatal(err) }
+	before := now.Add(-12*time.Hour)
+	for _, tc := range []struct{name, owner string; gen int64; at time.Time}{
+		{name:"wrong owner", owner:"retention-owner-b", gen:generation, at:now},
+		{name:"wrong generation", owner:"retention-owner-a", gen:generation+1, at:now},
+		{name:"expired lease", owner:"retention-owner-a", gen:generation, at:now.Add(6*time.Second)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deleted, err := store.DeleteExpiredTenantHealthSchedulerRunsWithLease(ctx, tc.owner, tc.gen, tc.at, before, 500)
+			if deleted != 0 || !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
+				t.Fatalf("delete result=(%d,%v), want lease lost without deletion", deleted, err)
+			}
+		})
+	}
+	page, err := store.ListTenantHealthSchedulerRuns(ctx, TenantHealthSchedulerRunFilter{})
+	if err != nil { t.Fatal(err) }
+	if page.Total != 1 || page.Items[0].ID != id { t.Fatalf("invalid lease deleted history: %+v", page) }
+}
+
+func TestTenantHealthSchedulerRunRetentionHonorsBatchLimit(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	acquired, generation, err := store.AcquireTenantHealthSchedulerLease(ctx, "retention-batch-owner", now, 5*time.Minute)
+	if err != nil || !acquired { t.Fatalf("acquire lease: acquired=%v err=%v", acquired, err) }
+	for i := 0; i < 3; i++ {
+		started := now.Add(time.Duration(i-10)*24*time.Hour)
+		id, err := store.StartTenantHealthSchedulerRunWithLease(ctx, "retention-batch-owner", generation, started)
+		if err != nil { t.Fatal(err) }
+		if err := store.FinishTenantHealthSchedulerRun(ctx, id, started.Add(time.Hour), 1000, "succeeded", ""); err != nil { t.Fatal(err) }
+	}
+	before := now.Add(-5*24*time.Hour)
+	deleted, err := store.DeleteExpiredTenantHealthSchedulerRunsWithLease(ctx, "retention-batch-owner", generation, now, before, 2)
+	if err != nil || deleted != 2 { t.Fatalf("first batch deleted=%d err=%v, want 2", deleted, err) }
+	deleted, err = store.DeleteExpiredTenantHealthSchedulerRunsWithLease(ctx, "retention-batch-owner", generation, now, before, 2)
+	if err != nil || deleted != 1 { t.Fatalf("second batch deleted=%d err=%v, want 1", deleted, err) }
+}

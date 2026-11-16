@@ -116,7 +116,19 @@ func newServerWithMigrationDir(store *adminstore.Store, migrationDir string, enf
 			store.GetTenantHealthSettings,
 			server.runScheduledTenantHealthChecks,
 			func(ctx context.Context, retentionDays int) error {
-				return cleanupTenantHealthHistory(ctx, store.DeleteExpiredTenantConnectionHealthHistory, retentionDays)
+				// Cleanup runs after the health-check round releases its lease.
+				// Reacquire it so only one live instance performs retention work.
+				err := runWithTenantHealthSchedulerLease(ctx, store, server.tenantHealthLeaseOwnerID, func(leaseCtx context.Context) error {
+					lease, ok := leaseCtx.Value(tenantHealthSchedulerLeaseContextKey{}).(tenantHealthSchedulerLeaseContext)
+					if !ok { return errors.New("tenant health retention cleanup is missing its lease context") }
+					if err := cleanupTenantHealthHistory(leaseCtx, store.DeleteExpiredTenantConnectionHealthHistory, retentionDays); err != nil { return err }
+					deleteRuns := func(batchCtx context.Context, before time.Time, limit int) (int64, error) {
+						return store.DeleteExpiredTenantHealthSchedulerRunsWithLease(batchCtx, lease.ownerID, lease.generation, time.Now().UTC(), before, limit)
+					}
+					return cleanupTenantHealthHistory(leaseCtx, deleteRuns, retentionDays)
+				})
+				if errors.Is(err, errTenantHealthSchedulerLeaseNotAcquired) { return nil }
+				return err
 			},
 			func(err error) {
 				log.Printf("tenant health scheduler: %v", err)

@@ -630,7 +630,7 @@ GET /api/v1/tenant-discovery/preview?data_source_id=control-source-id
 
 查询定时巡检的全局运行轮次记录，所有已认证角色可读取。支持 `status`（running/succeeded/failed/lease_lost/interrupted）、`from`、`to`（RFC3339，按开始时间筛选且两端包含）、`limit`（1–100，默认 20）和 `offset`（0–1,000,000，默认 0）。响应包含 `items`、当前筛选条件下的 `total`，以及 `summary`。列表按 `started_at DESC, id DESC` 排序；`summary` 按时间范围统计总轮次、各状态数量和已结束轮次的平均耗时，刻意忽略 `status` 筛选，避免选择单一状态后丢失整体运行情况。记录字段包括 `id`、`lease_generation`、`started_at`、可选的 `finished_at`、`duration_ms`、`status`、可选的 `error_code` 和脱敏的 `error_message`。
 
-只有取得共享调度租约的实例才会创建运行记录；租约竞争失败不会生成轮次记录。新 generation 接管时，旧 generation 遗留的 running 记录会标记为 interrupted。该接口记录的是全局调度轮次，不是每个租户的连接检查历史；租户级结果仍通过 `GET /tenant-health/history` 查询。Web Admin 在定时巡检区域展示运行轮次列表及汇总卡片。
+只有取得共享调度租约的实例才会创建运行记录；租约竞争失败不会生成轮次记录。 运行记录与租户巡检历史共用 `history_retention_days` 保留配置；清理只删除已结束且超过保留期的记录，按 500 条批次执行，并在每批删除 SQL 中校验当前有效租约的 owner、generation 和过期时间。新 generation 接管时，旧 generation 遗留的 running 记录会标记为 interrupted。该接口记录的是全局调度轮次，不是每个租户的连接检查历史；租户级结果仍通过 `GET /tenant-health/history` 查询。Web Admin 在定时巡检区域展示运行轮次列表及汇总卡片。
 
 ### GET /tenant-health/summary
 

@@ -194,6 +194,43 @@ func (s *Store) RecoverStaleTenantHealthSchedulerRuns(ctx context.Context, curre
 	return int64(len(stale)), nil
 }
 
+
+ // DeleteExpiredTenantHealthSchedulerRunsWithLease removes a bounded batch of
+ // finalized scheduler runs only while the supplied owner and fencing generation
+ // still hold an unexpired shared lease. The lease predicate is part of the DELETE
+ // statement, so a stale instance cannot delete history after takeover.
+func (s *Store) DeleteExpiredTenantHealthSchedulerRunsWithLease(
+	ctx context.Context, ownerID string, generation int64, now, before time.Time, limit int,
+) (int64, error) {
+	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || generation <= 0 || now.IsZero() || before.IsZero() || limit <= 0 || limit > 5000 {
+		return 0, ErrTenantHealthSchedulerLeaseInvalid
+	}
+	now = now.UTC()
+	result, err := s.db.ExecContext(ctx, `DELETE FROM admin_tenant_health_scheduler_runs
+		WHERE id IN (
+			SELECT id FROM admin_tenant_health_scheduler_runs
+			WHERE finished_at IS NOT NULL AND status <> 'running' AND finished_at < ?
+			ORDER BY finished_at ASC, id ASC LIMIT ?
+		)
+		AND EXISTS (
+			SELECT 1 FROM admin_tenant_health_scheduler_lease
+			WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?
+		)`,
+		formatTenantHealthTime(before), limit, ownerID, generation, now.UnixNano())
+	if err != nil { return 0, fmt.Errorf("delete expired tenant health scheduler runs: %w", err) }
+	affected, err := result.RowsAffected()
+	if err != nil { return 0, fmt.Errorf("count deleted tenant health scheduler runs: %w", err) }
+	if affected == 0 {
+		var valid int
+		err := s.db.QueryRowContext(ctx, `SELECT 1 FROM admin_tenant_health_scheduler_lease
+			WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?`,
+			ownerID, generation, now.UnixNano()).Scan(&valid)
+		if errors.Is(err, sql.ErrNoRows) { return 0, ErrTenantHealthSchedulerLeaseLost }
+		if err != nil { return 0, fmt.Errorf("verify tenant health scheduler lease for retention: %w", err) }
+	}
+	return affected, nil
+}
+
 // ListTenantHealthSchedulerRuns returns a bounded, newest-first page of durable scheduler rounds.
 func (s *Store) ListTenantHealthSchedulerRuns(ctx context.Context, filter TenantHealthSchedulerRunFilter) (TenantHealthSchedulerRunPage, error) {
 	if filter.Status != "" {
