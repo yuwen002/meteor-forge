@@ -18,7 +18,7 @@ func TestTenantHealthRetentionCleanupPersistsLatestResult(t *testing.T) {
 	}
 	acquired, generation, err := store.AcquireTenantHealthSchedulerLease(ctx, "retention-summary-owner", now, time.Minute)
 	if err != nil || !acquired { t.Fatalf("acquire lease: acquired=%v err=%v", acquired, err) }
-	if err := store.RecordTenantHealthRetentionCleanupWithLease(ctx, "retention-summary-owner", generation, now.Add(time.Second), "succeeded", 12, 3, ""); err != nil {
+	if err := store.RecordTenantHealthRetentionCleanupWithLease(ctx, "retention-summary-owner", generation, now, now.Add(time.Second), "succeeded", 12, 3, ""); err != nil {
 		t.Fatal(err)
 	}
 	item, err = store.GetTenantHealthRetentionCleanup(ctx)
@@ -26,7 +26,7 @@ func TestTenantHealthRetentionCleanupPersistsLatestResult(t *testing.T) {
 	if item.Status != "succeeded" || item.DeletedHistoryCount != 12 || item.DeletedRunCount != 3 || item.FinishedAt == nil {
 		t.Fatalf("unexpected successful retention state: %+v", item)
 	}
-	if err := store.RecordTenantHealthRetentionCleanupWithLease(ctx, "retention-summary-owner", generation, now.Add(2*time.Second), "failed", 4, 1, "unexpected-details"); err != nil {
+	if err := store.RecordTenantHealthRetentionCleanupWithLease(ctx, "retention-summary-owner", generation, now.Add(time.Second), now.Add(2*time.Second), "failed", 4, 1, "unexpected-details"); err != nil {
 		t.Fatal(err)
 	}
 	item, err = store.GetTenantHealthRetentionCleanup(ctx)
@@ -48,7 +48,7 @@ func TestTenantHealthRetentionCleanupRequiresCurrentLease(t *testing.T) {
 		{name:"expired lease", owner:"retention-summary-owner-a", generation:generation, at:now.Add(6*time.Second)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := store.RecordTenantHealthRetentionCleanupWithLease(ctx, tc.owner, tc.generation, tc.at, "succeeded", 1, 1, "")
+			err := store.RecordTenantHealthRetentionCleanupWithLease(ctx, tc.owner, tc.generation, now, tc.at, "succeeded", 1, 1, "")
 			if !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
 				t.Fatalf("record result error=%v, want lease lost", err)
 			}

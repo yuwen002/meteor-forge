@@ -121,6 +121,7 @@ func newServerWithMigrationDir(store *adminstore.Store, migrationDir string, enf
 				err := runWithTenantHealthSchedulerLease(ctx, store, server.tenantHealthLeaseOwnerID, func(leaseCtx context.Context) error {
 					lease, ok := leaseCtx.Value(tenantHealthSchedulerLeaseContextKey{}).(tenantHealthSchedulerLeaseContext)
 					if !ok { return errors.New("tenant health retention cleanup is missing its lease context") }
+					cleanupStartedAt := time.Now().UTC()
 					var deletedHistory, deletedRuns int64
 					countHistoryBatch := func(batchCtx context.Context, before time.Time, limit int) (int64, error) {
 						deleted, err := store.DeleteExpiredTenantConnectionHealthHistory(batchCtx, before, limit)
@@ -141,7 +142,7 @@ func newServerWithMigrationDir(store *adminstore.Store, migrationDir string, enf
 						status, errorCode = "failed", "cleanup_failed"
 					}
 					recordCtx, recordCancel := context.WithTimeout(context.Background(), 2*time.Second)
-					recordErr := store.RecordTenantHealthRetentionCleanupWithLease(recordCtx, lease.ownerID, lease.generation, time.Now().UTC(), status, deletedHistory, deletedRuns, errorCode)
+					recordErr := store.RecordTenantHealthRetentionCleanupWithLease(recordCtx, lease.ownerID, lease.generation, cleanupStartedAt, time.Now().UTC(), status, deletedHistory, deletedRuns, errorCode)
 					recordCancel()
 					if cleanupErr != nil && recordErr != nil { return errors.Join(cleanupErr, recordErr) }
 					if cleanupErr != nil { return cleanupErr }

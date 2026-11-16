@@ -21,11 +21,11 @@ type TenantHealthRetentionCleanup struct {
 // RecordTenantHealthRetentionCleanupWithLease updates the durable cleanup
 // summary only while the caller still owns the current unexpired fencing lease.
 func (s *Store) RecordTenantHealthRetentionCleanupWithLease(
-	ctx context.Context, ownerID string, generation int64, finishedAt time.Time,
+	ctx context.Context, ownerID string, generation int64, startedAt, finishedAt time.Time,
 	status string, deletedHistory, deletedRuns int64, errorCode string,
 ) error {
 	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || generation <= 0 ||
-		finishedAt.IsZero() || deletedHistory < 0 || deletedRuns < 0 {
+		startedAt.IsZero() || finishedAt.IsZero() || finishedAt.Before(startedAt) || deletedHistory < 0 || deletedRuns < 0 {
 		return ErrTenantHealthSchedulerLeaseInvalid
 	}
 	if status != "succeeded" && status != "failed" {
@@ -44,7 +44,7 @@ func (s *Store) RecordTenantHealthRetentionCleanupWithLease(
 			SELECT 1 FROM admin_tenant_health_scheduler_lease
 			WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?
 		)`,
-		formatTenantHealthTime(now), formatTenantHealthTime(now), status,
+		formatTenantHealthTime(startedAt.UTC()), formatTenantHealthTime(now), status,
 		deletedHistory, deletedRuns, errorCode, ownerID, generation, now.UnixNano())
 	if err != nil {
 		return fmt.Errorf("record tenant health retention cleanup: %w", err)
