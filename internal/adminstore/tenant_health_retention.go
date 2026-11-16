@@ -36,7 +36,7 @@ func (s *Store) RecordTenantHealthRetentionCleanupWithLease(
 	} else if errorCode != "cleanup_failed" {
 		errorCode = "cleanup_failed"
 	}
-	now := time.Now().UTC()
+	leaseCheckedAt := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `UPDATE admin_tenant_health_retention_cleanup
 		SET started_at = ?, finished_at = ?, status = ?,
 			deleted_history_count = ?, deleted_run_count = ?, error_code = ?
@@ -44,8 +44,8 @@ func (s *Store) RecordTenantHealthRetentionCleanupWithLease(
 			SELECT 1 FROM admin_tenant_health_scheduler_lease
 			WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?
 		)`,
-		formatTenantHealthTime(startedAt.UTC()), formatTenantHealthTime(now), status,
-		deletedHistory, deletedRuns, errorCode, ownerID, generation, now.UnixNano())
+		formatTenantHealthTime(startedAt.UTC()), formatTenantHealthTime(finishedAt.UTC()), status,
+		deletedHistory, deletedRuns, errorCode, ownerID, generation, leaseCheckedAt.UnixNano())
 	if err != nil {
 		return fmt.Errorf("record tenant health retention cleanup: %w", err)
 	}

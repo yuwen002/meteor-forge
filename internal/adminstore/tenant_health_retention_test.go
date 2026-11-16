@@ -23,7 +23,7 @@ func TestTenantHealthRetentionCleanupPersistsLatestResult(t *testing.T) {
 	}
 	item, err = store.GetTenantHealthRetentionCleanup(ctx)
 	if err != nil { t.Fatal(err) }
-	if item.Status != "succeeded" || item.DeletedHistoryCount != 12 || item.DeletedRunCount != 3 || item.FinishedAt == nil {
+	if item.Status != "succeeded" || item.DeletedHistoryCount != 12 || item.DeletedRunCount != 3 || item.FinishedAt == nil || !item.FinishedAt.Equal(now.Add(time.Second)) {
 		t.Fatalf("unexpected successful retention state: %+v", item)
 	}
 	if err := store.RecordTenantHealthRetentionCleanupWithLease(ctx, "retention-summary-owner", generation, now.Add(time.Second), now.Add(2*time.Second), "failed", 4, 1, "unexpected-details"); err != nil {
