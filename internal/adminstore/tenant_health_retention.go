@@ -96,7 +96,7 @@ func (s *Store) DeleteExpiredTenantConnectionHealthHistoryWithLease(
 		now.IsZero() || before.IsZero() || limit <= 0 || limit > 5000 {
 		return 0, ErrTenantHealthSchedulerLeaseInvalid
 	}
-	now = now.UTC()
+	leaseCheckedAt := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `DELETE FROM admin_tenant_connection_health_history
 		WHERE id IN (
 			SELECT id FROM admin_tenant_connection_health_history
@@ -106,7 +106,7 @@ func (s *Store) DeleteExpiredTenantConnectionHealthHistoryWithLease(
 			SELECT 1 FROM admin_tenant_health_scheduler_lease
 			WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?
 		)`,
-		formatTenantHealthTime(before), limit, ownerID, generation, now.UnixNano())
+		formatTenantHealthTime(before), limit, ownerID, generation, leaseCheckedAt.UnixNano())
 	if err != nil {
 		return 0, fmt.Errorf("delete expired tenant health history with lease: %w", err)
 	}
@@ -118,7 +118,7 @@ func (s *Store) DeleteExpiredTenantConnectionHealthHistoryWithLease(
 		var valid int
 		err := s.db.QueryRowContext(ctx, `SELECT 1 FROM admin_tenant_health_scheduler_lease
 			WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?`,
-			ownerID, generation, now.UnixNano()).Scan(&valid)
+			ownerID, generation, leaseCheckedAt.UnixNano()).Scan(&valid)
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, ErrTenantHealthSchedulerLeaseLost
 		}

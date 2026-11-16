@@ -87,4 +87,10 @@ func TestTenantConnectionHealthHistoryRetentionRequiresCurrentLease(t *testing.T
 	if deleted, err := store.DeleteExpiredTenantConnectionHealthHistoryWithLease(ctx, "history-retention-owner", generation, now, before, 500); err != nil || deleted != 1 {
 		t.Fatalf("current owner deletion=(%d,%v), want one row", deleted, err)
 	}
+	if _, err := store.db.ExecContext(ctx, "UPDATE admin_tenant_health_scheduler_lease SET lease_until = ? WHERE id = 1", time.Now().UTC().Add(-time.Second).UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, err := store.DeleteExpiredTenantConnectionHealthHistoryWithLease(ctx, "history-retention-owner", generation, now, before, 500); deleted != 0 || !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
+		t.Fatalf("expired lease deletion=(%d,%v), want lease lost", deleted, err)
+	}
 }

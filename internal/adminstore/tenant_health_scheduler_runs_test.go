@@ -163,17 +163,23 @@ func TestTenantHealthSchedulerRunRetentionRequiresCurrentUnexpiredLease(t *testi
 	if err != nil { t.Fatal(err) }
 	if err := store.FinishTenantHealthSchedulerRun(ctx, id, now.Add(-24*time.Hour), 1000, "succeeded", ""); err != nil { t.Fatal(err) }
 	before := now.Add(-12*time.Hour)
-	for _, tc := range []struct{name, owner string; gen int64; at time.Time}{
-		{name:"wrong owner", owner:"retention-owner-b", gen:generation, at:now},
-		{name:"wrong generation", owner:"retention-owner-a", gen:generation+1, at:now},
-		{name:"expired lease", owner:"retention-owner-a", gen:generation, at:now.Add(6*time.Second)},
+	for _, tc := range []struct{name, owner string; gen int64}{
+		{name:"wrong owner", owner:"retention-owner-b", gen:generation},
+		{name:"wrong generation", owner:"retention-owner-a", gen:generation+1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			deleted, err := store.DeleteExpiredTenantHealthSchedulerRunsWithLease(ctx, tc.owner, tc.gen, tc.at, before, 500)
+			deleted, err := store.DeleteExpiredTenantHealthSchedulerRunsWithLease(ctx, tc.owner, tc.gen, now, before, 500)
 			if deleted != 0 || !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
 				t.Fatalf("delete result=(%d,%v), want lease lost without deletion", deleted, err)
 			}
 		})
+	}
+	// A stale caller timestamp must not authorize deletion after the stored lease expires.
+	if _, err := store.db.ExecContext(ctx, "UPDATE admin_tenant_health_scheduler_lease SET lease_until = ? WHERE id = 1", time.Now().UTC().Add(-time.Second).UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, err := store.DeleteExpiredTenantHealthSchedulerRunsWithLease(ctx, "retention-owner-a", generation, now, before, 500); deleted != 0 || !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
+		t.Fatalf("expired lease delete result=(%d,%v), want lease lost without deletion", deleted, err)
 	}
 	page, err := store.ListTenantHealthSchedulerRuns(ctx, TenantHealthSchedulerRunFilter{})
 	if err != nil { t.Fatal(err) }

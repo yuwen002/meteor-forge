@@ -205,7 +205,7 @@ func (s *Store) DeleteExpiredTenantHealthSchedulerRunsWithLease(
 	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || generation <= 0 || now.IsZero() || before.IsZero() || limit <= 0 || limit > 5000 {
 		return 0, ErrTenantHealthSchedulerLeaseInvalid
 	}
-	now = now.UTC()
+	leaseCheckedAt := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `DELETE FROM admin_tenant_health_scheduler_runs
 		WHERE id IN (
 			SELECT id FROM admin_tenant_health_scheduler_runs
@@ -216,7 +216,7 @@ func (s *Store) DeleteExpiredTenantHealthSchedulerRunsWithLease(
 			SELECT 1 FROM admin_tenant_health_scheduler_lease
 			WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?
 		)`,
-		formatTenantHealthTime(before), limit, ownerID, generation, now.UnixNano())
+		formatTenantHealthTime(before), limit, ownerID, generation, leaseCheckedAt.UnixNano())
 	if err != nil { return 0, fmt.Errorf("delete expired tenant health scheduler runs: %w", err) }
 	affected, err := result.RowsAffected()
 	if err != nil { return 0, fmt.Errorf("count deleted tenant health scheduler runs: %w", err) }
@@ -224,7 +224,7 @@ func (s *Store) DeleteExpiredTenantHealthSchedulerRunsWithLease(
 		var valid int
 		err := s.db.QueryRowContext(ctx, `SELECT 1 FROM admin_tenant_health_scheduler_lease
 			WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?`,
-			ownerID, generation, now.UnixNano()).Scan(&valid)
+			ownerID, generation, leaseCheckedAt.UnixNano()).Scan(&valid)
 		if errors.Is(err, sql.ErrNoRows) { return 0, ErrTenantHealthSchedulerLeaseLost }
 		if err != nil { return 0, fmt.Errorf("verify tenant health scheduler lease for retention: %w", err) }
 	}
