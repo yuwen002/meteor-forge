@@ -75,13 +75,29 @@ func (s *Store) renewTenantHealthSchedulerLeaseAt(ctx context.Context, ownerID s
 	return affected == 1, nil
 }
 
-// ReleaseTenantHealthSchedulerLease releases only the lease still owned by ownerID.
+// ReleaseTenantHealthSchedulerLease releases a lease by owner for compatibility.
+// New scheduler code must use ReleaseTenantHealthSchedulerLeaseWithGeneration.
 func (s *Store) ReleaseTenantHealthSchedulerLease(ctx context.Context, ownerID string) error {
 	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 { return ErrTenantHealthSchedulerLeaseInvalid }
 	_, err := s.db.ExecContext(ctx, `UPDATE admin_tenant_health_scheduler_lease
 		SET owner_id = '', lease_until = 0, updated_at = ?
 		WHERE id = 1 AND owner_id = ?`, formatTenantHealthTime(time.Now().UTC()), ownerID)
 	if err != nil { return fmt.Errorf("release tenant health scheduler lease: %w", err) }
+	return nil
+}
+
+// ReleaseTenantHealthSchedulerLeaseWithGeneration releases only the exact lease
+// generation acquired by this scheduler instance. Stale owners cannot release
+// a replacement lease, even if an owner identifier is reused.
+func (s *Store) ReleaseTenantHealthSchedulerLeaseWithGeneration(ctx context.Context, ownerID string, generation int64) error {
+	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || generation <= 0 {
+		return ErrTenantHealthSchedulerLeaseInvalid
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE admin_tenant_health_scheduler_lease
+		SET owner_id = '', lease_until = 0, updated_at = ?
+		WHERE id = 1 AND owner_id = ? AND generation = ?`,
+		formatTenantHealthTime(time.Now().UTC()), ownerID, generation)
+	if err != nil { return fmt.Errorf("release tenant health scheduler lease with generation: %w", err) }
 	return nil
 }
 
