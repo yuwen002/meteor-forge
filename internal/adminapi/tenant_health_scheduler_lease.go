@@ -86,7 +86,7 @@ func runWithTenantHealthSchedulerLeaseTTL(ctx context.Context, store *adminstore
 	cancel()
 	heartbeatErr := <-heartbeatDone
 	releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 3*time.Second)
-	releaseErr := store.ReleaseTenantHealthSchedulerLease(releaseCtx, ownerID)
+	releaseErr := store.ReleaseTenantHealthSchedulerLeaseWithGeneration(releaseCtx, ownerID, generation)
 	releaseCancel()
 	if heartbeatErr != nil {
 		return heartbeatErr
