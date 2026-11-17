@@ -20,17 +20,27 @@ func (s *Store) AcquireTenantHealthSchedulerLease(ctx context.Context, ownerID s
 	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || now.IsZero() || ttl < 5*time.Second || ttl > 5*time.Minute {
 		return false, 0, ErrTenantHealthSchedulerLeaseInvalid
 	}
-	return s.acquireTenantHealthSchedulerLeaseAt(ctx, ownerID, time.Now().UTC(), ttl)
+	return s.acquireTenantHealthSchedulerLeaseWithClock(ctx, ownerID, time.Now, ttl)
 }
 
-// acquireTenantHealthSchedulerLeaseAt anchors expiry comparison and the new
-// deadline to one timestamp. It supports deterministic expiry-boundary tests.
+// acquireTenantHealthSchedulerLeaseAt keeps expiry-boundary tests deterministic.
 func (s *Store) acquireTenantHealthSchedulerLeaseAt(ctx context.Context, ownerID string, checkedAt time.Time, ttl time.Duration) (bool, int64, error) {
-	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || checkedAt.IsZero() || ttl < 5*time.Second || ttl > 5*time.Minute {
+	return s.acquireTenantHealthSchedulerLeaseWithClock(ctx, ownerID, func() time.Time { return checkedAt }, ttl)
+}
+
+// The clock is sampled only after the transaction has acquired SQLite's write lock.
+func (s *Store) acquireTenantHealthSchedulerLeaseWithClock(ctx context.Context, ownerID string, clock func() time.Time, ttl time.Duration) (bool, int64, error) {
+	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || clock == nil || ttl < 5*time.Second || ttl > 5*time.Minute {
 		return false, 0, ErrTenantHealthSchedulerLeaseInvalid
 	}
-	checkedAt = checkedAt.UTC()
-	result, err := s.db.ExecContext(ctx, `UPDATE admin_tenant_health_scheduler_lease
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil { return false, 0, fmt.Errorf("begin tenant health scheduler lease acquisition: %w", err) }
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `UPDATE admin_tenant_health_scheduler_lease SET updated_at = updated_at WHERE id = 1`); err != nil {
+		return false, 0, fmt.Errorf("lock tenant health scheduler lease for acquisition: %w", err)
+	}
+	checkedAt := clock().UTC()
+	result, err := tx.ExecContext(ctx, `UPDATE admin_tenant_health_scheduler_lease
 		SET generation = generation + CASE WHEN owner_id = ? THEN 0 ELSE 1 END,
 		    owner_id = ?, lease_until = ?, updated_at = ?
 		WHERE id = 1 AND (owner_id = ? OR lease_until <= ? OR owner_id = '')`,
@@ -41,9 +51,10 @@ func (s *Store) acquireTenantHealthSchedulerLeaseAt(ctx context.Context, ownerID
 	if err != nil { return false, 0, fmt.Errorf("read tenant health scheduler lease result: %w", err) }
 	if affected == 0 { return false, 0, nil }
 	var generation int64
-	if err := s.db.QueryRowContext(ctx, "SELECT generation FROM admin_tenant_health_scheduler_lease WHERE id = 1 AND owner_id = ?", ownerID).Scan(&generation); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT generation FROM admin_tenant_health_scheduler_lease WHERE id = 1 AND owner_id = ?", ownerID).Scan(&generation); err != nil {
 		return false, 0, fmt.Errorf("read acquired tenant health scheduler lease generation: %w", err)
 	}
+	if err := tx.Commit(); err != nil { return false, 0, fmt.Errorf("commit tenant health scheduler lease acquisition: %w", err) }
 	return true, generation, nil
 }
 
@@ -54,24 +65,33 @@ func (s *Store) RenewTenantHealthSchedulerLease(ctx context.Context, ownerID str
 	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || now.IsZero() || ttl < 5*time.Second || ttl > 5*time.Minute {
 		return false, ErrTenantHealthSchedulerLeaseInvalid
 	}
-	return s.renewTenantHealthSchedulerLeaseAt(ctx, ownerID, time.Now().UTC(), ttl)
+	return s.renewTenantHealthSchedulerLeaseWithClock(ctx, ownerID, time.Now, ttl)
 }
 
-// renewTenantHealthSchedulerLeaseAt keeps the lease comparison and extension
-// anchored to one timestamp. It is split out so expiry-boundary tests can use
-// deterministic logical times without weakening the production wrapper.
+// renewTenantHealthSchedulerLeaseAt preserves deterministic expiry-boundary tests.
 func (s *Store) renewTenantHealthSchedulerLeaseAt(ctx context.Context, ownerID string, checkedAt time.Time, ttl time.Duration) (bool, error) {
-	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || checkedAt.IsZero() || ttl < 5*time.Second || ttl > 5*time.Minute {
+	return s.renewTenantHealthSchedulerLeaseWithClock(ctx, ownerID, func() time.Time { return checkedAt }, ttl)
+}
+
+func (s *Store) renewTenantHealthSchedulerLeaseWithClock(ctx context.Context, ownerID string, clock func() time.Time, ttl time.Duration) (bool, error) {
+	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || clock == nil || ttl < 5*time.Second || ttl > 5*time.Minute {
 		return false, ErrTenantHealthSchedulerLeaseInvalid
 	}
-	checkedAt = checkedAt.UTC()
-	result, err := s.db.ExecContext(ctx, `UPDATE admin_tenant_health_scheduler_lease
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil { return false, fmt.Errorf("begin tenant health scheduler lease renewal: %w", err) }
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `UPDATE admin_tenant_health_scheduler_lease SET updated_at = updated_at WHERE id = 1`); err != nil {
+		return false, fmt.Errorf("lock tenant health scheduler lease for renewal: %w", err)
+	}
+	checkedAt := clock().UTC()
+	result, err := tx.ExecContext(ctx, `UPDATE admin_tenant_health_scheduler_lease
 		SET lease_until = ?, updated_at = ?
 		WHERE id = 1 AND owner_id = ? AND lease_until > ?`,
 		checkedAt.Add(ttl).UnixNano(), formatTenantHealthTime(checkedAt), ownerID, checkedAt.UnixNano())
 	if err != nil { return false, fmt.Errorf("renew tenant health scheduler lease: %w", err) }
 	affected, err := result.RowsAffected()
 	if err != nil { return false, fmt.Errorf("read renewed tenant health scheduler lease result: %w", err) }
+	if err := tx.Commit(); err != nil { return false, fmt.Errorf("commit tenant health scheduler lease renewal: %w", err) }
 	return affected == 1, nil
 }
 
