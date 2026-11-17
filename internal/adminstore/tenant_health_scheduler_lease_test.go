@@ -2,6 +2,7 @@ package adminstore
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -312,5 +313,95 @@ func TestTenantHealthSchedulerLeaseAcquisitionUsesLiveTimeInsteadOfStaleCallerTi
 	}
 	if ownerID != "new-acquisition-owner" || leaseUntil <= time.Now().UTC().UnixNano() {
 		t.Fatalf("live-time acquisition did not replace expired lease: owner=%q lease_until=%d", ownerID, leaseUntil)
+	}
+}
+
+
+func TestTenantHealthSchedulerLeaseAcquisitionSamplesClockAfterSQLiteWriteLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lease-clock-lock.db")
+	first, err := Open(context.Background(), path, testKey)
+	if err != nil { t.Fatal(err) }
+	defer first.Close()
+	second, err := Open(context.Background(), path, testKey)
+	if err != nil { t.Fatal(err) }
+	defer second.Close()
+
+	start := time.Now().UTC().Truncate(time.Second)
+	acquired, _, err := first.acquireTenantHealthSchedulerLeaseAt(context.Background(), "previous-owner", start, 5*time.Second)
+	if err != nil || !acquired { t.Fatalf("seed lease: acquired=%v err=%v", acquired, err) }
+
+	lockTx, err := second.db.BeginTx(context.Background(), nil)
+	if err != nil { t.Fatal(err) }
+	if _, err := lockTx.ExecContext(context.Background(), "UPDATE admin_tenant_health_scheduler_lease SET updated_at = updated_at WHERE id = 1"); err != nil {
+		_ = lockTx.Rollback()
+		t.Fatal(err)
+	}
+	clockCalled := make(chan struct{}, 1)
+	result := make(chan error, 1)
+	go func() {
+		ok, generation, err := first.acquireTenantHealthSchedulerLeaseWithClock(context.Background(), "replacement-owner", func() time.Time {
+			clockCalled <- struct{}{}
+			return start.Add(6 * time.Second)
+		}, 30*time.Second)
+		if err != nil { result <- err; return }
+		if !ok || generation != 2 { result <- fmt.Errorf("acquire result: ok=%v generation=%d", ok, generation); return }
+		result <- nil
+	}()
+	select {
+	case <-clockCalled:
+		_ = lockTx.Rollback()
+		t.Fatal("acquisition sampled clock before obtaining SQLite write lock")
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err := lockTx.Rollback(); err != nil { t.Fatal(err) }
+	select {
+	case err := <-result:
+		if err != nil { t.Fatal(err) }
+	case <-time.After(5 * time.Second):
+		t.Fatal("acquisition did not finish after releasing SQLite write lock")
+	}
+}
+
+func TestTenantHealthSchedulerLeaseRenewalSamplesClockAfterSQLiteWriteLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lease-renew-clock-lock.db")
+	first, err := Open(context.Background(), path, testKey)
+	if err != nil { t.Fatal(err) }
+	defer first.Close()
+	second, err := Open(context.Background(), path, testKey)
+	if err != nil { t.Fatal(err) }
+	defer second.Close()
+
+	start := time.Now().UTC().Truncate(time.Second)
+	acquired, _, err := first.acquireTenantHealthSchedulerLeaseAt(context.Background(), "renew-owner", start, 30*time.Second)
+	if err != nil || !acquired { t.Fatalf("seed lease: acquired=%v err=%v", acquired, err) }
+	lockTx, err := second.db.BeginTx(context.Background(), nil)
+	if err != nil { t.Fatal(err) }
+	if _, err := lockTx.ExecContext(context.Background(), "UPDATE admin_tenant_health_scheduler_lease SET updated_at = updated_at WHERE id = 1"); err != nil {
+		_ = lockTx.Rollback()
+		t.Fatal(err)
+	}
+	clockCalled := make(chan struct{}, 1)
+	result := make(chan error, 1)
+	go func() {
+		renewed, err := first.renewTenantHealthSchedulerLeaseWithClock(context.Background(), "renew-owner", func() time.Time {
+			clockCalled <- struct{}{}
+			return start.Add(time.Second)
+		}, 30*time.Second)
+		if err != nil { result <- err; return }
+		if !renewed { result <- fmt.Errorf("renewal returned false after lock release"); return }
+		result <- nil
+	}()
+	select {
+	case <-clockCalled:
+		_ = lockTx.Rollback()
+		t.Fatal("renewal sampled clock before obtaining SQLite write lock")
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err := lockTx.Rollback(); err != nil { t.Fatal(err) }
+	select {
+	case err := <-result:
+		if err != nil { t.Fatal(err) }
+	case <-time.After(5 * time.Second):
+		t.Fatal("renewal did not finish after releasing SQLite write lock")
 	}
 }
