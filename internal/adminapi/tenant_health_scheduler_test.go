@@ -474,6 +474,23 @@ func TestTenantHealthSchedulerRecoversAfterTransientLeaseAcquisitionFailure(t *t
 		scheduler.Close()
 		t.Fatalf("scheduler did not recover on the next round; attempts=%d snapshot=%+v", attempts.Load(), scheduler.Snapshot())
 	}
+	// The callback signal only means the second run entered its success path.
+	// Wait for the scheduler loop to publish the completed-round counters before
+	// closing it, otherwise Close can cancel the round between callback return
+	// and finishRound and make this test timing-dependent.
+	deadline := time.After(2 * time.Second)
+	for {
+		snapshot := scheduler.Snapshot()
+		if snapshot.TotalRuns == 2 && snapshot.FailureCount == 1 && snapshot.SuccessCount == 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			scheduler.Close()
+			t.Fatalf("scheduler did not publish successful recovery before shutdown: %+v", scheduler.Snapshot())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 	scheduler.Close()
 
 	snapshot := scheduler.Snapshot()
