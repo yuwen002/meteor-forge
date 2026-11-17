@@ -18,20 +18,20 @@ func TestTenantHealthSchedulerLeaseCoordinatesIndependentStoreHandles(t *testing
 	defer second.Close()
 	now := time.Now().UTC()
 	ttl := 30 * time.Second
-	ok, generation, err := first.AcquireTenantHealthSchedulerLease(context.Background(), "process-a", now, ttl)
+	ok, generation, err := first.acquireTenantHealthSchedulerLeaseAt(context.Background(), "process-a", now, ttl)
 	if err != nil || !ok || generation != 1 { t.Fatalf("first acquire: ok=%v generation=%d err=%v", ok, generation, err) }
-	ok, _, err = second.AcquireTenantHealthSchedulerLease(context.Background(), "process-b", now.Add(time.Second), ttl)
+	ok, _, err = second.acquireTenantHealthSchedulerLeaseAt(context.Background(), "process-b", now.Add(time.Second), ttl)
 	if err != nil || ok { t.Fatalf("second process acquired active lease: ok=%v err=%v", ok, err) }
 	renewed, err := first.RenewTenantHealthSchedulerLease(context.Background(), "process-a", now.Add(10*time.Second), ttl)
 	if err != nil || !renewed { t.Fatalf("owner renewal: renewed=%v err=%v", renewed, err) }
-	ok, _, err = second.AcquireTenantHealthSchedulerLease(context.Background(), "process-b", now.Add(20*time.Second), ttl)
+	ok, _, err = second.acquireTenantHealthSchedulerLeaseAt(context.Background(), "process-b", now.Add(20*time.Second), ttl)
 	if err != nil || ok { t.Fatalf("second process acquired renewed lease: ok=%v err=%v", ok, err) }
-	ok, generation, err = second.AcquireTenantHealthSchedulerLease(context.Background(), "process-b", now.Add(41*time.Second), ttl)
+	ok, generation, err = second.acquireTenantHealthSchedulerLeaseAt(context.Background(), "process-b", now.Add(41*time.Second), ttl)
 	if err != nil || !ok || generation != 2 { t.Fatalf("expired lease takeover: ok=%v generation=%d err=%v", ok, generation, err) }
 	renewed, err = first.RenewTenantHealthSchedulerLease(context.Background(), "process-a", now.Add(42*time.Second), ttl)
 	if err != nil || renewed { t.Fatalf("stale owner renewed replacement lease: renewed=%v err=%v", renewed, err) }
 	if err := first.ReleaseTenantHealthSchedulerLease(context.Background(), "process-a"); err != nil { t.Fatal(err) }
-	ok, _, err = first.AcquireTenantHealthSchedulerLease(context.Background(), "process-a", now.Add(43*time.Second), ttl)
+	ok, _, err = first.acquireTenantHealthSchedulerLeaseAt(context.Background(), "process-a", now.Add(43*time.Second), ttl)
 	if err != nil || ok { t.Fatalf("stale owner release cleared replacement lease: ok=%v err=%v", ok, err) }
 }
 
@@ -44,7 +44,7 @@ func TestTenantHealthSchedulerLeaseConcurrentAcquisitionHasSingleWinner(t *testi
 		stores[i] = store
 		defer store.Close()
 	}
-	now := time.Date(2026, 11, 11, 6, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	winners := 0
@@ -53,7 +53,7 @@ func TestTenantHealthSchedulerLeaseConcurrentAcquisitionHasSingleWinner(t *testi
 		wg.Add(1)
 		go func(i int, store *Store) {
 			defer wg.Done()
-			ok, _, err := store.AcquireTenantHealthSchedulerLease(context.Background(), string(rune('a'+i)), now, 30*time.Second)
+			ok, _, err := store.acquireTenantHealthSchedulerLeaseAt(context.Background(), string(rune('a'+i)), now, 30*time.Second)
 			if err != nil { errs <- err; return }
 			if ok { mu.Lock(); winners++; mu.Unlock() }
 		}(i, store)
@@ -86,9 +86,9 @@ func TestTenantHealthSchedulerLeaseFencesStaleResultWrites(t *testing.T) {
 	defer second.Close()
 	tenant := newTenantForHealthTest(t, first, "lease-fence")
 	now := time.Now().UTC()
-	ok, oldGeneration, err := first.AcquireTenantHealthSchedulerLease(context.Background(), "old-owner", now.Add(-31*time.Second), 30*time.Second)
+	ok, oldGeneration, err := first.acquireTenantHealthSchedulerLeaseAt(context.Background(), "old-owner", now.Add(-31*time.Second), 30*time.Second)
 	if err != nil || !ok { t.Fatalf("old owner acquire: ok=%v err=%v", ok, err) }
-	ok, newGeneration, err := second.AcquireTenantHealthSchedulerLease(context.Background(), "new-owner", now, 30*time.Second)
+	ok, newGeneration, err := second.acquireTenantHealthSchedulerLeaseAt(context.Background(), "new-owner", now, 30*time.Second)
 	if err != nil || !ok || newGeneration <= oldGeneration { t.Fatalf("new owner takeover: ok=%v generation=%d err=%v", ok, newGeneration, err) }
 	item := TenantConnectionHealth{TenantID: tenant.ID, Status: "healthy", CheckedAt: now, Message: "connection successful"}
 	err = first.RecordTenantConnectionHealthWithSchedulerLease(context.Background(), item, "old-owner", oldGeneration)
@@ -199,13 +199,13 @@ func TestTenantHealthSchedulerLeaseExpiryBoundary(t *testing.T) {
 
 	start := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
 	const ttl = 5 * time.Second
-	acquired, generation, err := store.AcquireTenantHealthSchedulerLease(context.Background(), "boundary-owner-a", start, ttl)
+	acquired, generation, err := store.acquireTenantHealthSchedulerLeaseAt(context.Background(), "boundary-owner-a", start, ttl)
 	if err != nil || !acquired || generation != 1 {
 		t.Fatalf("initial acquisition: acquired=%v generation=%d err=%v", acquired, generation, err)
 	}
 
 	beforeExpiry := start.Add(ttl - time.Nanosecond)
-	acquired, _, err = store.AcquireTenantHealthSchedulerLease(context.Background(), "boundary-owner-b", beforeExpiry, ttl)
+	acquired, _, err = store.acquireTenantHealthSchedulerLeaseAt(context.Background(), "boundary-owner-b", beforeExpiry, ttl)
 	if err != nil || acquired {
 		t.Fatalf("takeover immediately before expiry: acquired=%v err=%v, want not acquired", acquired, err)
 	}
@@ -219,7 +219,7 @@ func TestTenantHealthSchedulerLeaseExpiryBoundary(t *testing.T) {
 		t.Fatalf("renew exactly at renewed expiry: renewed=%v err=%v, want expired", renewed, err)
 	}
 	exactExpiry := beforeExpiry.Add(ttl)
-	acquired, generation, err = store.AcquireTenantHealthSchedulerLease(context.Background(), "boundary-owner-b", exactExpiry, ttl)
+	acquired, generation, err = store.acquireTenantHealthSchedulerLeaseAt(context.Background(), "boundary-owner-b", exactExpiry, ttl)
 	if err != nil || !acquired || generation != 2 {
 		t.Fatalf("takeover exactly at expiry: acquired=%v generation=%d err=%v, want generation 2", acquired, generation, err)
 	}
@@ -264,3 +264,47 @@ func TestTenantHealthSchedulerLeaseRenewalUsesLiveTimeInsteadOfStaleCallerTime(t
 	}
 }
 
+
+func TestTenantHealthSchedulerLeaseAcquisitionUsesLiveTimeInsteadOfStaleCallerTime(t *testing.T) {
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "stale-acquisition.db"), testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	startedAt := time.Now().UTC()
+	const ttl = 5 * time.Second
+	acquired, generation, err := store.AcquireTenantHealthSchedulerLease(
+		context.Background(), "stale-acquisition-owner", startedAt, ttl,
+	)
+	if err != nil || !acquired || generation != 1 {
+		t.Fatalf("initial acquisition: acquired=%v generation=%d err=%v", acquired, generation, err)
+	}
+
+	expiredAt := time.Now().UTC().Add(-time.Second)
+	if _, err := store.db.ExecContext(context.Background(), `UPDATE admin_tenant_health_scheduler_lease
+		SET lease_until = ? WHERE id = 1 AND owner_id = ? AND generation = ?`,
+		expiredAt.UnixNano(), "stale-acquisition-owner", generation); err != nil {
+		t.Fatalf("expire lease before stale acquisition: %v", err)
+	}
+
+	acquired, _, err = store.AcquireTenantHealthSchedulerLease(
+		context.Background(), "new-acquisition-owner", startedAt, ttl,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acquired {
+		t.Fatal("acquisition with a stale caller timestamp took over using an expired logical time")
+	}
+	var ownerID string
+	var leaseUntil int64
+	if err := store.db.QueryRowContext(context.Background(), `SELECT owner_id, lease_until
+		FROM admin_tenant_health_scheduler_lease WHERE id = 1`).Scan(&ownerID, &leaseUntil); err != nil {
+		t.Fatal(err)
+	}
+	if ownerID != "stale-acquisition-owner" || leaseUntil != expiredAt.UnixNano() {
+		t.Fatalf("stale acquisition changed lease: owner=%q lease_until=%d, want owner=%q lease_until=%d",
+			ownerID, leaseUntil, "stale-acquisition-owner", expiredAt.UnixNano())
+	}
+}

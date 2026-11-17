@@ -14,18 +14,28 @@ var (
 )
 
 // AcquireTenantHealthSchedulerLease atomically acquires an expired lease or
-// renews the lease already owned by ownerID. Lease deadlines use Unix nanoseconds to preserve numeric ordering.
+// renews the lease already owned by ownerID. Lease deadlines use Unix nanoseconds
+// to preserve numeric ordering; validity is based on live time at execution.
 func (s *Store) AcquireTenantHealthSchedulerLease(ctx context.Context, ownerID string, now time.Time, ttl time.Duration) (bool, int64, error) {
 	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || now.IsZero() || ttl < 5*time.Second || ttl > 5*time.Minute {
 		return false, 0, ErrTenantHealthSchedulerLeaseInvalid
 	}
-	now = now.UTC()
+	return s.acquireTenantHealthSchedulerLeaseAt(ctx, ownerID, time.Now().UTC(), ttl)
+}
+
+// acquireTenantHealthSchedulerLeaseAt anchors expiry comparison and the new
+// deadline to one timestamp. It supports deterministic expiry-boundary tests.
+func (s *Store) acquireTenantHealthSchedulerLeaseAt(ctx context.Context, ownerID string, checkedAt time.Time, ttl time.Duration) (bool, int64, error) {
+	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || checkedAt.IsZero() || ttl < 5*time.Second || ttl > 5*time.Minute {
+		return false, 0, ErrTenantHealthSchedulerLeaseInvalid
+	}
+	checkedAt = checkedAt.UTC()
 	result, err := s.db.ExecContext(ctx, `UPDATE admin_tenant_health_scheduler_lease
 		SET generation = generation + CASE WHEN owner_id = ? THEN 0 ELSE 1 END,
 		    owner_id = ?, lease_until = ?, updated_at = ?
 		WHERE id = 1 AND (owner_id = ? OR lease_until <= ? OR owner_id = '')`,
-		ownerID, ownerID, now.Add(ttl).UnixNano(), formatTenantHealthTime(now),
-		ownerID, now.UnixNano())
+		ownerID, ownerID, checkedAt.Add(ttl).UnixNano(), formatTenantHealthTime(checkedAt),
+		ownerID, checkedAt.UnixNano())
 	if err != nil { return false, 0, fmt.Errorf("acquire tenant health scheduler lease: %w", err) }
 	affected, err := result.RowsAffected()
 	if err != nil { return false, 0, fmt.Errorf("read tenant health scheduler lease result: %w", err) }
