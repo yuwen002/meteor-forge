@@ -30,7 +30,14 @@ func TestTenantHealthSchedulerLeaseCoordinatesIndependentStoreHandles(t *testing
 	if err != nil || !ok || generation != 2 { t.Fatalf("expired lease takeover: ok=%v generation=%d err=%v", ok, generation, err) }
 	renewed, err = first.RenewTenantHealthSchedulerLease(context.Background(), "process-a", now.Add(42*time.Second), ttl)
 	if err != nil || renewed { t.Fatalf("stale owner renewed replacement lease: renewed=%v err=%v", renewed, err) }
-	if err := first.ReleaseTenantHealthSchedulerLease(context.Background(), "process-a"); err != nil { t.Fatal(err) }
+	if err := first.ReleaseTenantHealthSchedulerLeaseWithGeneration(context.Background(), "process-a", 1); err != nil { t.Fatal(err) }
+	if err := second.ReleaseTenantHealthSchedulerLeaseWithGeneration(context.Background(), "process-b", 1); err != nil { t.Fatal(err) }
+	var currentOwner string
+	var currentGeneration int64
+	if err := second.db.QueryRowContext(context.Background(), "SELECT owner_id, generation FROM admin_tenant_health_scheduler_lease WHERE id = 1").Scan(&currentOwner, &currentGeneration); err != nil { t.Fatal(err) }
+	if currentOwner != "process-b" || currentGeneration != 2 {
+		t.Fatalf("stale generation release changed replacement lease: owner=%q generation=%d", currentOwner, currentGeneration)
+	}
 	ok, _, err = first.acquireTenantHealthSchedulerLeaseAt(context.Background(), "process-a", now.Add(43*time.Second), ttl)
 	if err != nil || ok { t.Fatalf("stale owner release cleared replacement lease: ok=%v err=%v", ok, err) }
 }
