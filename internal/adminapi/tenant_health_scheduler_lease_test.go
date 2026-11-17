@@ -264,7 +264,6 @@ func TestTenantHealthSchedulerLeaseRepeatedTakeoversKeepGenerationMonotonic(t *t
 		defer store.Close()
 	}
 
-	base := time.Now().UTC().Truncate(time.Second)
 	const ttl = 5 * time.Second
 	const takeovers = 12
 	previousOwner := ""
