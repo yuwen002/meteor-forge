@@ -129,9 +129,12 @@ func (s *Store) FinishTenantHealthSchedulerRun(ctx context.Context, id int64, fi
 	return nil
 }
 
-// RecoverStaleTenantHealthSchedulerRuns marks older unfinished runs interrupted and records elapsed time.
-func (s *Store) RecoverStaleTenantHealthSchedulerRuns(ctx context.Context, currentGeneration int64, recoveredAt time.Time) (int64, error) {
-	if currentGeneration <= 0 || recoveredAt.IsZero() {
+// RecoverStaleTenantHealthSchedulerRunsWithLease marks older unfinished runs interrupted
+// only while the caller still owns the current unexpired lease. The no-op update
+// obtains SQLite's write lock before validating the lease, keeping validation and
+// recovery serialized against lease takeover.
+func (s *Store) RecoverStaleTenantHealthSchedulerRunsWithLease(ctx context.Context, ownerID string, currentGeneration int64, recoveredAt time.Time) (int64, error) {
+	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || currentGeneration <= 0 || recoveredAt.IsZero() {
 		return 0, ErrTenantHealthSchedulerLeaseInvalid
 	}
 	recoveredAt = recoveredAt.UTC()
@@ -140,6 +143,19 @@ func (s *Store) RecoverStaleTenantHealthSchedulerRuns(ctx context.Context, curre
 		return 0, fmt.Errorf("begin stale tenant health scheduler run recovery: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, "UPDATE admin_tenant_health_scheduler_lease SET updated_at = updated_at WHERE id = 1"); err != nil {
+		return 0, fmt.Errorf("lock tenant health scheduler lease for recovery: %w", err)
+	}
+	var valid int
+	err = tx.QueryRowContext(ctx, `SELECT 1 FROM admin_tenant_health_scheduler_lease
+		WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?`,
+		ownerID, currentGeneration, recoveredAt.UnixNano()).Scan(&valid)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrTenantHealthSchedulerLeaseLost
+	}
+	if err != nil {
+		return 0, fmt.Errorf("verify tenant health scheduler lease for recovery: %w", err)
+	}
 
 	type staleRun struct {
 		id        int64
