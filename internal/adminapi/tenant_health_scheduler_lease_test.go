@@ -217,10 +217,13 @@ func TestRunWithTenantHealthSchedulerLeaseFencesOldOwnerAfterTakeover(t *testing
 		t.Fatal("old process did not acquire lease")
 	}
 
-	// Advance only the store operation's logical time. The old process's real
-	// heartbeat will observe that its owner ID has been replaced.
-	future := time.Now().UTC().Add(6 * time.Second)
-	acquired, newGeneration, err := newStore.AcquireTenantHealthSchedulerLease(context.Background(), "new-process", future, 5*time.Second)
+	// Release the old lease to simulate a process handoff. The old process's
+	// heartbeat will observe that ownership has been cleared before takeover.
+	if err := oldStore.ReleaseTenantHealthSchedulerLease(context.Background(), "old-process"); err != nil {
+		t.Fatalf("release old lease for takeover: %v", err)
+	}
+	takeoverAt := time.Now().UTC()
+	acquired, newGeneration, err := newStore.AcquireTenantHealthSchedulerLease(context.Background(), "new-process", takeoverAt, 5*time.Second)
 	if err != nil || !acquired || newGeneration != 2 {
 		t.Fatalf("replacement process takeover: acquired=%v generation=%d err=%v", acquired, newGeneration, err)
 	}
@@ -238,7 +241,7 @@ func TestRunWithTenantHealthSchedulerLeaseFencesOldOwnerAfterTakeover(t *testing
 		t.Fatal("old process did not finish after lease loss")
 	}
 
-	info, err := newStore.GetTenantHealthSchedulerLeaseInfo(context.Background(), "new-process", future.Add(time.Second))
+	info, err := newStore.GetTenantHealthSchedulerLeaseInfo(context.Background(), "new-process", takeoverAt.Add(time.Second))
 	if err != nil { t.Fatal(err) }
 	if info.Status != "held_by_this_instance" || info.Generation != newGeneration {
 		t.Fatalf("old owner's deferred release damaged replacement lease: %+v", info)
@@ -271,7 +274,7 @@ func TestTenantHealthSchedulerLeaseRepeatedTakeoversKeepGenerationMonotonic(t *t
 
 	for i := 0; i < takeovers; i++ {
 		currentOwner = fmt.Sprintf("recovered-instance-%02d", i)
-		currentNow = base.Add(time.Duration(i) * 6 * time.Second)
+		currentNow = time.Now().UTC()
 		store := stores[i%len(stores)]
 		acquired, generation, err := store.AcquireTenantHealthSchedulerLease(
 			context.Background(), currentOwner, currentNow, ttl,
@@ -307,6 +310,9 @@ func TestTenantHealthSchedulerLeaseRepeatedTakeoversKeepGenerationMonotonic(t *t
 		}
 		if info.Status != "held_by_this_instance" || info.Generation != currentGeneration {
 			t.Fatalf("takeover %d current lease info=%+v", i+1, info)
+		}
+		if err := store.ReleaseTenantHealthSchedulerLease(context.Background(), currentOwner); err != nil {
+			t.Fatalf("release simulated process %q: %v", currentOwner, err)
 		}
 		previousOwner = currentOwner
 	}
