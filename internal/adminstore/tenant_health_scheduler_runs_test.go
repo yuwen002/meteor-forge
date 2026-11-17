@@ -61,7 +61,13 @@ func TestTenantHealthSchedulerRunRecoveryAndValidation(t *testing.T) {
 	if err != nil || !acquired { t.Fatalf("takeover lease acquired=%v err=%v", acquired, err) }
 	currentID, err := store.StartTenantHealthSchedulerRunWithLease(ctx, "recovery-owner-two", currentGeneration, takeoverAt)
 	if err != nil { t.Fatal(err) }
-	recovered, err := store.RecoverStaleTenantHealthSchedulerRuns(ctx, currentGeneration, takeoverAt.Add(time.Second))
+	if _, err := store.RecoverStaleTenantHealthSchedulerRunsWithLease(ctx, "recovery-owner-one", currentGeneration, takeoverAt.Add(time.Second)); !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
+		t.Fatalf("stale owner recovery error=%v, want lease lost", err)
+	}
+	if _, err := store.RecoverStaleTenantHealthSchedulerRunsWithLease(ctx, "recovery-owner-two", currentGeneration+1, takeoverAt.Add(time.Second)); !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
+		t.Fatalf("wrong generation recovery error=%v, want lease lost", err)
+	}
+	recovered, err := store.RecoverStaleTenantHealthSchedulerRunsWithLease(ctx, "recovery-owner-two", currentGeneration, takeoverAt.Add(time.Second))
 	if err != nil { t.Fatal(err) }
 	if recovered != 1 { t.Fatalf("recovered=%d, want 1", recovered) }
 	page, err := store.ListTenantHealthSchedulerRuns(ctx, TenantHealthSchedulerRunFilter{})
