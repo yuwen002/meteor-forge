@@ -219,7 +219,7 @@ func TestRunWithTenantHealthSchedulerLeaseFencesOldOwnerAfterTakeover(t *testing
 
 	// Release the old lease to simulate a process handoff. The old process's
 	// heartbeat will observe that ownership has been cleared before takeover.
-	if err := oldStore.ReleaseTenantHealthSchedulerLease(context.Background(), "old-process"); err != nil {
+	if err := oldStore.ReleaseTenantHealthSchedulerLeaseWithGeneration(context.Background(), "old-process", 1); err != nil {
 		t.Fatalf("release old lease for takeover: %v", err)
 	}
 	takeoverAt := time.Now().UTC()
