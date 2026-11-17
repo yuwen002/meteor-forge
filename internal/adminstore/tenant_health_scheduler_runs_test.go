@@ -12,12 +12,12 @@ func TestTenantHealthSchedulerRunLifecycleAndPaging(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 11, 13, 1, 0, 0, 0, time.UTC)
 
-	acquired, firstGeneration, err := store.AcquireTenantHealthSchedulerLease(ctx, "run-owner-one", base, 5*time.Second)
+	acquired, firstGeneration, err := store.acquireTenantHealthSchedulerLeaseAt(ctx, "run-owner-one", base, 5*time.Second)
 	if err != nil || !acquired { t.Fatalf("first lease acquired=%v err=%v", acquired, err) }
 	firstID, err := store.StartTenantHealthSchedulerRunWithLease(ctx, "run-owner-one", firstGeneration, base)
 	if err != nil { t.Fatal(err) }
 	secondStartedAt := base.Add(time.Minute)
-	acquired, secondGeneration, err := store.AcquireTenantHealthSchedulerLease(ctx, "run-owner-two", secondStartedAt, 5*time.Second)
+	acquired, secondGeneration, err := store.acquireTenantHealthSchedulerLeaseAt(ctx, "run-owner-two", secondStartedAt, 5*time.Second)
 	if err != nil || !acquired { t.Fatalf("second lease acquired=%v err=%v", acquired, err) }
 	secondID, err := store.StartTenantHealthSchedulerRunWithLease(ctx, "run-owner-two", secondGeneration, secondStartedAt)
 	if err != nil { t.Fatal(err) }
@@ -52,12 +52,12 @@ func TestTenantHealthSchedulerRunRecoveryAndValidation(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 	base := time.Date(2026, 11, 13, 2, 0, 0, 0, time.UTC)
-	acquired, oldGeneration, err := store.AcquireTenantHealthSchedulerLease(ctx, "recovery-owner-one", base, 5*time.Second)
+	acquired, oldGeneration, err := store.acquireTenantHealthSchedulerLeaseAt(ctx, "recovery-owner-one", base, 5*time.Second)
 	if err != nil || !acquired { t.Fatalf("old lease acquired=%v err=%v", acquired, err) }
 	oldID, err := store.StartTenantHealthSchedulerRunWithLease(ctx, "recovery-owner-one", oldGeneration, base)
 	if err != nil { t.Fatal(err) }
 	takeoverAt := base.Add(5*time.Second)
-	acquired, currentGeneration, err := store.AcquireTenantHealthSchedulerLease(ctx, "recovery-owner-two", takeoverAt, 5*time.Second)
+	acquired, currentGeneration, err := store.acquireTenantHealthSchedulerLeaseAt(ctx, "recovery-owner-two", takeoverAt, 5*time.Second)
 	if err != nil || !acquired { t.Fatalf("takeover lease acquired=%v err=%v", acquired, err) }
 	currentID, err := store.StartTenantHealthSchedulerRunWithLease(ctx, "recovery-owner-two", currentGeneration, takeoverAt)
 	if err != nil { t.Fatal(err) }
@@ -92,7 +92,7 @@ func TestTenantHealthSchedulerRunStartRequiresCurrentLease(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 11, 13, 3, 0, 0, 0, time.UTC)
 
-	acquired, generation, err := store.AcquireTenantHealthSchedulerLease(ctx, "owner-one", base, 5*time.Second)
+	acquired, generation, err := store.acquireTenantHealthSchedulerLeaseAt(ctx, "owner-one", base, 5*time.Second)
 	if err != nil || !acquired || generation != 1 {
 		t.Fatalf("first lease acquired=%v generation=%d err=%v", acquired, generation, err)
 	}
@@ -106,7 +106,7 @@ func TestTenantHealthSchedulerRunStartRequiresCurrentLease(t *testing.T) {
 		t.Fatalf("expired lease start error=%v", err)
 	}
 
-	acquired, nextGeneration, err := store.AcquireTenantHealthSchedulerLease(ctx, "owner-two", base.Add(5*time.Second), 5*time.Second)
+	acquired, nextGeneration, err := store.acquireTenantHealthSchedulerLeaseAt(ctx, "owner-two", base.Add(5*time.Second), 5*time.Second)
 	if err != nil || !acquired || nextGeneration != generation+1 {
 		t.Fatalf("takeover acquired=%v generation=%d err=%v", acquired, nextGeneration, err)
 	}
