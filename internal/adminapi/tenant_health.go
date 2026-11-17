@@ -330,7 +330,7 @@ func (s *Server) runScheduledTenantHealthChecks(ctx context.Context, settings ad
 			return errors.New("scheduled health run is missing its lease context")
 		}
 		now := time.Now().UTC()
-		if _, err := s.authStore.RecoverStaleTenantHealthSchedulerRuns(leaseCtx, lease.generation, now); err != nil {
+		if _, err := s.authStore.RecoverStaleTenantHealthSchedulerRunsWithLease(leaseCtx, lease.ownerID, lease.generation, now); err != nil {
 			return fmt.Errorf("recover stale scheduled health runs: %w", err)
 		}
 		id, err := s.authStore.StartTenantHealthSchedulerRunWithLease(leaseCtx, lease.ownerID, lease.generation, now)
