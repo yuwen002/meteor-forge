@@ -381,7 +381,7 @@ func TestTenantHealthScheduledResultRejectsStaleLeaseGeneration(t *testing.T) {
 	tenant := newTenantForHealthTest(t, store, "stale-scheduler")
 
 	now := time.Now().UTC()
-	oldAcquired, oldGeneration, err := store.AcquireTenantHealthSchedulerLease(
+	oldAcquired, oldGeneration, err := store.acquireTenantHealthSchedulerLeaseAt(
 		context.Background(), "old-scheduler", now, 5*time.Minute,
 	)
 	if err != nil || !oldAcquired {
@@ -389,7 +389,7 @@ func TestTenantHealthScheduledResultRejectsStaleLeaseGeneration(t *testing.T) {
 	}
 
 	// Advance the lease clock beyond expiry so a replacement takes generation 2.
-	newAcquired, newGeneration, err := store.AcquireTenantHealthSchedulerLease(
+	newAcquired, newGeneration, err := store.acquireTenantHealthSchedulerLeaseAt(
 		context.Background(), "new-scheduler", now.Add(6*time.Minute), 5*time.Minute,
 	)
 	if err != nil || !newAcquired {
