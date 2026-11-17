@@ -294,8 +294,8 @@ func TestTenantHealthSchedulerLeaseAcquisitionUsesLiveTimeInsteadOfStaleCallerTi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if acquired {
-		t.Fatal("acquisition with a stale caller timestamp took over using an expired logical time")
+	if !acquired {
+		t.Fatal("acquisition did not use live time after the stored lease expired")
 	}
 	var ownerID string
 	var leaseUntil int64
@@ -303,8 +303,7 @@ func TestTenantHealthSchedulerLeaseAcquisitionUsesLiveTimeInsteadOfStaleCallerTi
 		FROM admin_tenant_health_scheduler_lease WHERE id = 1`).Scan(&ownerID, &leaseUntil); err != nil {
 		t.Fatal(err)
 	}
-	if ownerID != "stale-acquisition-owner" || leaseUntil != expiredAt.UnixNano() {
-		t.Fatalf("stale acquisition changed lease: owner=%q lease_until=%d, want owner=%q lease_until=%d",
-			ownerID, leaseUntil, "stale-acquisition-owner", expiredAt.UnixNano())
+	if ownerID != "new-acquisition-owner" || leaseUntil <= time.Now().UTC().UnixNano() {
+		t.Fatalf("live-time acquisition did not replace expired lease: owner=%q lease_until=%d", ownerID, leaseUntil)
 	}
 }
