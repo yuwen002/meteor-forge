@@ -310,8 +310,12 @@ func TestTenantHealthSchedulerLeaseRepeatedTakeoversKeepGenerationMonotonic(t *t
 		if info.Status != "held_by_this_instance" || info.Generation != currentGeneration {
 			t.Fatalf("takeover %d current lease info=%+v", i+1, info)
 		}
-		if err := store.ReleaseTenantHealthSchedulerLease(context.Background(), currentOwner); err != nil {
-			t.Fatalf("release simulated process %q: %v", currentOwner, err)
+		// Keep the final simulated owner active so the post-loop assertion
+		// verifies the current lease rather than an intentionally released one.
+		if i < takeovers-1 {
+			if err := store.ReleaseTenantHealthSchedulerLease(context.Background(), currentOwner); err != nil {
+				t.Fatalf("release simulated process %q: %v", currentOwner, err)
+			}
 		}
 		previousOwner = currentOwner
 	}
