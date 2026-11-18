@@ -125,6 +125,8 @@ func (s *Store) finishTenantHealthSchedulerRun(ctx context.Context, ownerID stri
 		WHERE id = ? AND status = 'running'`
 	args := []any{formatTenantHealthTime(finishedAt), durationMS, status, errorCode, message, id}
 	if ownerID != "" {
+		query += " AND lease_generation = ?"
+		args = append(args, generation)
 		query += ` AND EXISTS (
 			SELECT 1 FROM admin_tenant_health_scheduler_lease
 			WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?
@@ -152,11 +154,14 @@ func (s *Store) finishTenantHealthSchedulerRun(ctx context.Context, ownerID stri
 				return fmt.Errorf("verify tenant health scheduler lease for run finalization: %w", err)
 			}
 		}
-		var exists int
-		if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM admin_tenant_health_scheduler_runs WHERE id = ?", id).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+		var runGeneration int64
+		if err := s.db.QueryRowContext(ctx, "SELECT lease_generation FROM admin_tenant_health_scheduler_runs WHERE id = ?", id).Scan(&runGeneration); errors.Is(err, sql.ErrNoRows) {
 			return ErrTenantHealthSchedulerRunNotFound
 		} else if err != nil {
 			return fmt.Errorf("check tenant health scheduler run: %w", err)
+		}
+		if ownerID != "" && runGeneration != generation {
+			return ErrTenantHealthSchedulerLeaseLost
 		}
 		return ErrTenantHealthSchedulerRunFinalized
 	}
