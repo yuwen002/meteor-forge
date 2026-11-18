@@ -484,4 +484,17 @@ func TestTenantHealthSchedulerLeaseGenerationExhaustionDoesNotOverflow(t *testin
 	if ownerID != "expired-owner" || storedGeneration != maxGeneration || leaseUntil != start.Add(-time.Second).UnixNano() {
 		t.Fatalf("exhausted lease was modified: owner=%q generation=%d lease_until=%d", ownerID, storedGeneration, leaseUntil)
 	}
+
+	// An active lease at the maximum generation may still be renewed by its
+	// current owner because that operation does not need a new fencing token.
+	if _, err := store.db.ExecContext(context.Background(), `UPDATE admin_tenant_health_scheduler_lease
+		SET lease_until = ? WHERE id = 1`, start.Add(time.Minute).UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+	acquired, generation, err = store.acquireTenantHealthSchedulerLeaseAt(
+		context.Background(), "expired-owner", start, 5*time.Second,
+	)
+	if err != nil || !acquired || generation != maxGeneration {
+		t.Fatalf("active maximum-generation renewal=(%v, %d, %v), want unchanged generation", acquired, generation, err)
+	}
 }
