@@ -383,7 +383,7 @@ func TestTenantHealthSchedulerLeaseRenewalSamplesClockAfterSQLiteWriteLock(t *te
 	clockCalled := make(chan struct{}, 1)
 	result := make(chan error, 1)
 	go func() {
-		renewed, err := first.renewTenantHealthSchedulerLeaseWithClock(context.Background(), "renew-owner", func() time.Time {
+		renewed, err := first.renewTenantHealthSchedulerLeaseWithClock(context.Background(), "renew-owner", 0, func() time.Time {
 			clockCalled <- struct{}{}
 			return start.Add(time.Second)
 		}, 30*time.Second)
@@ -422,6 +422,21 @@ func TestTenantHealthSchedulerLeaseReusedOwnerIDAdvancesGeneration(t *testing.T)
 	acquired, newGeneration, err := store.acquireTenantHealthSchedulerLeaseAt(context.Background(), "reused-process-id", start.Add(ttl), ttl)
 	if err != nil || !acquired || newGeneration != oldGeneration+1 {
 		t.Fatalf("same owner takeover after expiry: acquired=%v generation=%d err=%v, want generation %d", acquired, newGeneration, err, oldGeneration+1)
+	}
+
+	// The previous process may still have the same owner identifier. Its old
+	// fencing generation must not be able to extend the replacement lease.
+	renewed, err := store.renewTenantHealthSchedulerLeaseWithGenerationAt(
+		context.Background(), "reused-process-id", oldGeneration, start.Add(ttl), ttl,
+	)
+	if err != nil || renewed {
+		t.Fatalf("stale generation renewed reused owner lease: renewed=%v err=%v", renewed, err)
+	}
+	renewed, err = store.renewTenantHealthSchedulerLeaseWithGenerationAt(
+		context.Background(), "reused-process-id", newGeneration, start.Add(ttl), ttl,
+	)
+	if err != nil || !renewed {
+		t.Fatalf("current generation could not renew lease: renewed=%v err=%v", renewed, err)
 	}
 
 	if err := store.ReleaseTenantHealthSchedulerLeaseWithGeneration(context.Background(), "reused-process-id", oldGeneration); err != nil {
