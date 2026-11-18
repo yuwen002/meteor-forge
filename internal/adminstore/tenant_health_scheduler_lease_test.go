@@ -405,3 +405,35 @@ func TestTenantHealthSchedulerLeaseRenewalSamplesClockAfterSQLiteWriteLock(t *te
 		t.Fatal("renewal did not finish after releasing SQLite write lock")
 	}
 }
+
+
+func TestTenantHealthSchedulerLeaseReusedOwnerIDAdvancesGeneration(t *testing.T) {
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "reused-owner.db"), testKey)
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+
+	start := time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC)
+	const ttl = 5 * time.Second
+	acquired, oldGeneration, err := store.acquireTenantHealthSchedulerLeaseAt(context.Background(), "reused-process-id", start, ttl)
+	if err != nil || !acquired || oldGeneration != 1 {
+		t.Fatalf("initial acquisition: acquired=%v generation=%d err=%v", acquired, oldGeneration, err)
+	}
+
+	acquired, newGeneration, err := store.acquireTenantHealthSchedulerLeaseAt(context.Background(), "reused-process-id", start.Add(ttl), ttl)
+	if err != nil || !acquired || newGeneration != oldGeneration+1 {
+		t.Fatalf("same owner takeover after expiry: acquired=%v generation=%d err=%v, want generation %d", acquired, newGeneration, err, oldGeneration+1)
+	}
+
+	if err := store.ReleaseTenantHealthSchedulerLeaseWithGeneration(context.Background(), "reused-process-id", oldGeneration); err != nil {
+		t.Fatal(err)
+	}
+	var ownerID string
+	var generation int64
+	var leaseUntil int64
+	if err := store.db.QueryRowContext(context.Background(), "SELECT owner_id, generation, lease_until FROM admin_tenant_health_scheduler_lease WHERE id = 1").Scan(&ownerID, &generation, &leaseUntil); err != nil {
+		t.Fatal(err)
+	}
+	if ownerID != "reused-process-id" || generation != newGeneration || leaseUntil <= start.Add(ttl).UnixNano() {
+		t.Fatalf("stale generation release changed renewed lease: owner=%q generation=%d lease_until=%d", ownerID, generation, leaseUntil)
+	}
+}
