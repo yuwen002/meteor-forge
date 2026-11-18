@@ -624,7 +624,7 @@ GET /api/v1/tenant-discovery/preview?data_source_id=control-source-id
 | `lease_expires_at` / `lease_remaining_seconds` | 当前有效租约的到期时间和剩余秒数；无有效租约时省略到期时间并返回 0 |
 | `lease_generation` | 租约 fencing 代次；每次新持有者接管时递增 |
 
-统计仅在当前进程内维护，服务重启后归零；不代表多实例全局统计。多个 API 进程共享同一管理元数据库时，每轮巡检通过数据库租约选出唯一执行者；租约 30 秒、每 10 秒续约，进程异常退出后可在租约过期后接管；结果写入事务会校验租约 owner 和 generation，阻止旧持有者写入过期结果。未取得租约的实例跳过该轮。配置读取或历史清理错误可能更新 `last_error`，但不会计入巡检轮次失败数。调度状态接口会额外实时读取共享租约并返回脱敏的 `lease_status`、`lease_expires_at`、`lease_remaining_seconds` 和 `lease_generation`；不会返回随机 owner ID。租约状态读取失败时仍返回进程内统计，`lease_status` 为 `unavailable`。
+统计仅在当前进程内维护，服务重启后归零；不代表多实例全局统计。多个 API 进程共享同一管理元数据库时，每轮巡检通过数据库租约选出唯一执行者；租约 30 秒、每 10 秒续约，进程异常退出后可在租约过期后接管；心跳续约、巡检结果写入、运行轮次创建、完成、恢复和历史清理均校验租约 owner、generation 与有效期，阻止旧持有者在租约接管后继续操作。generation 达到 SQLite 有符号 64 位整数上限且需要接管时会拒绝获取新租约，避免代次溢出；当前有效持有者仍可在不递增代次的情况下续用租约。未取得租约的实例跳过该轮。配置读取或历史清理错误可能更新 `last_error`，但不会计入巡检轮次失败数。调度状态接口会额外实时读取共享租约并返回脱敏的 `lease_status`、`lease_expires_at`、`lease_remaining_seconds` 和 `lease_generation`；不会返回随机 owner ID。租约状态读取失败时仍返回进程内统计，`lease_status` 为 `unavailable`。
 
 ### GET /tenant-health/runs
 
