@@ -246,6 +246,11 @@ func TestTenantHealthSchedulerRunFinishRequiresCurrentLeaseGeneration(t *testing
 	); !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
 		t.Fatalf("stale generation finish error=%v, want lease lost", err)
 	}
+	if err := store.FinishTenantHealthSchedulerRunWithLease(
+		ctx, "replacement-owner", newGeneration, runID, takeoverAt.Add(time.Second), 6000, "succeeded", "",
+	); !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
+		t.Fatalf("new owner finishing previous-generation run error=%v, want lease lost", err)
+	}
 
 	page, err := store.ListTenantHealthSchedulerRuns(ctx, TenantHealthSchedulerRunFilter{})
 	if err != nil { t.Fatal(err) }
