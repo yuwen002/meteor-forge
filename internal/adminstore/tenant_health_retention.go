@@ -36,8 +36,18 @@ func (s *Store) RecordTenantHealthRetentionCleanupWithLease(
 	} else if errorCode != "cleanup_failed" {
 		errorCode = "cleanup_failed"
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tenant health retention cleanup result: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, "UPDATE admin_tenant_health_scheduler_lease SET updated_at = updated_at WHERE id = 1"); err != nil {
+		return fmt.Errorf("lock tenant health scheduler lease for cleanup result: %w", err)
+	}
+	// Sample live time only after acquiring SQLite's write lock. A timestamp
+	// captured before lock contention could let an expired owner overwrite state.
 	leaseCheckedAt := time.Now().UTC()
-	result, err := s.db.ExecContext(ctx, `UPDATE admin_tenant_health_retention_cleanup
+	result, err := tx.ExecContext(ctx, `UPDATE admin_tenant_health_retention_cleanup
 		SET started_at = ?, finished_at = ?, status = ?,
 			deleted_history_count = ?, deleted_run_count = ?, error_code = ?
 		WHERE id = 1 AND EXISTS (
@@ -55,6 +65,9 @@ func (s *Store) RecordTenantHealthRetentionCleanupWithLease(
 	}
 	if affected != 1 {
 		return ErrTenantHealthSchedulerLeaseLost
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit tenant health retention cleanup result: %w", err)
 	}
 	return nil
 }
@@ -96,8 +109,18 @@ func (s *Store) DeleteExpiredTenantConnectionHealthHistoryWithLease(
 		now.IsZero() || before.IsZero() || limit <= 0 || limit > 5000 {
 		return 0, ErrTenantHealthSchedulerLeaseInvalid
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin tenant health history retention cleanup: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, "UPDATE admin_tenant_health_scheduler_lease SET updated_at = updated_at WHERE id = 1"); err != nil {
+		return 0, fmt.Errorf("lock tenant health scheduler lease for history retention: %w", err)
+	}
+	// Sample after the write lock so an expired lease cannot pass using a
+	// pre-lock timestamp while waiting behind another SQLite connection.
 	leaseCheckedAt := time.Now().UTC()
-	result, err := s.db.ExecContext(ctx, `DELETE FROM admin_tenant_connection_health_history
+	result, err := tx.ExecContext(ctx, `DELETE FROM admin_tenant_connection_health_history
 		WHERE id IN (
 			SELECT id FROM admin_tenant_connection_health_history
 			WHERE checked_at < ? ORDER BY checked_at ASC, id ASC LIMIT ?
@@ -116,7 +139,7 @@ func (s *Store) DeleteExpiredTenantConnectionHealthHistoryWithLease(
 	}
 	if affected == 0 {
 		var valid int
-		err := s.db.QueryRowContext(ctx, `SELECT 1 FROM admin_tenant_health_scheduler_lease
+		err := tx.QueryRowContext(ctx, `SELECT 1 FROM admin_tenant_health_scheduler_lease
 			WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?`,
 			ownerID, generation, leaseCheckedAt.UnixNano()).Scan(&valid)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -125,6 +148,9 @@ func (s *Store) DeleteExpiredTenantConnectionHealthHistoryWithLease(
 		if err != nil {
 			return 0, fmt.Errorf("verify tenant health scheduler lease for history retention: %w", err)
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit tenant health history retention cleanup: %w", err)
 	}
 	return affected, nil
 }
