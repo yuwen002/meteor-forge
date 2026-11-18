@@ -452,3 +452,35 @@ func TestTenantHealthSchedulerLeaseReusedOwnerIDAdvancesGeneration(t *testing.T)
 		t.Fatalf("stale generation release changed renewed lease: owner=%q generation=%d lease_until=%d", ownerID, generation, leaseUntil)
 	}
 }
+
+
+func TestTenantHealthSchedulerLeaseGenerationExhaustionDoesNotOverflow(t *testing.T) {
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "generation-exhausted.db"), testKey)
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+
+	start := time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC)
+	const maxGeneration int64 = 1<<63 - 1
+	if _, err := store.db.ExecContext(context.Background(), `UPDATE admin_tenant_health_scheduler_lease
+		SET owner_id = ?, lease_until = ?, generation = ? WHERE id = 1`,
+		"expired-owner", start.Add(-time.Second).UnixNano(), maxGeneration); err != nil {
+		t.Fatal(err)
+	}
+
+	acquired, generation, err := store.acquireTenantHealthSchedulerLeaseAt(
+		context.Background(), "replacement-owner", start, 5*time.Second,
+	)
+	if acquired || generation != 0 || !errors.Is(err, ErrTenantHealthSchedulerLeaseGenerationExhausted) {
+		t.Fatalf("generation exhaustion result=(%v, %d, %v), want exhausted without acquisition", acquired, generation, err)
+	}
+
+	var ownerID string
+	var leaseUntil, storedGeneration int64
+	if err := store.db.QueryRowContext(context.Background(), `SELECT owner_id, lease_until, generation
+		FROM admin_tenant_health_scheduler_lease WHERE id = 1`).Scan(&ownerID, &leaseUntil, &storedGeneration); err != nil {
+		t.Fatal(err)
+	}
+	if ownerID != "expired-owner" || storedGeneration != maxGeneration || leaseUntil != start.Add(-time.Second).UnixNano() {
+		t.Fatalf("exhausted lease was modified: owner=%q generation=%d lease_until=%d", ownerID, storedGeneration, leaseUntil)
+	}
+}
