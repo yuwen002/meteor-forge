@@ -83,6 +83,19 @@ func (s *Store) StartTenantHealthSchedulerRunWithLease(ctx context.Context, owne
 
 // FinishTenantHealthSchedulerRun finalizes one run with a whitelisted error classification.
 func (s *Store) FinishTenantHealthSchedulerRun(ctx context.Context, id int64, finishedAt time.Time, durationMS int64, status, errorCode string) error {
+	return s.finishTenantHealthSchedulerRun(ctx, "", 0, id, finishedAt, durationMS, status, errorCode)
+}
+
+// FinishTenantHealthSchedulerRunWithLease finalizes a run only while the exact
+// owner and fencing generation still hold an unexpired lease.
+func (s *Store) FinishTenantHealthSchedulerRunWithLease(ctx context.Context, ownerID string, generation, id int64, finishedAt time.Time, durationMS int64, status, errorCode string) error {
+	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || generation <= 0 {
+		return ErrTenantHealthSchedulerLeaseInvalid
+	}
+	return s.finishTenantHealthSchedulerRun(ctx, ownerID, generation, id, finishedAt, durationMS, status, errorCode)
+}
+
+func (s *Store) finishTenantHealthSchedulerRun(ctx context.Context, ownerID string, generation, id int64, finishedAt time.Time, durationMS int64, status, errorCode string) error {
 	if id <= 0 || finishedAt.IsZero() || durationMS < 0 {
 		return ErrTenantHealthInvalidInput
 	}
@@ -106,10 +119,19 @@ func (s *Store) FinishTenantHealthSchedulerRun(ctx context.Context, id int64, fi
 	default:
 		return ErrTenantHealthInvalidInput
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE admin_tenant_health_scheduler_runs
+
+	query := `UPDATE admin_tenant_health_scheduler_runs
 		SET finished_at = ?, duration_ms = ?, status = ?, error_code = ?, error_message = ?
-		WHERE id = ? AND status = 'running'`,
-		formatTenantHealthTime(finishedAt), durationMS, status, errorCode, message, id)
+		WHERE id = ? AND status = 'running'`
+	args := []any{formatTenantHealthTime(finishedAt), durationMS, status, errorCode, message, id}
+	if ownerID != "" {
+		query += ` AND EXISTS (
+			SELECT 1 FROM admin_tenant_health_scheduler_lease
+			WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?
+		)`
+		args = append(args, ownerID, generation, finishedAt.UTC().UnixNano())
+	}
+	result, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("finish tenant health scheduler run: %w", err)
 	}
@@ -118,6 +140,18 @@ func (s *Store) FinishTenantHealthSchedulerRun(ctx context.Context, id int64, fi
 		return fmt.Errorf("read finalized tenant health scheduler run count: %w", err)
 	}
 	if affected == 0 {
+		if ownerID != "" {
+			var valid int
+			err := s.db.QueryRowContext(ctx, `SELECT 1 FROM admin_tenant_health_scheduler_lease
+				WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?`,
+				ownerID, generation, finishedAt.UTC().UnixNano()).Scan(&valid)
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrTenantHealthSchedulerLeaseLost
+			}
+			if err != nil {
+				return fmt.Errorf("verify tenant health scheduler lease for run finalization: %w", err)
+			}
+		}
 		var exists int
 		if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM admin_tenant_health_scheduler_runs WHERE id = ?", id).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
 			return ErrTenantHealthSchedulerRunNotFound
@@ -128,6 +162,7 @@ func (s *Store) FinishTenantHealthSchedulerRun(ctx context.Context, id int64, fi
 	}
 	return nil
 }
+
 
 // RecoverStaleTenantHealthSchedulerRunsWithLease marks older unfinished runs interrupted
 // only while the caller still owns the current unexpired lease. The no-op update
