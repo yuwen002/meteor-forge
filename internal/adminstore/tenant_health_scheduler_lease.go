@@ -11,6 +11,7 @@ import (
 var (
 	ErrTenantHealthSchedulerLeaseInvalid = errors.New("invalid tenant health scheduler lease")
 	ErrTenantHealthSchedulerLeaseLost = errors.New("tenant health scheduler lease is no longer owned")
+	ErrTenantHealthSchedulerLeaseGenerationExhausted = errors.New("tenant health scheduler lease generation is exhausted")
 )
 
 // AcquireTenantHealthSchedulerLease atomically acquires an expired lease or
@@ -40,6 +41,17 @@ func (s *Store) acquireTenantHealthSchedulerLeaseWithClock(ctx context.Context, 
 		return false, 0, fmt.Errorf("lock tenant health scheduler lease for acquisition: %w", err)
 	}
 	checkedAt := clock().UTC()
+	var currentOwner string
+	var currentLeaseUntil, currentGeneration int64
+	if err := tx.QueryRowContext(ctx, `SELECT owner_id, lease_until, generation
+		FROM admin_tenant_health_scheduler_lease WHERE id = 1`).Scan(&currentOwner, &currentLeaseUntil, &currentGeneration); err != nil {
+		return false, 0, fmt.Errorf("read current tenant health scheduler lease before acquisition: %w", err)
+	}
+	needsNewGeneration := currentOwner != ownerID || currentLeaseUntil <= checkedAt.UnixNano()
+	const maxLeaseGeneration int64 = 1<<63 - 1
+	if needsNewGeneration && currentGeneration == maxLeaseGeneration {
+		return false, 0, ErrTenantHealthSchedulerLeaseGenerationExhausted
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE admin_tenant_health_scheduler_lease
 		SET generation = generation + CASE WHEN owner_id = ? AND lease_until > ? THEN 0 ELSE 1 END,
 		    owner_id = ?, lease_until = ?, updated_at = ?
