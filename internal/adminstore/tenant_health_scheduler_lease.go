@@ -65,16 +65,30 @@ func (s *Store) RenewTenantHealthSchedulerLease(ctx context.Context, ownerID str
 	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || now.IsZero() || ttl < 5*time.Second || ttl > 5*time.Minute {
 		return false, ErrTenantHealthSchedulerLeaseInvalid
 	}
-	return s.renewTenantHealthSchedulerLeaseWithClock(ctx, ownerID, time.Now, ttl)
+	// Kept for compatibility. New scheduler code must include the fencing generation.
+	return s.renewTenantHealthSchedulerLeaseWithClock(ctx, ownerID, 0, time.Now, ttl)
+}
+
+// RenewTenantHealthSchedulerLeaseWithGeneration renews only the exact lease
+// generation acquired by this scheduler instance.
+func (s *Store) RenewTenantHealthSchedulerLeaseWithGeneration(ctx context.Context, ownerID string, generation int64, now time.Time, ttl time.Duration) (bool, error) {
+	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || generation <= 0 || now.IsZero() || ttl < 5*time.Second || ttl > 5*time.Minute {
+		return false, ErrTenantHealthSchedulerLeaseInvalid
+	}
+	return s.renewTenantHealthSchedulerLeaseWithClock(ctx, ownerID, generation, time.Now, ttl)
 }
 
 // renewTenantHealthSchedulerLeaseAt preserves deterministic expiry-boundary tests.
 func (s *Store) renewTenantHealthSchedulerLeaseAt(ctx context.Context, ownerID string, checkedAt time.Time, ttl time.Duration) (bool, error) {
-	return s.renewTenantHealthSchedulerLeaseWithClock(ctx, ownerID, func() time.Time { return checkedAt }, ttl)
+	return s.renewTenantHealthSchedulerLeaseWithClock(ctx, ownerID, 0, func() time.Time { return checkedAt }, ttl)
 }
 
-func (s *Store) renewTenantHealthSchedulerLeaseWithClock(ctx context.Context, ownerID string, clock func() time.Time, ttl time.Duration) (bool, error) {
-	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || clock == nil || ttl < 5*time.Second || ttl > 5*time.Minute {
+func (s *Store) renewTenantHealthSchedulerLeaseWithGenerationAt(ctx context.Context, ownerID string, generation int64, checkedAt time.Time, ttl time.Duration) (bool, error) {
+	return s.renewTenantHealthSchedulerLeaseWithClock(ctx, ownerID, generation, func() time.Time { return checkedAt }, ttl)
+}
+
+func (s *Store) renewTenantHealthSchedulerLeaseWithClock(ctx context.Context, ownerID string, generation int64, clock func() time.Time, ttl time.Duration) (bool, error) {
+	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || generation < 0 || clock == nil || ttl < 5*time.Second || ttl > 5*time.Minute {
 		return false, ErrTenantHealthSchedulerLeaseInvalid
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -84,10 +98,15 @@ func (s *Store) renewTenantHealthSchedulerLeaseWithClock(ctx context.Context, ow
 		return false, fmt.Errorf("lock tenant health scheduler lease for renewal: %w", err)
 	}
 	checkedAt := clock().UTC()
-	result, err := tx.ExecContext(ctx, `UPDATE admin_tenant_health_scheduler_lease
+	query := `UPDATE admin_tenant_health_scheduler_lease
 		SET lease_until = ?, updated_at = ?
-		WHERE id = 1 AND owner_id = ? AND lease_until > ?`,
-		checkedAt.Add(ttl).UnixNano(), formatTenantHealthTime(checkedAt), ownerID, checkedAt.UnixNano())
+		WHERE id = 1 AND owner_id = ? AND lease_until > ?`
+	args := []any{checkedAt.Add(ttl).UnixNano(), formatTenantHealthTime(checkedAt), ownerID, checkedAt.UnixNano()}
+	if generation > 0 {
+		query += " AND generation = ?"
+		args = append(args, generation)
+	}
+	result, err := tx.ExecContext(ctx, query, args...)
 	if err != nil { return false, fmt.Errorf("renew tenant health scheduler lease: %w", err) }
 	affected, err := result.RowsAffected()
 	if err != nil { return false, fmt.Errorf("read renewed tenant health scheduler lease result: %w", err) }
