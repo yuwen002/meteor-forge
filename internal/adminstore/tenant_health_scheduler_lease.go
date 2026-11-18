@@ -41,10 +41,10 @@ func (s *Store) acquireTenantHealthSchedulerLeaseWithClock(ctx context.Context, 
 	}
 	checkedAt := clock().UTC()
 	result, err := tx.ExecContext(ctx, `UPDATE admin_tenant_health_scheduler_lease
-		SET generation = generation + CASE WHEN owner_id = ? THEN 0 ELSE 1 END,
+		SET generation = generation + CASE WHEN owner_id = ? AND lease_until > ? THEN 0 ELSE 1 END,
 		    owner_id = ?, lease_until = ?, updated_at = ?
 		WHERE id = 1 AND (owner_id = ? OR lease_until <= ? OR owner_id = '')`,
-		ownerID, ownerID, checkedAt.Add(ttl).UnixNano(), formatTenantHealthTime(checkedAt),
+		ownerID, checkedAt.UnixNano(), ownerID, checkedAt.Add(ttl).UnixNano(), formatTenantHealthTime(checkedAt),
 		ownerID, checkedAt.UnixNano())
 	if err != nil { return false, 0, fmt.Errorf("acquire tenant health scheduler lease: %w", err) }
 	affected, err := result.RowsAffected()
