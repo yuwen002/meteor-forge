@@ -66,7 +66,7 @@ func runWithTenantHealthSchedulerLeaseTTL(ctx context.Context, store *adminstore
 				heartbeatDone <- nil
 				return
 			case <-ticker.C:
-				renewed, renewErr := store.RenewTenantHealthSchedulerLease(runCtx, ownerID, time.Now().UTC(), ttl)
+				renewed, renewErr := store.RenewTenantHealthSchedulerLeaseWithGeneration(runCtx, ownerID, generation, time.Now().UTC(), ttl)
 				if renewErr != nil {
 					heartbeatDone <- fmt.Errorf("%w: renewal failed: %v", errTenantHealthSchedulerLeaseLost, renewErr)
 					cancel()
