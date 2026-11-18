@@ -286,7 +286,7 @@ func TestTenantHealthSchedulerRunFinishSamplesLeaseTimeAfterWriteLock(t *testing
 	defer second.Close()
 
 	startedAt := time.Now().UTC()
-	acquired, generation, err := first.AcquireTenantHealthSchedulerLease(context.Background(), "finish-lock-owner", startedAt, 5*time.Second)
+	acquired, generation, err := first.AcquireTenantHealthSchedulerLease(context.Background(), "finish-lock-owner", startedAt, time.Second)
 	if err != nil || !acquired { t.Fatalf("acquire lease: acquired=%v err=%v", acquired, err) }
 	runID, err := first.StartTenantHealthSchedulerRunWithLease(context.Background(), "finish-lock-owner", generation, startedAt)
 	if err != nil { t.Fatal(err) }
@@ -306,9 +306,11 @@ func TestTenantHealthSchedulerRunFinishSamplesLeaseTimeAfterWriteLock(t *testing
 		)
 	}()
 
-	// The 5-second lease expires while finalization is blocked behind the
-	// independent connection's write transaction.
-	time.Sleep(5500 * time.Millisecond)
+	// The 1-second lease expires while finalization is blocked behind the
+	// independent connection's write transaction. The wait remains below
+	// SQLite's 5-second busy timeout so the test observes lease expiry rather
+	// than SQLITE_BUSY.
+	time.Sleep(1500 * time.Millisecond)
 	if err := lockTx.Rollback(); err != nil { t.Fatal(err) }
 	select {
 	case err := <-finishResult:
