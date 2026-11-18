@@ -270,3 +270,57 @@ func TestTenantHealthSchedulerRunFinishRequiresCurrentLeaseGeneration(t *testing
 		t.Fatalf("stale run should be recovered as interrupted: %+v", page.Items[0])
 	}
 }
+
+
+// TestTenantHealthSchedulerRunFinishSamplesLeaseTimeAfterWriteLock verifies
+// that a finish request waiting on SQLite cannot use a stale pre-lock timestamp
+// to finalize a run after its lease has expired.
+func TestTenantHealthSchedulerRunFinishSamplesLeaseTimeAfterWriteLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "finish-lock-expiry.db")
+	first, err := Open(context.Background(), path, testKey)
+	if err != nil { t.Fatal(err) }
+	defer first.Close()
+	second, err := Open(context.Background(), path, testKey)
+	if err != nil { t.Fatal(err) }
+	defer second.Close()
+
+	startedAt := time.Now().UTC()
+	acquired, generation, err := first.AcquireTenantHealthSchedulerLease(context.Background(), "finish-lock-owner", startedAt, 5*time.Second)
+	if err != nil || !acquired { t.Fatalf("acquire lease: acquired=%v err=%v", acquired, err) }
+	runID, err := first.StartTenantHealthSchedulerRunWithLease(context.Background(), "finish-lock-owner", generation, startedAt)
+	if err != nil { t.Fatal(err) }
+
+	lockTx, err := second.db.BeginTx(context.Background(), nil)
+	if err != nil { t.Fatal(err) }
+	if _, err := lockTx.ExecContext(context.Background(), "UPDATE admin_tenant_health_scheduler_lease SET updated_at = updated_at WHERE id = 1"); err != nil {
+		_ = lockTx.Rollback()
+		t.Fatal(err)
+	}
+
+	finishResult := make(chan error, 1)
+	go func() {
+		finishResult <- first.FinishTenantHealthSchedulerRunWithLease(
+			context.Background(), "finish-lock-owner", generation, runID,
+			time.Now().UTC(), 1000, "succeeded", "",
+		)
+	}()
+
+	// The 5-second lease expires while finalization is blocked behind the
+	// independent connection's write transaction.
+	time.Sleep(5500 * time.Millisecond)
+	if err := lockTx.Rollback(); err != nil { t.Fatal(err) }
+	select {
+	case err := <-finishResult:
+		if !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
+			t.Fatalf("finish after lock wait error=%v, want lease lost", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("finish did not return after releasing SQLite write lock")
+	}
+
+	page, err := first.ListTenantHealthSchedulerRuns(context.Background(), TenantHealthSchedulerRunFilter{})
+	if err != nil { t.Fatal(err) }
+	if page.Total != 1 || page.Items[0].Status != "running" || page.Items[0].FinishedAt != nil {
+		t.Fatalf("expired lease finalized run after lock wait: %+v", page)
+	}
+}
