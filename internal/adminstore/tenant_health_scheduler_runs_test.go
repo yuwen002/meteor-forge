@@ -327,3 +327,61 @@ func TestTenantHealthSchedulerRunFinishSamplesLeaseTimeAfterWriteLock(t *testing
 		t.Fatalf("expired lease finalized run after lock wait: %+v", page)
 	}
 }
+
+
+// TestTenantHealthSchedulerRunRetentionSamplesLeaseTimeAfterWriteLock ensures
+// a cleanup blocked on SQLite's writer lock cannot use a stale timestamp to
+// delete history after its lease expires.
+func TestTenantHealthSchedulerRunRetentionSamplesLeaseTimeAfterWriteLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "retention-lock-expiry.db")
+	first, err := Open(context.Background(), path, testKey)
+	if err != nil { t.Fatal(err) }
+	defer first.Close()
+	second, err := Open(context.Background(), path, testKey)
+	if err != nil { t.Fatal(err) }
+	defer second.Close()
+
+	now := time.Now().UTC()
+	acquired, generation, err := first.AcquireTenantHealthSchedulerLease(context.Background(), "retention-lock-owner", now, time.Second)
+	if err != nil || !acquired { t.Fatalf("acquire lease: acquired=%v err=%v", acquired, err) }
+	runID, err := first.StartTenantHealthSchedulerRunWithLease(context.Background(), "retention-lock-owner", generation, now.Add(-48*time.Hour))
+	if err != nil { t.Fatal(err) }
+	if err := first.FinishTenantHealthSchedulerRun(context.Background(), runID, now.Add(-24*time.Hour), 1000, "succeeded", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	lockTx, err := second.db.BeginTx(context.Background(), nil)
+	if err != nil { t.Fatal(err) }
+	if _, err := lockTx.ExecContext(context.Background(), "UPDATE admin_tenant_health_scheduler_lease SET updated_at = updated_at WHERE id = 1"); err != nil {
+		_ = lockTx.Rollback()
+		t.Fatal(err)
+	}
+
+	cleanupResult := make(chan error, 1)
+	before := now.Add(-12 * time.Hour)
+	go func() {
+		_, err := first.DeleteExpiredTenantHealthSchedulerRunsWithLease(
+			context.Background(), "retention-lock-owner", generation, now, before, 500,
+		)
+		cleanupResult <- err
+	}()
+
+	// Keep the lock beyond the one-second lease but below SQLite's five-second
+	// busy timeout, so the assertion exercises lease expiry rather than SQLITE_BUSY.
+	time.Sleep(1500 * time.Millisecond)
+	if err := lockTx.Rollback(); err != nil { t.Fatal(err) }
+	select {
+	case err := <-cleanupResult:
+		if !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
+			t.Fatalf("cleanup after lock wait error=%v, want lease lost", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cleanup did not return after releasing SQLite write lock")
+	}
+
+	page, err := first.ListTenantHealthSchedulerRuns(context.Background(), TenantHealthSchedulerRunFilter{})
+	if err != nil { t.Fatal(err) }
+	if page.Total != 1 || page.Items[0].ID != runID {
+		t.Fatalf("expired lease deleted scheduler history after lock wait: %+v", page)
+	}
+}
