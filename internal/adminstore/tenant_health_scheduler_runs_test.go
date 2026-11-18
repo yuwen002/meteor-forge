@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 	"time"
+	"path/filepath"
 )
 
 func TestTenantHealthSchedulerRunLifecycleAndPaging(t *testing.T) {
