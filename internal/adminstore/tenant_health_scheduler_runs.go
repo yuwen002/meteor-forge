@@ -89,13 +89,59 @@ func (s *Store) FinishTenantHealthSchedulerRun(ctx context.Context, id int64, fi
 // FinishTenantHealthSchedulerRunWithLease finalizes a run only while the exact
 // owner and fencing generation still hold an unexpired lease.
 func (s *Store) FinishTenantHealthSchedulerRunWithLease(ctx context.Context, ownerID string, generation, id int64, finishedAt time.Time, durationMS int64, status, errorCode string) error {
-	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || generation <= 0 {
+	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || generation <= 0 || finishedAt.IsZero() {
 		return ErrTenantHealthSchedulerLeaseInvalid
 	}
-	return s.finishTenantHealthSchedulerRun(ctx, ownerID, generation, id, finishedAt, durationMS, status, errorCode)
+	// The caller timestamp may become stale while waiting for SQLite's write
+	// lock. Acquire the lock first, then sample live time for lease validation
+	// and the persisted finish timestamp.
+	return s.finishTenantHealthSchedulerRunWithLeaseClock(ctx, ownerID, generation, id, time.Now, durationMS, status, errorCode)
+}
+
+func (s *Store) finishTenantHealthSchedulerRunWithLeaseClock(
+	ctx context.Context, ownerID string, generation, id int64, clock func() time.Time,
+	durationMS int64, status, errorCode string,
+) error {
+	if clock == nil {
+		return ErrTenantHealthSchedulerLeaseInvalid
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin leased tenant health scheduler run finalization: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, "UPDATE admin_tenant_health_scheduler_lease SET updated_at = updated_at WHERE id = 1"); err != nil {
+		return fmt.Errorf("lock tenant health scheduler lease for run finalization: %w", err)
+	}
+	finishedAt := clock().UTC()
+	if err := s.finishTenantHealthSchedulerRunTx(ctx, tx, ownerID, generation, id, finishedAt, durationMS, status, errorCode); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit leased tenant health scheduler run finalization: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) finishTenantHealthSchedulerRun(ctx context.Context, ownerID string, generation, id int64, finishedAt time.Time, durationMS int64, status, errorCode string) error {
+	if id <= 0 || finishedAt.IsZero() || durationMS < 0 {
+		return ErrTenantHealthInvalidInput
+	}
+	if ownerID == "" {
+		return s.finishTenantHealthSchedulerRunTx(ctx, s.db, ownerID, generation, id, finishedAt, durationMS, status, errorCode)
+	}
+	return s.finishTenantHealthSchedulerRunWithLeaseClock(ctx, ownerID, generation, id, func() time.Time { return finishedAt }, durationMS, status, errorCode)
+}
+
+type tenantHealthRunExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func (s *Store) finishTenantHealthSchedulerRunTx(
+	ctx context.Context, execer tenantHealthRunExecer, ownerID string, generation, id int64,
+	finishedAt time.Time, durationMS int64, status, errorCode string,
+) error {
 	if id <= 0 || finishedAt.IsZero() || durationMS < 0 {
 		return ErrTenantHealthInvalidInput
 	}
@@ -133,7 +179,7 @@ func (s *Store) finishTenantHealthSchedulerRun(ctx context.Context, ownerID stri
 		)`
 		args = append(args, ownerID, generation, finishedAt.UTC().UnixNano())
 	}
-	result, err := s.db.ExecContext(ctx, query, args...)
+	result, err := execer.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("finish tenant health scheduler run: %w", err)
 	}
@@ -144,7 +190,7 @@ func (s *Store) finishTenantHealthSchedulerRun(ctx context.Context, ownerID stri
 	if affected == 0 {
 		if ownerID != "" {
 			var valid int
-			err := s.db.QueryRowContext(ctx, `SELECT 1 FROM admin_tenant_health_scheduler_lease
+			err := execer.QueryRowContext(ctx, `SELECT 1 FROM admin_tenant_health_scheduler_lease
 				WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?`,
 				ownerID, generation, finishedAt.UTC().UnixNano()).Scan(&valid)
 			if errors.Is(err, sql.ErrNoRows) {
@@ -155,7 +201,7 @@ func (s *Store) finishTenantHealthSchedulerRun(ctx context.Context, ownerID stri
 			}
 		}
 		var runGeneration int64
-		if err := s.db.QueryRowContext(ctx, "SELECT lease_generation FROM admin_tenant_health_scheduler_runs WHERE id = ?", id).Scan(&runGeneration); errors.Is(err, sql.ErrNoRows) {
+		if err := execer.QueryRowContext(ctx, "SELECT lease_generation FROM admin_tenant_health_scheduler_runs WHERE id = ?", id).Scan(&runGeneration); errors.Is(err, sql.ErrNoRows) {
 			return ErrTenantHealthSchedulerRunNotFound
 		} else if err != nil {
 			return fmt.Errorf("check tenant health scheduler run: %w", err)
@@ -167,7 +213,6 @@ func (s *Store) finishTenantHealthSchedulerRun(ctx context.Context, ownerID stri
 	}
 	return nil
 }
-
 
 // RecoverStaleTenantHealthSchedulerRunsWithLease marks older unfinished runs interrupted
 // only while the caller still owns the current unexpired lease. The no-op update
