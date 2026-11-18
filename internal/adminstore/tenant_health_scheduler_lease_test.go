@@ -2,6 +2,7 @@ package adminstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
