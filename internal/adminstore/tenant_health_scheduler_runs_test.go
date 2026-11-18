@@ -210,3 +210,58 @@ func TestTenantHealthSchedulerRunRetentionHonorsBatchLimit(t *testing.T) {
 	deleted, err = store.DeleteExpiredTenantHealthSchedulerRunsWithLease(ctx, "retention-batch-owner", generation, now, before, 2)
 	if err != nil || deleted != 1 { t.Fatalf("second batch deleted=%d err=%v, want 1", deleted, err) }
 }
+
+
+func TestTenantHealthSchedulerRunFinishRequiresCurrentLeaseGeneration(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 11, 18, 1, 0, 0, 0, time.UTC)
+
+	acquired, oldGeneration, err := store.acquireTenantHealthSchedulerLeaseAt(ctx, "finish-owner", base, 5*time.Second)
+	if err != nil || !acquired || oldGeneration != 1 {
+		t.Fatalf("acquire old lease: acquired=%v generation=%d err=%v", acquired, oldGeneration, err)
+	}
+	runID, err := store.StartTenantHealthSchedulerRunWithLease(ctx, "finish-owner", oldGeneration, base)
+	if err != nil { t.Fatal(err) }
+
+	for _, tc := range []struct{name, owner string; generation int64}{
+		{name: "wrong owner", owner: "other-owner", generation: oldGeneration},
+		{name: "wrong generation", owner: "finish-owner", generation: oldGeneration + 1},
+	} {
+		err := store.FinishTenantHealthSchedulerRunWithLease(
+			ctx, tc.owner, tc.generation, runID, base.Add(time.Second), 1000, "succeeded", "",
+		)
+		if !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
+			t.Fatalf("%s finish error=%v, want lease lost", tc.name, err)
+		}
+	}
+
+	takeoverAt := base.Add(5 * time.Second)
+	acquired, newGeneration, err := store.acquireTenantHealthSchedulerLeaseAt(ctx, "replacement-owner", takeoverAt, 5*time.Second)
+	if err != nil || !acquired || newGeneration != oldGeneration+1 {
+		t.Fatalf("takeover: acquired=%v generation=%d err=%v", acquired, newGeneration, err)
+	}
+	if err := store.FinishTenantHealthSchedulerRunWithLease(
+		ctx, "finish-owner", oldGeneration, runID, takeoverAt.Add(time.Second), 6000, "succeeded", "",
+	); !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
+		t.Fatalf("stale generation finish error=%v, want lease lost", err)
+	}
+
+	page, err := store.ListTenantHealthSchedulerRuns(ctx, TenantHealthSchedulerRunFilter{})
+	if err != nil { t.Fatal(err) }
+	if page.Total != 1 || page.Items[0].Status != "running" || page.Items[0].FinishedAt != nil {
+		t.Fatalf("stale owner changed run after takeover: %+v", page)
+	}
+
+	recovered, err := store.RecoverStaleTenantHealthSchedulerRunsWithLease(
+		ctx, "replacement-owner", newGeneration, takeoverAt.Add(time.Second),
+	)
+	if err != nil || recovered != 1 {
+		t.Fatalf("replacement recovery: recovered=%d err=%v", recovered, err)
+	}
+	page, err = store.ListTenantHealthSchedulerRuns(ctx, TenantHealthSchedulerRunFilter{})
+	if err != nil { t.Fatal(err) }
+	if page.Items[0].Status != "interrupted" {
+		t.Fatalf("stale run should be recovered as interrupted: %+v", page.Items[0])
+	}
+}
