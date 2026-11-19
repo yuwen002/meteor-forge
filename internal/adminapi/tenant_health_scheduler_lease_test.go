@@ -612,41 +612,64 @@ func TestRunWithTenantHealthSchedulerLeaseRecoversAfterMetadataDatabaseReturns(t
 	defer cancel()
 	var replacementRuns atomic.Int32
 	var replacementGeneration atomic.Int64
-	for {
-		err = runWithTenantHealthSchedulerLeaseTTL(ctx, newStore, "api-instance-after-recovery", 5*time.Second, func(runCtx context.Context) error {
-			lease, ok := runCtx.Value(tenantHealthSchedulerLeaseContextKey{}).(tenantHealthSchedulerLeaseContext)
-			if !ok {
-				return errors.New("replacement round has no lease context")
+	replacementStarted := make(chan struct{})
+	finishReplacement := make(chan struct{})
+	replacementDone := make(chan error, 1)
+	go func() {
+		for {
+			err := runWithTenantHealthSchedulerLeaseTTL(ctx, newStore, "api-instance-after-recovery", 5*time.Second, func(runCtx context.Context) error {
+				lease, ok := runCtx.Value(tenantHealthSchedulerLeaseContextKey{}).(tenantHealthSchedulerLeaseContext)
+				if !ok {
+					return errors.New("replacement round has no lease context")
+				}
+				replacementGeneration.Store(lease.generation)
+				replacementRuns.Add(1)
+				close(replacementStarted)
+				<-finishReplacement
+				return nil
+			})
+			if err == nil {
+				replacementDone <- nil
+				return
 			}
-			replacementGeneration.Store(lease.generation)
-			replacementRuns.Add(1)
-			return nil
-		})
-		if err == nil {
-			break
+			if !errors.Is(err, errTenantHealthSchedulerLeaseNotAcquired) {
+				replacementDone <- err
+				return
+			}
+			select {
+			case <-ctx.Done():
+				replacementDone <- fmt.Errorf("replacement scheduler did not recover before deadline (outage began %s ago): %w", time.Since(outageAt), ctx.Err())
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
 		}
-		if !errors.Is(err, errTenantHealthSchedulerLeaseNotAcquired) {
-			t.Fatalf("replacement scheduler acquisition failed: %v", err)
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatalf("replacement scheduler did not recover before deadline (outage began %s ago)", time.Since(outageAt))
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
+	}()
 
-	if got := replacementRuns.Load(); got != 1 {
-		t.Fatalf("replacement scheduler runs=%d, want exactly one", got)
+	select {
+	case <-replacementStarted:
+	case <-ctx.Done():
+		t.Fatalf("replacement scheduler did not start: %v", ctx.Err())
 	}
-	if got := replacementGeneration.Load(); got != 2 {
-		t.Fatalf("replacement lease generation=%d, want 2", got)
-	}
-
 	info, err := newStore.GetTenantHealthSchedulerLeaseInfo(context.Background(), "api-instance-after-recovery", time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if info.Generation != 2 || info.Status != "held_by_this_instance" {
 		t.Fatalf("recovered lease info=%+v, want replacement owner at generation 2", info)
+	}
+	close(finishReplacement)
+	select {
+	case err := <-replacementDone:
+		if err != nil {
+			t.Fatalf("replacement scheduler result: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("replacement scheduler did not finish: %v", ctx.Err())
+	}
+	if got := replacementRuns.Load(); got != 1 {
+		t.Fatalf("replacement scheduler runs=%d, want exactly one", got)
+	}
+	if got := replacementGeneration.Load(); got != 2 {
+		t.Fatalf("replacement lease generation=%d, want 2", got)
 	}
 }
