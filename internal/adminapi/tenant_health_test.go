@@ -509,3 +509,48 @@ func TestTenantHealthRetentionAPIReportsPersistedCleanup(t *testing.T) {
 		t.Fatalf("unexpected retention API response: %+v", got)
 	}
 }
+
+// TestRunTenantHealthChecksConcurrentlyStopsDispatchAfterCancellation verifies
+// that canceling a round stops queued tenants from entering the health checker.
+// The in-flight workers must observe the same context and drain before return.
+func TestRunTenantHealthChecksConcurrentlyStopsDispatchAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan string, 8)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- runTenantHealthChecksConcurrently(ctx, []string{
+			"tenant-a", "tenant-b", "tenant-c", "tenant-d",
+			"tenant-e", "tenant-f", "tenant-g", "tenant-h",
+		}, func(checkCtx context.Context, tenantID string) error {
+			started <- tenantID
+			<-checkCtx.Done()
+			return checkCtx.Err()
+		})
+	}()
+
+	// Four workers may be in flight, but queued tenants must not start after
+	// cancellation. Wait until the worker pool is saturated before canceling.
+	for i := 0; i < 4; i++ {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			cancel()
+			t.Fatalf("only %d workers started before timeout", i)
+		}
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("concurrent health check error=%v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("in-flight health checks did not stop after cancellation")
+	}
+
+	if got := len(started); got != 4 {
+		t.Fatalf("health checks started=%d after cancellation, want exactly 4 in-flight workers", got)
+	}
+}
