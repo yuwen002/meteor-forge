@@ -25,6 +25,18 @@ func countForeignKeyViolations(violations []adminstore.ForeignKeyViolation) map[
 	return counts
 }
 
+// waitForServerStop waits for either an OS shutdown signal or a listener failure.
+// Returning the listener error lets main finish graceful cleanup instead of
+// calling log.Fatalf, which would bypass deferred resource releases.
+func waitForServerStop(ctx context.Context, serverErr <-chan error) error {
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-serverErr:
+		return err
+	}
+}
+
 func main() {
 	addr := os.Getenv("METEOR_ADMIN_ADDR")
 	if addr == "" {
@@ -86,15 +98,14 @@ func main() {
 		}
 	}()
 
-	select {
-	case <-ctx.Done():
-	case err := <-serverErr:
-		log.Fatalf("admin API server failed: %v", err)
-	}
+	serveErr := waitForServerStop(ctx, serverErr)
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		log.Printf("admin API shutdown failed: %v", err)
+	}
+	if serveErr != nil {
+		log.Printf("admin API server failed: %v", serveErr)
 	}
 }

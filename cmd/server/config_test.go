@@ -33,3 +33,23 @@ func TestValidateAdminAddrRequiresLoopback(t *testing.T) {
   if err:=validateAdminAddr(addr);err==nil{t.Errorf("%s should be rejected",addr)}
  }
 }
+
+
+func TestWaitForServerStopReturnsListenerError(t *testing.T) {
+	wantErr := errors.New("listener failed")
+	serverErr := make(chan error, 1)
+	serverErr <- wantErr
+
+	if err := waitForServerStop(context.Background(), serverErr); !errors.Is(err, wantErr) {
+		t.Fatalf("waitForServerStop error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestWaitForServerStopReturnsOnContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := waitForServerStop(ctx, make(chan error)); err != nil {
+		t.Fatalf("waitForServerStop error = %v, want nil after shutdown signal", err)
+	}
+}
