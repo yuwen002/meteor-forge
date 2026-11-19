@@ -371,3 +371,171 @@ func TestRunWithTenantHealthSchedulerLeaseClassifiesEarlyFencedWrite(t *testing.
 		t.Fatalf("lease wrapper error=%v, want scheduler lease-lost classification", err)
 	}
 }
+
+
+// TestTenantHealthSchedulerTakeoverFencesLateWorkerWrites exercises two
+// independent API instances sharing one metadata database. A late worker from
+// the old round must not persist health or finalize its run after takeover.
+func TestTenantHealthSchedulerTakeoverFencesLateWorkerWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "integrated-takeover.db")
+	oldStore, err := adminstore.Open(context.Background(), path, strings.Repeat("0", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer oldStore.Close()
+	newStore, err := adminstore.Open(context.Background(), path, strings.Repeat("0", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer newStore.Close()
+
+	source, err := oldStore.Create(context.Background(), adminstore.DataSourceInput{
+		Name: "takeover-source", Driver: "sqlite", DSN: ":memory:",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantItem, err := oldStore.CreateTenant(context.Background(), adminstore.TenantInput{
+		Name: "Takeover tenant", Code: "takeover-tenant", DataSourceID: source.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	workerStarted := make(chan struct{})
+	workerCanceled := make(chan struct{})
+	workerWrite := make(chan error, 1)
+	oldRunID := make(chan int64, 1)
+	oldDone := make(chan error, 1)
+	go func() {
+		oldDone <- runWithTenantHealthSchedulerLeaseTTL(context.Background(), oldStore, "old-api-instance", 5*time.Second, func(runCtx context.Context) error {
+			lease, ok := runCtx.Value(tenantHealthSchedulerLeaseContextKey{}).(tenantHealthSchedulerLeaseContext)
+			if !ok {
+				return errors.New("old round has no lease context")
+			}
+			startedAt := time.Now().UTC()
+			runID, err := oldStore.StartTenantHealthSchedulerRunWithLease(runCtx, lease.ownerID, lease.generation, startedAt)
+			if err != nil {
+				return err
+			}
+			oldRunID <- runID
+
+			workerDone := make(chan struct{})
+			go func() {
+				close(workerStarted)
+				<-runCtx.Done()
+				close(workerCanceled)
+				workerWrite <- oldStore.RecordTenantConnectionHealthWithSchedulerLease(runCtx, adminstore.TenantConnectionHealth{
+					TenantID: tenantItem.ID, Status: "unhealthy", CheckedAt: time.Now().UTC(),
+					Message: "late old worker", ErrorCode: "connection_failed",
+				}, lease.ownerID, lease.generation)
+				close(workerDone)
+			}()
+			<-workerDone
+
+			finishErr := oldStore.FinishTenantHealthSchedulerRunWithLease(
+				context.Background(), lease.ownerID, lease.generation, runID,
+				time.Now().UTC(), time.Since(startedAt).Milliseconds(), "succeeded", "",
+			)
+			return finishErr
+		})
+	}()
+
+	select {
+	case <-workerStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("old API instance did not start its worker")
+	}
+	runID := <-oldRunID
+
+	if err := oldStore.ReleaseTenantHealthSchedulerLeaseWithGeneration(context.Background(), "old-api-instance", 1); err != nil {
+		t.Fatalf("release old lease: %v", err)
+	}
+	takeoverAt := time.Now().UTC()
+	acquired, generation, err := newStore.AcquireTenantHealthSchedulerLease(context.Background(), "new-api-instance", takeoverAt, 5*time.Second)
+	if err != nil || !acquired || generation != 2 {
+		t.Fatalf("new API instance takeover: acquired=%v generation=%d err=%v", acquired, generation, err)
+	}
+
+	select {
+	case <-workerCanceled:
+	case <-time.After(4 * time.Second):
+		t.Fatal("old worker was not canceled after lease takeover")
+	}
+	select {
+	case err := <-workerWrite:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("late old worker write error=%v, want context canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("late old worker write did not return")
+	}
+
+	newStarted := time.Now().UTC()
+	newRunID, err := newStore.StartTenantHealthSchedulerRunWithLease(context.Background(), "new-api-instance", generation, newStarted)
+	if err != nil {
+		t.Fatalf("start replacement run: %v", err)
+	}
+	if err := newStore.RecordTenantConnectionHealthWithSchedulerLease(context.Background(), adminstore.TenantConnectionHealth{
+		TenantID: tenantItem.ID, Status: "healthy", CheckedAt: newStarted,
+		Message: "replacement instance result",
+	}, "new-api-instance", generation); err != nil {
+		t.Fatalf("persist replacement health result: %v", err)
+	}
+	if err := newStore.FinishTenantHealthSchedulerRunWithLease(
+		context.Background(), "new-api-instance", generation, newRunID,
+		newStarted.Add(time.Millisecond), 1, "succeeded", "",
+	); err != nil {
+		t.Fatalf("finish replacement run: %v", err)
+	}
+
+	select {
+	case err := <-oldDone:
+		if !errors.Is(err, errTenantHealthSchedulerLeaseLost) {
+			t.Fatalf("old API instance result=%v, want lease lost", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("old API instance did not stop after takeover")
+	}
+
+	history, err := newStore.ListTenantConnectionHealth(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || history[0].Status != "healthy" || history[0].Message != "replacement instance result" {
+		t.Fatalf("late old worker overwrote replacement health result: %+v", history)
+	}
+	page, err := newStore.ListTenantHealthSchedulerRuns(context.Background(), adminstore.TenantHealthSchedulerRunFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oldRunFound, newRunSucceeded bool
+	for _, item := range page.Items {
+		if item.ID == runID {
+			oldRunFound = true
+			if item.Status != "running" {
+				t.Fatalf("old run status=%q, want running until recovery", item.Status)
+			}
+		}
+		if item.ID == newRunID {
+			newRunSucceeded = item.Status == "succeeded"
+		}
+	}
+	if !oldRunFound || !newRunSucceeded {
+		t.Fatalf("run history missing expected states: old=%v newSucceeded=%v items=%+v", oldRunFound, newRunSucceeded, page.Items)
+	}
+
+	recovered, err := newStore.RecoverStaleTenantHealthSchedulerRunsWithLease(context.Background(), "new-api-instance", generation, time.Now().UTC())
+	if err != nil || recovered != 1 {
+		t.Fatalf("recover old run: recovered=%d err=%v, want one interrupted run", recovered, err)
+	}
+	page, err = newStore.ListTenantHealthSchedulerRuns(context.Background(), adminstore.TenantHealthSchedulerRunFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range page.Items {
+		if item.ID == runID && item.Status != "interrupted" {
+			t.Fatalf("recovered old run status=%q, want interrupted", item.Status)
+		}
+	}
+}
