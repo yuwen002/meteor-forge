@@ -550,3 +550,103 @@ func TestTenantHealthSchedulerTakeoverFencesLateWorkerWrites(t *testing.T) {
 		}
 	}
 }
+
+
+// TestRunWithTenantHealthSchedulerLeaseRecoversAfterMetadataDatabaseReturns
+// verifies that a fresh API instance can take over after an outage expires the
+// old instance's lease, without running overlapping rounds.
+func TestRunWithTenantHealthSchedulerLeaseRecoversAfterMetadataDatabaseReturns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scheduler-recovery.db")
+	oldStore, err := adminstore.Open(context.Background(), path, strings.Repeat("0", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	oldStarted := make(chan struct{})
+	oldCanceled := make(chan struct{})
+	oldDone := make(chan error, 1)
+	go func() {
+		oldDone <- runWithTenantHealthSchedulerLeaseTTL(context.Background(), oldStore, "api-instance-before-outage", 5*time.Second, func(runCtx context.Context) error {
+			close(oldStarted)
+			<-runCtx.Done()
+			close(oldCanceled)
+			return runCtx.Err()
+		})
+	}()
+
+	select {
+	case <-oldStarted:
+	case <-time.After(2 * time.Second):
+		_ = oldStore.Close()
+		t.Fatal("old scheduler did not acquire the lease")
+	}
+
+	outageAt := time.Now().UTC()
+	if err := oldStore.Close(); err != nil {
+		t.Fatalf("close metadata store during outage: %v", err)
+	}
+
+	select {
+	case <-oldCanceled:
+	case <-time.After(4 * time.Second):
+		t.Fatal("old scheduler did not stop after metadata database became unavailable")
+	}
+	select {
+	case err := <-oldDone:
+		if !errors.Is(err, errTenantHealthSchedulerLeaseLost) {
+			t.Fatalf("old scheduler result=%v, want lease lost", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("old scheduler did not finish after outage")
+	}
+
+	// Reopen the same metadata database as a replacement API instance. It must
+	// wait for the old lease expiry instead of stealing a still-valid lease.
+	newStore, err := adminstore.Open(context.Background(), path, strings.Repeat("0", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer newStore.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 9*time.Second)
+	defer cancel()
+	var replacementRuns atomic.Int32
+	var replacementGeneration atomic.Int64
+	for {
+		err = runWithTenantHealthSchedulerLeaseTTL(ctx, newStore, "api-instance-after-recovery", 5*time.Second, func(runCtx context.Context) error {
+			lease, ok := runCtx.Value(tenantHealthSchedulerLeaseContextKey{}).(tenantHealthSchedulerLeaseContext)
+			if !ok {
+				return errors.New("replacement round has no lease context")
+			}
+			replacementGeneration.Store(lease.generation)
+			replacementRuns.Add(1)
+			return nil
+		})
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, errTenantHealthSchedulerLeaseNotAcquired) {
+			t.Fatalf("replacement scheduler acquisition failed: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("replacement scheduler did not recover before deadline (outage began %s ago)", time.Since(outageAt))
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+
+	if got := replacementRuns.Load(); got != 1 {
+		t.Fatalf("replacement scheduler runs=%d, want exactly one", got)
+	}
+	if got := replacementGeneration.Load(); got != 2 {
+		t.Fatalf("replacement lease generation=%d, want 2", got)
+	}
+
+	info, err := newStore.GetTenantHealthSchedulerLeaseInfo(context.Background(), "api-instance-after-recovery", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Generation != 2 || info.Status != "held_by_this_instance" {
+		t.Fatalf("recovered lease info=%+v, want replacement owner at generation 2", info)
+	}
+}
