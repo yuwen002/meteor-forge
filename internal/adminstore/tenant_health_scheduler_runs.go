@@ -55,15 +55,36 @@ func (s *Store) StartTenantHealthSchedulerRunWithLease(ctx context.Context, owne
 	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || generation <= 0 || startedAt.IsZero() {
 		return 0, ErrTenantHealthSchedulerLeaseInvalid
 	}
+	return s.startTenantHealthSchedulerRunWithLeaseClock(ctx, ownerID, generation, startedAt, time.Now)
+}
+
+// startTenantHealthSchedulerRunWithLeaseClock obtains SQLite's write lock
+// before sampling the lease-validation time. The persisted startedAt remains
+// the caller's event timestamp, while lease validity uses live time after lock wait.
+func (s *Store) startTenantHealthSchedulerRunWithLeaseClock(
+	ctx context.Context, ownerID string, generation int64, startedAt time.Time, clock func() time.Time,
+) (int64, error) {
+	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || generation <= 0 || startedAt.IsZero() || clock == nil {
+		return 0, ErrTenantHealthSchedulerLeaseInvalid
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin tenant health scheduler run: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, "UPDATE admin_tenant_health_scheduler_lease SET updated_at = updated_at WHERE id = 1"); err != nil {
+		return 0, fmt.Errorf("lock tenant health scheduler lease for run start: %w", err)
+	}
+	leaseCheckedAt := clock().UTC()
 	startedAt = startedAt.UTC()
-	result, err := s.db.ExecContext(ctx, `INSERT INTO admin_tenant_health_scheduler_runs
+	result, err := tx.ExecContext(ctx, `INSERT INTO admin_tenant_health_scheduler_runs
 		(lease_generation, started_at, status)
 		SELECT ?, ?, 'running'
 		WHERE EXISTS (
 			SELECT 1 FROM admin_tenant_health_scheduler_lease
 			WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?
 		)`,
-		generation, formatTenantHealthTime(startedAt), ownerID, generation, startedAt.UnixNano())
+		generation, formatTenantHealthTime(startedAt), ownerID, generation, leaseCheckedAt.UnixNano())
 	if err != nil {
 		return 0, fmt.Errorf("start tenant health scheduler run with lease: %w", err)
 	}
@@ -77,6 +98,9 @@ func (s *Store) StartTenantHealthSchedulerRunWithLease(ctx context.Context, owne
 	id, err := result.LastInsertId()
 	if err != nil {
 		return 0, fmt.Errorf("read tenant health scheduler run ID: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit tenant health scheduler run: %w", err)
 	}
 	return id, nil
 }

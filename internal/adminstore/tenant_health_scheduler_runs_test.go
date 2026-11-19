@@ -448,3 +448,51 @@ func TestTenantHealthSchedulerRunRecoverySamplesLeaseTimeAfterWriteLock(t *testi
 		t.Fatalf("expired lease recovery mutated stale run: %+v", page)
 	}
 }
+
+
+// TestTenantHealthSchedulerRunStartSamplesLeaseTimeAfterWriteLock verifies
+// that a stale caller timestamp cannot authorize a run after lease expiry.
+func TestTenantHealthSchedulerRunStartSamplesLeaseTimeAfterWriteLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run-start-lock-expiry.db")
+	first, err := Open(context.Background(), path, testKey)
+	if err != nil { t.Fatal(err) }
+	defer first.Close()
+	first.db.SetMaxOpenConns(1)
+	if _, err := first.db.ExecContext(context.Background(), "PRAGMA busy_timeout = 10000"); err != nil { t.Fatal(err) }
+	second, err := Open(context.Background(), path, testKey)
+	if err != nil { t.Fatal(err) }
+	defer second.Close()
+
+	startedAt := time.Now().UTC()
+	acquired, generation, err := first.AcquireTenantHealthSchedulerLease(context.Background(), "run-start-lock-owner", startedAt, 5*time.Second)
+	if err != nil || !acquired { t.Fatalf("acquire lease: acquired=%v err=%v", acquired, err) }
+
+	lockTx, err := second.db.BeginTx(context.Background(), nil)
+	if err != nil { t.Fatal(err) }
+	if _, err := lockTx.ExecContext(context.Background(), "UPDATE admin_tenant_health_scheduler_lease SET updated_at = updated_at WHERE id = 1"); err != nil {
+		_ = lockTx.Rollback()
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, err := first.StartTenantHealthSchedulerRunWithLease(
+			context.Background(), "run-start-lock-owner", generation, startedAt,
+		)
+		result <- err
+	}()
+	time.Sleep(5500 * time.Millisecond)
+	if err := lockTx.Rollback(); err != nil { t.Fatal(err) }
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
+			t.Fatalf("run start after lock wait error=%v, want lease lost", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run start did not return after releasing SQLite write lock")
+	}
+	page, err := first.ListTenantHealthSchedulerRuns(context.Background(), TenantHealthSchedulerRunFilter{})
+	if err != nil { t.Fatal(err) }
+	if page.Total != 0 {
+		t.Fatalf("expired lease inserted scheduler run: %+v", page)
+	}
+}
