@@ -33,6 +33,21 @@ func newTenantHealthSchedulerOwnerID() (string, error) {
 	return hex.EncodeToString(value), nil
 }
 
+// tenantHealthSchedulerLeaseHeartbeatError distinguishes a lost lease from a
+// renewal interrupted by scheduler shutdown.
+func tenantHealthSchedulerLeaseHeartbeatError(ctx context.Context, renewed bool, renewErr error) error {
+	if ctx.Err() != nil {
+		return nil
+	}
+	if renewErr != nil {
+		return fmt.Errorf("%w: renewal failed: %w", errTenantHealthSchedulerLeaseLost, renewErr)
+	}
+	if !renewed {
+		return errTenantHealthSchedulerLeaseLost
+	}
+	return nil
+}
+
 // runWithTenantHealthSchedulerLease coordinates schedulers sharing one metadata
 // database. A heartbeat cancels the round if ownership is lost; expiry allows
 // another process to take over after an abnormal exit.
@@ -67,14 +82,20 @@ func runWithTenantHealthSchedulerLeaseTTL(ctx context.Context, store *adminstore
 				return
 			case <-ticker.C:
 				renewed, renewErr := store.RenewTenantHealthSchedulerLeaseWithGeneration(runCtx, ownerID, generation, time.Now().UTC(), ttl)
-				if renewErr != nil {
-					heartbeatDone <- fmt.Errorf("%w: renewal failed: %v", errTenantHealthSchedulerLeaseLost, renewErr)
-					cancel()
+				if heartbeatErr := tenantHealthSchedulerLeaseHeartbeatError(runCtx, renewed, renewErr); heartbeatErr != nil {
+					// Prefer an already-requested shutdown over a concurrent renewal
+					// failure; cancellation is not evidence that ownership was lost.
+					select {
+					case <-runCtx.Done():
+						heartbeatDone <- nil
+					default:
+						heartbeatDone <- heartbeatErr
+						cancel()
+					}
 					return
 				}
-				if !renewed {
-					heartbeatDone <- errTenantHealthSchedulerLeaseLost
-					cancel()
+				if runCtx.Err() != nil {
+					heartbeatDone <- nil
 					return
 				}
 			}

@@ -331,6 +331,26 @@ func TestTenantHealthSchedulerLeaseRepeatedTakeoversKeepGenerationMonotonic(t *t
 	}
 }
 
+func TestTenantHealthSchedulerLeaseHeartbeatErrorPrefersShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := tenantHealthSchedulerLeaseHeartbeatError(ctx, false, errors.New("database is closed")); err != nil {
+		t.Fatalf("heartbeat error during shutdown=%v, want nil", err)
+	}
+}
+
+func TestTenantHealthSchedulerLeaseHeartbeatErrorClassifiesLostLease(t *testing.T) {
+	ctx := context.Background()
+	if err := tenantHealthSchedulerLeaseHeartbeatError(ctx, false, nil); !errors.Is(err, errTenantHealthSchedulerLeaseLost) {
+		t.Fatalf("heartbeat error=%v, want lease lost", err)
+	}
+	cause := errors.New("metadata database unavailable")
+	if err := tenantHealthSchedulerLeaseHeartbeatError(ctx, false, cause); !errors.Is(err, errTenantHealthSchedulerLeaseLost) || !errors.Is(err, cause) {
+		t.Fatalf("heartbeat error=%v, want lease lost and original cause", err)
+	}
+}
+
 func TestRunWithTenantHealthSchedulerLeaseClassifiesEarlyFencedWrite(t *testing.T) {
 	store, err := adminstore.Open(context.Background(), filepath.Join(t.TempDir(), "early-fenced-write.db"), strings.Repeat("0", 64))
 	if err != nil {
