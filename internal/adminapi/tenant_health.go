@@ -315,7 +315,10 @@ func (s *Server) runTenantHealthCheckWithOptions(ctx context.Context, tenantID s
 		err = s.authStore.RecordTenantConnectionHealthWithSource(persistCtx, healthRecord, source)
 	}
 	if err != nil {
-		return tenant.HealthResult{}, errors.New("unable to persist tenant connection health")
+		if errors.Is(err, adminstore.ErrTenantHealthSchedulerLeaseLost) {
+			return tenant.HealthResult{}, fmt.Errorf("%w: unable to persist tenant connection health: %v", errTenantHealthSchedulerLeaseLost, err)
+		}
+		return tenant.HealthResult{}, fmt.Errorf("unable to persist tenant connection health: %w", err)
 	}
 	return result, nil
 }

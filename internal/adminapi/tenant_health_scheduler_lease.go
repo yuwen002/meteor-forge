@@ -94,5 +94,10 @@ func runWithTenantHealthSchedulerLeaseTTL(ctx context.Context, store *adminstore
 	if releaseErr != nil && ctx.Err() == nil {
 		return releaseErr
 	}
+	// A protected write may detect takeover before the next heartbeat fires.
+	// Preserve the scheduler's lease-lost classification in that case too.
+	if errors.Is(runErr, adminstore.ErrTenantHealthSchedulerLeaseLost) {
+		return errors.Join(errTenantHealthSchedulerLeaseLost, runErr)
+	}
 	return runErr
 }

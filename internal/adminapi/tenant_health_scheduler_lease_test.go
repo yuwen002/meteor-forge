@@ -330,3 +330,24 @@ func TestTenantHealthSchedulerLeaseRepeatedTakeoversKeepGenerationMonotonic(t *t
 		t.Fatalf("final lease info=%+v, want current owner and generation %d", info, takeovers)
 	}
 }
+
+func TestRunWithTenantHealthSchedulerLeaseClassifiesEarlyFencedWrite(t *testing.T) {
+	store, err := adminstore.Open(context.Background(), filepath.Join(t.TempDir(), "early-fenced-write.db"), strings.Repeat("0", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	err = runWithTenantHealthSchedulerLeaseTTL(
+		context.Background(),
+		store,
+		"early-fenced-writer",
+		5*time.Second,
+		func(context.Context) error {
+			return fmt.Errorf("persist scheduled health result: %w", adminstore.ErrTenantHealthSchedulerLeaseLost)
+		},
+	)
+	if !errors.Is(err, errTenantHealthSchedulerLeaseLost) {
+		t.Fatalf("lease wrapper error=%v, want scheduler lease-lost classification", err)
+	}
+}
