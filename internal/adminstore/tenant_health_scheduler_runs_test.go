@@ -62,13 +62,13 @@ func TestTenantHealthSchedulerRunRecoveryAndValidation(t *testing.T) {
 	if err != nil || !acquired { t.Fatalf("takeover lease acquired=%v err=%v", acquired, err) }
 	currentID, err := store.StartTenantHealthSchedulerRunWithLease(ctx, "recovery-owner-two", currentGeneration, takeoverAt)
 	if err != nil { t.Fatal(err) }
-	if _, err := store.RecoverStaleTenantHealthSchedulerRunsWithLease(ctx, "recovery-owner-one", currentGeneration, takeoverAt.Add(time.Second)); !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
+	if _, err := store.recoverStaleTenantHealthSchedulerRunsWithLeaseClock(ctx, "recovery-owner-one", currentGeneration, func() time.Time { return takeoverAt.Add(time.Second) }); !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
 		t.Fatalf("stale owner recovery error=%v, want lease lost", err)
 	}
-	if _, err := store.RecoverStaleTenantHealthSchedulerRunsWithLease(ctx, "recovery-owner-two", currentGeneration+1, takeoverAt.Add(time.Second)); !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
+	if _, err := store.recoverStaleTenantHealthSchedulerRunsWithLeaseClock(ctx, "recovery-owner-two", currentGeneration+1, func() time.Time { return takeoverAt.Add(time.Second) }); !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
 		t.Fatalf("wrong generation recovery error=%v, want lease lost", err)
 	}
-	recovered, err := store.RecoverStaleTenantHealthSchedulerRunsWithLease(ctx, "recovery-owner-two", currentGeneration, takeoverAt.Add(time.Second))
+	recovered, err := store.recoverStaleTenantHealthSchedulerRunsWithLeaseClock(ctx, "recovery-owner-two", currentGeneration, func() time.Time { return takeoverAt.Add(time.Second) })
 	if err != nil { t.Fatal(err) }
 	if recovered != 1 { t.Fatalf("recovered=%d, want 1", recovered) }
 	page, err := store.ListTenantHealthSchedulerRuns(ctx, TenantHealthSchedulerRunFilter{})
@@ -259,8 +259,8 @@ func TestTenantHealthSchedulerRunFinishRequiresCurrentLeaseGeneration(t *testing
 		t.Fatalf("stale owner changed run after takeover: %+v", page)
 	}
 
-	recovered, err := store.RecoverStaleTenantHealthSchedulerRunsWithLease(
-		ctx, "replacement-owner", newGeneration, takeoverAt.Add(time.Second),
+	recovered, err := store.recoverStaleTenantHealthSchedulerRunsWithLeaseClock(
+		ctx, "replacement-owner", newGeneration, func() time.Time { return takeoverAt.Add(time.Second) },
 	)
 	if err != nil || recovered != 1 {
 		t.Fatalf("replacement recovery: recovered=%d err=%v", recovered, err)
@@ -391,5 +391,60 @@ func TestTenantHealthSchedulerRunRetentionSamplesLeaseTimeAfterWriteLock(t *test
 	if err != nil { t.Fatal(err) }
 	if page.Total != 1 || page.Items[0].ID != runID {
 		t.Fatalf("expired lease deleted scheduler history after lock wait: %+v", page)
+	}
+}
+
+
+// TestTenantHealthSchedulerRunRecoverySamplesLeaseTimeAfterWriteLock verifies
+// that recovery cannot use a stale caller timestamp after waiting for SQLite.
+func TestTenantHealthSchedulerRunRecoverySamplesLeaseTimeAfterWriteLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "recovery-lock-expiry.db")
+	first, err := Open(context.Background(), path, testKey)
+	if err != nil { t.Fatal(err) }
+	defer first.Close()
+	first.db.SetMaxOpenConns(1)
+	if _, err := first.db.ExecContext(context.Background(), "PRAGMA busy_timeout = 10000"); err != nil { t.Fatal(err) }
+	second, err := Open(context.Background(), path, testKey)
+	if err != nil { t.Fatal(err) }
+	defer second.Close()
+
+	startedAt := time.Now().UTC()
+	acquired, oldGeneration, err := first.AcquireTenantHealthSchedulerLease(context.Background(), "recovery-lock-old", startedAt, 5*time.Second)
+	if err != nil || !acquired { t.Fatalf("acquire old lease: acquired=%v err=%v", acquired, err) }
+	runID, err := first.StartTenantHealthSchedulerRunWithLease(context.Background(), "recovery-lock-old", oldGeneration, startedAt)
+	if err != nil { t.Fatal(err) }
+	if err := first.ReleaseTenantHealthSchedulerLeaseWithGeneration(context.Background(), "recovery-lock-old", oldGeneration); err != nil { t.Fatal(err) }
+	takeoverAt := time.Now().UTC()
+	acquired, newGeneration, err := second.AcquireTenantHealthSchedulerLease(context.Background(), "recovery-lock-new", takeoverAt, 5*time.Second)
+	if err != nil || !acquired { t.Fatalf("acquire replacement lease: acquired=%v err=%v", acquired, err) }
+
+	lockTx, err := second.db.BeginTx(context.Background(), nil)
+	if err != nil { t.Fatal(err) }
+	if _, err := lockTx.ExecContext(context.Background(), "UPDATE admin_tenant_health_scheduler_lease SET updated_at = updated_at WHERE id = 1"); err != nil {
+		_ = lockTx.Rollback()
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	staleCallerTime := time.Now().UTC()
+	go func() {
+		_, err := first.RecoverStaleTenantHealthSchedulerRunsWithLease(
+			context.Background(), "recovery-lock-new", newGeneration, staleCallerTime,
+		)
+		result <- err
+	}()
+	time.Sleep(5500 * time.Millisecond)
+	if err := lockTx.Rollback(); err != nil { t.Fatal(err) }
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
+			t.Fatalf("recovery after lock wait error=%v, want lease lost", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovery did not return after releasing SQLite write lock")
+	}
+	page, err := first.ListTenantHealthSchedulerRuns(context.Background(), TenantHealthSchedulerRunFilter{})
+	if err != nil { t.Fatal(err) }
+	if page.Total != 1 || page.Items[0].ID != runID || page.Items[0].Status != "running" || page.Items[0].FinishedAt != nil {
+		t.Fatalf("expired lease recovery mutated stale run: %+v", page)
 	}
 }

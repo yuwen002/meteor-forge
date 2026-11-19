@@ -219,10 +219,19 @@ func (s *Store) finishTenantHealthSchedulerRunTx(
 // obtains SQLite's write lock before validating the lease, keeping validation and
 // recovery serialized against lease takeover.
 func (s *Store) RecoverStaleTenantHealthSchedulerRunsWithLease(ctx context.Context, ownerID string, currentGeneration int64, recoveredAt time.Time) (int64, error) {
-	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || currentGeneration <= 0 || recoveredAt.IsZero() {
+	if recoveredAt.IsZero() {
 		return 0, ErrTenantHealthSchedulerLeaseInvalid
 	}
-	recoveredAt = recoveredAt.UTC()
+	return s.recoverStaleTenantHealthSchedulerRunsWithLeaseClock(ctx, ownerID, currentGeneration, time.Now)
+}
+
+// recoverStaleTenantHealthSchedulerRunsWithLeaseClock samples the recovery time
+// only after the SQLite write lock is acquired. A timestamp captured by the
+// caller can become stale while waiting for another transaction's write lock.
+func (s *Store) recoverStaleTenantHealthSchedulerRunsWithLeaseClock(ctx context.Context, ownerID string, currentGeneration int64, clock func() time.Time) (int64, error) {
+	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || currentGeneration <= 0 || clock == nil {
+		return 0, ErrTenantHealthSchedulerLeaseInvalid
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin stale tenant health scheduler run recovery: %w", err)
@@ -231,6 +240,7 @@ func (s *Store) RecoverStaleTenantHealthSchedulerRunsWithLease(ctx context.Conte
 	if _, err := tx.ExecContext(ctx, "UPDATE admin_tenant_health_scheduler_lease SET updated_at = updated_at WHERE id = 1"); err != nil {
 		return 0, fmt.Errorf("lock tenant health scheduler lease for recovery: %w", err)
 	}
+	recoveredAt := clock().UTC()
 	var valid int
 	err = tx.QueryRowContext(ctx, `SELECT 1 FROM admin_tenant_health_scheduler_lease
 		WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?`,
