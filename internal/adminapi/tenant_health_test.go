@@ -550,7 +550,10 @@ func TestRunTenantHealthChecksConcurrentlyStopsDispatchAfterCancellation(t *test
 		t.Fatal("in-flight health checks did not stop after cancellation")
 	}
 
-	if got := len(started); got != 4 {
+	// The first four notifications were consumed while waiting for the pool
+	// to saturate; any remaining notification means a queued tenant started
+	// after cancellation.
+	if got := 4 + len(started); got != 4 {
 		t.Fatalf("health checks started=%d after cancellation, want exactly 4 in-flight workers", got)
 	}
 }
