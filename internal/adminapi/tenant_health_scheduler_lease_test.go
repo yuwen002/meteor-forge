@@ -425,7 +425,9 @@ func TestTenantHealthSchedulerTakeoverFencesLateWorkerWrites(t *testing.T) {
 				close(workerStarted)
 				<-runCtx.Done()
 				close(workerCanceled)
-				workerWrite <- oldStore.RecordTenantConnectionHealthWithSchedulerLease(runCtx, adminstore.TenantConnectionHealth{
+				// Simulate a worker that ignores cancellation and returns late. The
+				// store must reject it through owner/generation lease fencing.
+				workerWrite <- oldStore.RecordTenantConnectionHealthWithSchedulerLease(context.Background(), adminstore.TenantConnectionHealth{
 					TenantID: tenantItem.ID, Status: "unhealthy", CheckedAt: time.Now().UTC(),
 					Message: "late old worker", ErrorCode: "connection_failed",
 				}, lease.ownerID, lease.generation)
@@ -464,8 +466,8 @@ func TestTenantHealthSchedulerTakeoverFencesLateWorkerWrites(t *testing.T) {
 	}
 	select {
 	case err := <-workerWrite:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("late old worker write error=%v, want context canceled", err)
+		if !errors.Is(err, adminstore.ErrTenantHealthSchedulerLeaseLost) {
+			t.Fatalf("late old worker write error=%v, want lease lost from fencing", err)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("late old worker write did not return")
@@ -498,12 +500,21 @@ func TestTenantHealthSchedulerTakeoverFencesLateWorkerWrites(t *testing.T) {
 		t.Fatal("old API instance did not stop after takeover")
 	}
 
-	history, err := newStore.ListTenantConnectionHealth(context.Background())
+	history, err := newStore.ListTenantConnectionHealthHistory(context.Background(), adminstore.TenantHealthHistoryFilter{
+		TenantID: tenantItem.ID, Limit: 10,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(history) != 1 || history[0].Status != "healthy" || history[0].Message != "replacement instance result" {
-		t.Fatalf("late old worker overwrote replacement health result: %+v", history)
+	if len(history.Items) != 1 || history.Items[0].Status != "healthy" || history.Items[0].Source != "scheduled" {
+		t.Fatalf("late old worker wrote a stale health history row: %+v", history.Items)
+	}
+	latest, err := newStore.ListTenantConnectionHealth(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(latest) != 1 || latest[0].Status != "healthy" {
+		t.Fatalf("late old worker overwrote replacement health snapshot: %+v", latest)
 	}
 	page, err := newStore.ListTenantHealthSchedulerRuns(context.Background(), adminstore.TenantHealthSchedulerRunFilter{Limit: 10})
 	if err != nil {
