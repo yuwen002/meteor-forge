@@ -298,10 +298,17 @@ func (s *Store) recordTenantConnectionHealth(ctx context.Context, item TenantCon
 	defer tx.Rollback() //nolint:errcheck
 
 	if requireLease {
+		// Obtain SQLite's write lock before sampling time or validating the lease.
+		// Otherwise a transaction can wait past lease expiry with a stale read
+		// and still attempt to persist a scheduled result.
+		if _, err := tx.ExecContext(ctx, "UPDATE admin_tenant_health_scheduler_lease SET updated_at = updated_at WHERE id = 1"); err != nil {
+			return fmt.Errorf("lock tenant health scheduler lease before persisting result: %w", err)
+		}
+		leaseCheckedAt := time.Now().UTC()
 		var leaseExists int
 		err := tx.QueryRowContext(ctx, `SELECT 1 FROM admin_tenant_health_scheduler_lease
 			WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?`,
-			leaseOwner, leaseGeneration, time.Now().UTC().UnixNano()).Scan(&leaseExists)
+			leaseOwner, leaseGeneration, leaseCheckedAt.UnixNano()).Scan(&leaseExists)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrTenantHealthSchedulerLeaseLost
 		}

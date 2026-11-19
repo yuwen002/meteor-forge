@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"encoding/base64"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -448,5 +449,88 @@ func TestTenantHealthScheduledResultRejectsStaleLeaseGeneration(t *testing.T) {
 	}
 	if len(latest) != 1 || latest[0].Status != "healthy" {
 		t.Fatalf("current generation latest snapshot mismatch: %+v", latest)
+	}
+}
+
+
+// TestTenantHealthScheduledResultSamplesLeaseTimeAfterWriteLock verifies that
+// a scheduled result blocked on SQLite's writer lock cannot persist after its
+// lease expires.
+func TestTenantHealthScheduledResultSamplesLeaseTimeAfterWriteLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scheduled-health-lock-expiry.db")
+	first, err := Open(context.Background(), path, testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	first.db.SetMaxOpenConns(1)
+	if _, err := first.db.ExecContext(context.Background(), "PRAGMA busy_timeout = 10000"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := Open(context.Background(), path, testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+
+	tenant := newTenantForHealthTest(t, first, "scheduled-lock-expiry")
+	now := time.Now().UTC()
+	acquired, generation, err := first.AcquireTenantHealthSchedulerLease(
+		context.Background(), "scheduled-lock-owner", now, 5*time.Second,
+	)
+	if err != nil || !acquired {
+		t.Fatalf("acquire scheduler lease: acquired=%v generation=%d err=%v", acquired, generation, err)
+	}
+
+	lockTx, err := second.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockTx.ExecContext(context.Background(), "UPDATE admin_tenant_health_scheduler_lease SET updated_at = updated_at WHERE id = 1"); err != nil {
+		_ = lockTx.Rollback()
+		t.Fatal(err)
+	}
+
+	writeResult := make(chan error, 1)
+	go func() {
+		writeResult <- first.RecordTenantConnectionHealthWithSchedulerLease(
+			context.Background(),
+			TenantConnectionHealth{
+				TenantID: tenant.ID,
+				Status: "healthy",
+				CheckedAt: now,
+				Message: "connection successful",
+			},
+			"scheduled-lock-owner",
+			generation,
+		)
+	}()
+
+	// The lease expires while the scheduled write is blocked. Keep the wait
+	// below the configured SQLite busy timeout so the test exercises lease
+	// validation after lock acquisition rather than SQLITE_BUSY.
+	time.Sleep(5500 * time.Millisecond)
+	if err := lockTx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-writeResult:
+		if !errors.Is(err, ErrTenantHealthSchedulerLeaseLost) {
+			t.Fatalf("scheduled write after lock wait error=%v, want lease lost", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("scheduled write did not return after releasing SQLite write lock")
+	}
+
+	history, err := first.ListTenantConnectionHealthHistory(context.Background(), TenantHealthHistoryFilter{TenantID: tenant.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, err := first.ListTenantConnectionHealth(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Items) != 0 || len(latest) != 0 {
+		t.Fatalf("expired scheduler lease persisted health result: history=%+v latest=%+v", history.Items, latest)
 	}
 }
