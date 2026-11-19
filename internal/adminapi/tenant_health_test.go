@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yuwen002/meteor-forge/internal/adminstore"
+	"github.com/yuwen002/meteor-forge/pkg/tenant"
 )
 
 func TestTenantHealthRoutesRequireAdministratorForChecks(t *testing.T) {
@@ -277,6 +278,24 @@ func TestTenantHealthEndpointsRejectAnonymousRequests(t *testing.T) {
 	}
 }
 
+
+func TestShouldInvalidateTenantHealthPool(t *testing.T) {
+	unhealthy := tenant.HealthResult{Status: tenant.HealthStatusUnhealthy, ErrorCode: tenant.HealthErrorConnectionRefused}
+	if !shouldInvalidateTenantHealthPool(context.Background(), unhealthy) {
+		t.Fatal("a genuine connection failure should invalidate the current pool")
+	}
+
+	canceledResult := tenant.HealthResult{Status: tenant.HealthStatusUnhealthy, ErrorCode: tenant.HealthErrorCanceled}
+	if shouldInvalidateTenantHealthPool(context.Background(), canceledResult) {
+		t.Fatal("a canceled ping should not invalidate the current pool")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if shouldInvalidateTenantHealthPool(ctx, unhealthy) {
+		t.Fatal("a canceled health-check context should not invalidate the current pool")
+	}
+}
 
 func TestTenantHealthCheckCancellationDoesNotPersistResult(t *testing.T) {
 	store, err := adminstore.Open(context.Background(), ":memory:", apiTestKey)

@@ -239,6 +239,14 @@ func (s *Server) listTenantHealthHistory(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, page)
 }
 
+// shouldInvalidateTenantHealthPool avoids retiring a reusable pool when a
+// health check was interrupted by request cancellation or scheduler shutdown.
+func shouldInvalidateTenantHealthPool(ctx context.Context, result tenant.HealthResult) bool {
+	return ctx.Err() == nil &&
+		result.Status == tenant.HealthStatusUnhealthy &&
+		result.ErrorCode != tenant.HealthErrorCanceled
+}
+
 func (s *Server) runTenantHealthCheck(ctx context.Context, tenantID string) (tenant.HealthResult, error) {
 	return s.runTenantHealthCheckWithOptions(ctx, tenantID, 5*time.Second, "manual")
 }
@@ -276,7 +284,7 @@ func (s *Server) runTenantHealthCheckWithOptions(ctx context.Context, tenantID s
 			if err := ctx.Err(); err != nil {
 				return tenant.HealthResult{}, err
 			}
-			if result.Status == tenant.HealthStatusUnhealthy {
+			if shouldInvalidateTenantHealthPool(ctx, result) {
 				s.pools.InvalidateIfCurrent(item.DataSourceID, db)
 			}
 		} else {
