@@ -632,6 +632,8 @@ GET /api/v1/tenant-discovery/preview?data_source_id=control-source-id
 
 只有取得共享调度租约的实例才会创建运行记录；租约竞争失败不会生成轮次记录。 运行记录与租户巡检历史共用 `history_retention_days` 保留配置；清理只删除已结束且超过保留期的记录，按 500 条批次执行，并在每批删除 SQL 中校验当前有效租约的 owner、generation 和过期时间。新 generation 接管时，旧 generation 遗留的 running 记录会标记为 interrupted。该接口记录的是全局调度轮次，不是每个租户的连接检查历史；租户级结果仍通过 `GET /tenant-health/history` 查询。Web Admin 在定时巡检区域展示运行轮次列表及汇总卡片。
 
+服务收到退出信号后，会先停止接收 HTTP 请求，再按顺序取消并等待定时巡检、分片 DDL 和迁移后台任务。后台管理器各自最多等待 10 秒；若 Worker 或 HTTP 请求未能在关闭期限内退出，进程会记录关闭不完整，并保留仍可能被使用的目标连接池和管理元数据库连接，直到进程退出，不会为了完成清理而提前关闭共享连接。正常关闭时，后台任务全部退出后才释放目标连接池和管理元数据库。服务重启后，遗留的运行中调度轮次会由新租约持有者恢复为 `interrupted`；不会重放未完成的巡检工作。
+
 ### GET /tenant-health/summary
 
 读取租户健康概览，所有已认证角色可读。响应字段分为两组：
