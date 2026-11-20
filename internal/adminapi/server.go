@@ -161,20 +161,43 @@ func newServerWithMigrationDir(store *adminstore.Store, migrationDir string, enf
 // Handler returns the HTTP handler. It is exposed to support embedding and tests.
 func (s *Server) Handler() http.Handler { return s.handler }
 
-// Close stops background work before releasing cached target database pools.
-func (s *Server) Close() error {
-	if s.healthScheduler != nil { s.healthScheduler.Close() }
-	if s.shardDDL != nil {
-		if err := s.shardDDL.Close(); err != nil { return err }
-	}
-	if s.tasks != nil {
-		if err := s.tasks.Close(); err != nil {
-			// Keep target pools alive while a driver that ignores cancellation may
-			// still be using them. The process supervisor enforces final shutdown.
-			return err
+// closeBackgroundTaskManagers gives every manager a chance to cancel and
+// drain its workers. Any error keeps shared target pools alive.
+func closeBackgroundTaskManagers(closeShardDDL, closeMigrations func() error) error {
+	var closeErrors []error
+	if closeShardDDL != nil {
+		if err := closeShardDDL(); err != nil {
+			closeErrors = append(closeErrors, fmt.Errorf("close shard DDL tasks: %w", err))
 		}
 	}
-	if s.pools == nil { return nil }
+	if closeMigrations != nil {
+		if err := closeMigrations(); err != nil {
+			closeErrors = append(closeErrors, fmt.Errorf("close migration tasks: %w", err))
+		}
+	}
+	return errors.Join(closeErrors...)
+}
+
+// Close stops background work before releasing cached target database pools.
+func (s *Server) Close() error {
+	if s.healthScheduler != nil {
+		s.healthScheduler.Close()
+	}
+	var closeShardDDL, closeMigrations func() error
+	if s.shardDDL != nil {
+		closeShardDDL = s.shardDDL.Close
+	}
+	if s.tasks != nil {
+		closeMigrations = s.tasks.Close
+	}
+	if err := closeBackgroundTaskManagers(closeShardDDL, closeMigrations); err != nil {
+		// Keep target pools alive while any driver that ignores cancellation may
+		// still be using them. The caller must also keep the metadata store alive.
+		return err
+	}
+	if s.pools == nil {
+		return nil
+	}
 	return s.pools.Close()
 }
 
