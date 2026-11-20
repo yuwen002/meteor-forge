@@ -537,3 +537,39 @@ func TestCleanupTenantHealthHistoryPreservesCompletedBatchCountOnLaterFailure(t 
 		t.Fatalf("deleted history count=%d, want 507 including the partial failing batch", deletedHistory)
 	}
 }
+
+
+func TestTenantHealthSchedulerCloseContextBoundsUnresponsiveRound(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			return adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 1, HistoryRetentionDays: 30}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error {
+			close(started)
+			<-release // Simulate a database driver that ignores context cancellation.
+			return nil
+		},
+		func(context.Context, int) error { return nil },
+	)
+	scheduler.Start(context.Background())
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		scheduler.Close()
+		t.Fatal("scheduled round did not start")
+	}
+
+	closeCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := scheduler.CloseContext(closeCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("CloseContext error=%v, want deadline exceeded", err)
+	}
+
+	close(release)
+	scheduler.Close()
+	if scheduler.Snapshot().Running {
+		t.Fatal("scheduler still reports a running round after the worker exited")
+	}
+}
