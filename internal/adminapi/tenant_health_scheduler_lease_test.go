@@ -796,7 +796,7 @@ func TestTenantHealthSchedulerRecoversFromSQLiteWriteLockAndPersistsHistory(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(history.Items) != 1 || history.Items[0].Status != "healthy" || history.Items[0].Message != "SQLite recovered" {
+	if len(history.Items) != 1 || history.Items[0].Status != "healthy" || history.Items[0].Message != "connection successful" {
 		t.Fatalf("recovered scheduled health history=%+v, want exactly one successful row", history.Items)
 	}
 	runs, err := store.ListTenantHealthSchedulerRuns(context.Background(), adminstore.TenantHealthSchedulerRunFilter{Limit: 10})
