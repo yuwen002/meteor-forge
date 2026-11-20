@@ -11,7 +11,8 @@ func TestCloseBackgroundTaskManagersAttemptsEveryManager(t *testing.T) {
 	shardDDLClosed := false
 	migrationsClosed := false
 
-	err := closeBackgroundTaskManagers(
+	err := closeBackgroundWorkers(
+		func() error { return errors.New("scheduler did not stop") },
 		func() error {
 			shardDDLClosed = true
 			return shardDDLErr
