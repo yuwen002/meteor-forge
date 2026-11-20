@@ -736,7 +736,7 @@ func TestTenantHealthSchedulerRecoversFromSQLiteWriteLockAndPersistsHistory(t *t
 				}
 				if err := store.RecordTenantConnectionHealthWithSchedulerLease(leaseCtx, adminstore.TenantConnectionHealth{
 					TenantID: tenantItem.ID, Status: "healthy", CheckedAt: checkedAt,
-					Message: "SQLite recovered", DurationMS: 1,
+					Message: "connection successful", DurationMS: 1,
 				}, lease.ownerID, lease.generation); err != nil {
 					return err
 				}
