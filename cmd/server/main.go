@@ -71,16 +71,20 @@ func main() {
 		log.Fatalf("initialize management administrator: %v", err)
 	}
 	bootstrapCancel()
+	migrationDir := os.Getenv("METEOR_MIGRATIONS_DIR")
+	apiServer := adminapi.NewServerWithMigrationDir(store, migrationDir)
+	// The API server owns background workers that may still use the metadata
+	// store when a database driver ignores cancellation. Only close the store
+	// after every worker has exited successfully; process exit reclaims it if
+	// bounded shutdown reports an outstanding worker.
 	defer func() {
+		if err := apiServer.Close(); err != nil {
+			log.Printf("API server shutdown incomplete; keeping metadata store open until process exit: %v", err)
+			return
+		}
 		if err := store.Close(); err != nil {
 			log.Printf("close management metadata store: %v", err)
 		}
-	}()
-
-	migrationDir := os.Getenv("METEOR_MIGRATIONS_DIR")
-	apiServer := adminapi.NewServerWithMigrationDir(store, migrationDir)
-	defer func() {
-		if err := apiServer.Close(); err != nil { log.Printf("close target database pools: %v", err) }
 	}()
 	httpServer := &http.Server{
 		Addr: addr, Handler: apiServer.Handler(),
