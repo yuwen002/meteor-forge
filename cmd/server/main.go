@@ -73,6 +73,7 @@ func main() {
 	bootstrapCancel()
 	migrationDir := os.Getenv("METEOR_MIGRATIONS_DIR")
 	apiServer := adminapi.NewServerWithMigrationDir(store, migrationDir)
+	var httpShutdownErr error
 	// The API server owns background workers that may still use the metadata
 	// store when a database driver ignores cancellation. Only close the store
 	// after every worker has exited successfully; process exit reclaims it if
@@ -80,6 +81,10 @@ func main() {
 	defer func() {
 		if err := apiServer.Close(); err != nil {
 			log.Printf("API server shutdown incomplete; keeping metadata store open until process exit: %v", err)
+			return
+		}
+		if httpShutdownErr != nil {
+			log.Printf("HTTP server shutdown incomplete; keeping metadata store open until process exit: %v", httpShutdownErr)
 			return
 		}
 		if err := store.Close(); err != nil {
@@ -107,6 +112,7 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		httpShutdownErr = err
 		log.Printf("admin API shutdown failed: %v", err)
 	}
 	if serveErr != nil {
