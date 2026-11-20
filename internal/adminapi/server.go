@@ -9,8 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/yuwen002/meteor-forge/internal/adminstore"
@@ -162,18 +162,24 @@ func newServerWithMigrationDir(store *adminstore.Store, migrationDir string, enf
 // Handler returns the HTTP handler. It is exposed to support embedding and tests.
 func (s *Server) Handler() http.Handler { return s.handler }
 
-// closeBackgroundTaskManagers gives every manager a chance to cancel and
-// drain its workers. Any error keeps shared target pools alive.
-func closeBackgroundTaskManagers(closeShardDDL, closeMigrations func() error) error {
-	var closeErrors []error
-	if closeShardDDL != nil {
-		if err := closeShardDDL(); err != nil {
-			closeErrors = append(closeErrors, fmt.Errorf("close shard DDL tasks: %w", err))
-		}
+// closeBackgroundWorkers gives every worker manager a chance to cancel and
+// drain its work. Any error keeps shared target pools and metadata storage alive.
+func closeBackgroundWorkers(closeScheduler, closeShardDDL, closeMigrations func() error) error {
+	closers := []struct {
+		name string
+		close func() error
+	}{
+		{name: "tenant health scheduler", close: closeScheduler},
+		{name: "shard DDL tasks", close: closeShardDDL},
+		{name: "migration tasks", close: closeMigrations},
 	}
-	if closeMigrations != nil {
-		if err := closeMigrations(); err != nil {
-			closeErrors = append(closeErrors, fmt.Errorf("close migration tasks: %w", err))
+	var closeErrors []error
+	for _, item := range closers {
+		if item.close == nil {
+			continue
+		}
+		if err := item.close(); err != nil {
+			closeErrors = append(closeErrors, fmt.Errorf("close %s: %w", item.name, err))
 		}
 	}
 	return errors.Join(closeErrors...)
@@ -181,8 +187,13 @@ func closeBackgroundTaskManagers(closeShardDDL, closeMigrations func() error) er
 
 // Close stops background work before releasing cached target database pools.
 func (s *Server) Close() error {
+	var closeScheduler func() error
 	if s.healthScheduler != nil {
-		s.healthScheduler.Close()
+		closeScheduler = func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			return s.healthScheduler.CloseContext(ctx)
+		}
 	}
 	var closeShardDDL, closeMigrations func() error
 	if s.shardDDL != nil {
@@ -191,9 +202,9 @@ func (s *Server) Close() error {
 	if s.tasks != nil {
 		closeMigrations = s.tasks.Close
 	}
-	if err := closeBackgroundTaskManagers(closeShardDDL, closeMigrations); err != nil {
-		// Keep target pools alive while any driver that ignores cancellation may
-		// still be using them. The caller must also keep the metadata store alive.
+	if err := closeBackgroundWorkers(closeScheduler, closeShardDDL, closeMigrations); err != nil {
+		// Keep target pools alive while any worker may still use them. The caller
+		// must also keep the metadata store alive until process exit.
 		return err
 	}
 	if s.pools == nil {
