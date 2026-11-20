@@ -157,6 +157,13 @@ func (s *tenantHealthScheduler) Refresh() {
 
 // Close cancels the current round and waits until the scheduler exits.
 func (s *tenantHealthScheduler) Close() {
+	_ = s.CloseContext(context.Background())
+}
+
+// CloseContext bounds shutdown when a database driver does not promptly honor
+// cancellation. On timeout, callers must keep the metadata store and target
+// pools alive until the process exits or the scheduler has stopped.
+func (s *tenantHealthScheduler) CloseContext(ctx context.Context) error {
 	s.lifecycleMu.Lock()
 	if !s.closed {
 		s.closed = true
@@ -169,7 +176,13 @@ func (s *tenantHealthScheduler) Close() {
 		}
 	}
 	s.lifecycleMu.Unlock()
-	<-s.done
+
+	select {
+	case <-s.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *tenantHealthScheduler) loop(ctx context.Context) {
