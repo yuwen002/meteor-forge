@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -671,5 +672,141 @@ func TestRunWithTenantHealthSchedulerLeaseRecoversAfterMetadataDatabaseReturns(t
 	}
 	if got := replacementGeneration.Load(); got != 2 {
 		t.Fatalf("replacement lease generation=%d, want 2", got)
+	}
+}
+
+
+// TestTenantHealthSchedulerRecoversFromSQLiteWriteLockAndPersistsHistory
+// exercises the real SQLite busy path, scheduler retry, lease acquisition, and
+// fenced history persistence as one end-to-end recovery scenario.
+func TestTenantHealthSchedulerRecoversFromSQLiteWriteLockAndPersistsHistory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scheduler-sqlite-recovery.db")
+	store, err := adminstore.Open(context.Background(), path, strings.Repeat("0", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	source, err := store.Create(context.Background(), adminstore.DataSourceInput{
+		Name: "recovery-source", Driver: "sqlite", DSN: ":memory:",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantItem, err := store.CreateTenant(context.Background(), adminstore.TenantInput{
+		Name: "Recovery tenant", Code: "recovery-tenant", DataSourceID: source.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lockDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockDB.Close()
+	lockDB.SetMaxOpenConns(1)
+	lockTx, err := lockDB.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockTx.ExecContext(context.Background(), `UPDATE admin_tenant_health_scheduler_lease
+		SET updated_at = updated_at WHERE id = 1`); err != nil {
+		_ = lockTx.Rollback()
+		t.Fatalf("hold SQLite metadata write lock: %v", err)
+	}
+
+	const ownerID = "sqlite-recovery-scheduler"
+	settings := adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 1, TimeoutSeconds: 5, HistoryRetentionDays: 30}
+	var attempts atomic.Int32
+	recovered := make(chan struct{})
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) { return settings, nil },
+		func(runCtx context.Context, _ adminstore.TenantHealthSettings) error {
+			attempts.Add(1)
+			err := runWithTenantHealthSchedulerLease(runCtx, store, ownerID, func(leaseCtx context.Context) error {
+				lease, ok := leaseCtx.Value(tenantHealthSchedulerLeaseContextKey{}).(tenantHealthSchedulerLeaseContext)
+				if !ok {
+					return errors.New("recovered scheduler round has no lease context")
+				}
+				checkedAt := time.Now().UTC()
+				runID, err := store.StartTenantHealthSchedulerRunWithLease(leaseCtx, lease.ownerID, lease.generation, checkedAt)
+				if err != nil {
+					return err
+				}
+				if err := store.RecordTenantConnectionHealthWithSchedulerLease(leaseCtx, adminstore.TenantConnectionHealth{
+					TenantID: tenantItem.ID, Status: "healthy", CheckedAt: checkedAt,
+					Message: "SQLite recovered", DurationMS: 1,
+				}, lease.ownerID, lease.generation); err != nil {
+					return err
+				}
+				if err := store.FinishTenantHealthSchedulerRunWithLease(leaseCtx, lease.ownerID, lease.generation, runID,
+					checkedAt.Add(time.Millisecond), 1, "succeeded", ""); err != nil {
+					return err
+				}
+				return nil
+			})
+			if err == nil {
+				close(recovered)
+			}
+			return err
+		},
+		func(context.Context, int) error { return nil },
+	)
+	scheduler.Start(context.Background())
+
+	// The store uses a 5-second SQLite busy timeout. Keep the real write lock
+	// beyond that timeout so the first lease acquisition observes SQLITE_BUSY.
+	deadline := time.NewTimer(6500 * time.Millisecond)
+	select {
+	case <-deadline.C:
+	case <-recovered:
+		_ = lockTx.Rollback()
+		scheduler.Close()
+		t.Fatal("scheduler unexpectedly acquired a lease while SQLite was write-locked")
+	}
+	if err := lockTx.Rollback(); err != nil {
+		scheduler.Close()
+		t.Fatalf("release SQLite metadata write lock: %v", err)
+	}
+
+	select {
+	case <-recovered:
+	case <-time.After(5 * time.Second):
+		scheduler.Close()
+		t.Fatalf("scheduler did not recover after SQLite lock release; attempts=%d snapshot=%+v", attempts.Load(), scheduler.Snapshot())
+	}
+	waitUntil := time.Now().Add(2 * time.Second)
+	for {
+		snapshot := scheduler.Snapshot()
+		if snapshot.LeaseAcquireFailureCount == 1 && snapshot.SuccessCount == 1 && !snapshot.Running {
+			break
+		}
+		if time.Now().After(waitUntil) {
+			scheduler.Close()
+			t.Fatalf("scheduler recovery counters were not published: %+v", scheduler.Snapshot())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	scheduler.Close()
+
+	history, err := store.ListTenantConnectionHealthHistory(context.Background(), adminstore.TenantHealthHistoryFilter{
+		TenantID: tenantItem.ID, Source: "scheduled", Limit: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Items) != 1 || history.Items[0].Status != "healthy" || history.Items[0].Message != "SQLite recovered" {
+		t.Fatalf("recovered scheduled health history=%+v, want exactly one successful row", history.Items)
+	}
+	runs, err := store.ListTenantHealthSchedulerRuns(context.Background(), adminstore.TenantHealthSchedulerRunFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs.Items) != 1 || runs.Items[0].Status != "succeeded" {
+		t.Fatalf("recovered scheduler run history=%+v, want exactly one succeeded run", runs.Items)
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("scheduler round attempts=%d, want one failed acquisition and one recovered round", got)
 	}
 }
