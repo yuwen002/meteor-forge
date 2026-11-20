@@ -1,0 +1,494 @@
+package adminstore
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+)
+
+var ErrTenantHealthSchedulerRunNotFound = errors.New("tenant health scheduler run not found")
+var ErrTenantHealthSchedulerRunFinalized = errors.New("tenant health scheduler run is already finalized")
+
+type TenantHealthSchedulerRun struct {
+	ID             int64      `json:"id"`
+	LeaseGeneration int64     `json:"lease_generation"`
+	StartedAt      time.Time  `json:"started_at"`
+	FinishedAt     *time.Time `json:"finished_at,omitempty"`
+	DurationMS     int64      `json:"duration_ms"`
+	Status         string     `json:"status"`
+	ErrorCode      string     `json:"error_code,omitempty"`
+	ErrorMessage   string     `json:"error_message,omitempty"`
+}
+
+type TenantHealthSchedulerRunFilter struct {
+	Status string
+	From   *time.Time
+	To     *time.Time
+	Limit  int
+	Offset int
+}
+
+type TenantHealthSchedulerRunSummary struct {
+	Total            int64 `json:"total"`
+	Running          int64 `json:"running"`
+	Succeeded        int64 `json:"succeeded"`
+	Failed           int64 `json:"failed"`
+	LeaseLost        int64 `json:"lease_lost"`
+	Interrupted      int64 `json:"interrupted"`
+	AverageDurationMS int64 `json:"average_duration_ms"`
+}
+
+type TenantHealthSchedulerRunPage struct {
+	Items   []TenantHealthSchedulerRun       `json:"items"`
+	Total   int64                            `json:"total"`
+	Summary TenantHealthSchedulerRunSummary  `json:"summary"`
+}
+
+// StartTenantHealthSchedulerRunWithLease inserts a run only while the supplied
+// owner and fencing generation still hold an unexpired shared lease. The
+// INSERT ... SELECT keeps the ownership check and insert in one database
+// statement, so an expired or superseded instance cannot create a new run.
+func (s *Store) StartTenantHealthSchedulerRunWithLease(ctx context.Context, ownerID string, generation int64, startedAt time.Time) (int64, error) {
+	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || generation <= 0 || startedAt.IsZero() {
+		return 0, ErrTenantHealthSchedulerLeaseInvalid
+	}
+	return s.startTenantHealthSchedulerRunWithLeaseClock(ctx, ownerID, generation, startedAt, time.Now)
+}
+
+// startTenantHealthSchedulerRunWithLeaseClock obtains SQLite's write lock
+// before sampling the lease-validation time. The persisted startedAt remains
+// the caller's event timestamp, while lease validity uses live time after lock wait.
+func (s *Store) startTenantHealthSchedulerRunWithLeaseClock(
+	ctx context.Context, ownerID string, generation int64, startedAt time.Time, clock func() time.Time,
+) (int64, error) {
+	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || generation <= 0 || startedAt.IsZero() || clock == nil {
+		return 0, ErrTenantHealthSchedulerLeaseInvalid
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin tenant health scheduler run: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, "UPDATE admin_tenant_health_scheduler_lease SET updated_at = updated_at WHERE id = 1"); err != nil {
+		return 0, fmt.Errorf("lock tenant health scheduler lease for run start: %w", err)
+	}
+	leaseCheckedAt := clock().UTC()
+	startedAt = startedAt.UTC()
+	result, err := tx.ExecContext(ctx, `INSERT INTO admin_tenant_health_scheduler_runs
+		(lease_generation, started_at, status)
+		SELECT ?, ?, 'running'
+		WHERE EXISTS (
+			SELECT 1 FROM admin_tenant_health_scheduler_lease
+			WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?
+		)`,
+		generation, formatTenantHealthTime(startedAt), ownerID, generation, leaseCheckedAt.UnixNano())
+	if err != nil {
+		return 0, fmt.Errorf("start tenant health scheduler run with lease: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("read leased tenant health scheduler run insert count: %w", err)
+	}
+	if affected != 1 {
+		return 0, ErrTenantHealthSchedulerLeaseLost
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("read tenant health scheduler run ID: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit tenant health scheduler run: %w", err)
+	}
+	return id, nil
+}
+
+// FinishTenantHealthSchedulerRun finalizes one run with a whitelisted error classification.
+func (s *Store) FinishTenantHealthSchedulerRun(ctx context.Context, id int64, finishedAt time.Time, durationMS int64, status, errorCode string) error {
+	return s.finishTenantHealthSchedulerRun(ctx, "", 0, id, finishedAt, durationMS, status, errorCode)
+}
+
+// FinishTenantHealthSchedulerRunWithLease finalizes a run only while the exact
+// owner and fencing generation still hold an unexpired lease.
+func (s *Store) FinishTenantHealthSchedulerRunWithLease(ctx context.Context, ownerID string, generation, id int64, finishedAt time.Time, durationMS int64, status, errorCode string) error {
+	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || generation <= 0 || finishedAt.IsZero() {
+		return ErrTenantHealthSchedulerLeaseInvalid
+	}
+	// The caller timestamp may become stale while waiting for SQLite's write
+	// lock. Acquire the lock first, then sample live time for lease validation
+	// and the persisted finish timestamp.
+	return s.finishTenantHealthSchedulerRunWithLeaseClock(ctx, ownerID, generation, id, time.Now, durationMS, status, errorCode)
+}
+
+func (s *Store) finishTenantHealthSchedulerRunWithLeaseClock(
+	ctx context.Context, ownerID string, generation, id int64, clock func() time.Time,
+	durationMS int64, status, errorCode string,
+) error {
+	if clock == nil {
+		return ErrTenantHealthSchedulerLeaseInvalid
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin leased tenant health scheduler run finalization: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, "UPDATE admin_tenant_health_scheduler_lease SET updated_at = updated_at WHERE id = 1"); err != nil {
+		return fmt.Errorf("lock tenant health scheduler lease for run finalization: %w", err)
+	}
+	finishedAt := clock().UTC()
+	if err := s.finishTenantHealthSchedulerRunTx(ctx, tx, ownerID, generation, id, finishedAt, durationMS, status, errorCode); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit leased tenant health scheduler run finalization: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) finishTenantHealthSchedulerRun(ctx context.Context, ownerID string, generation, id int64, finishedAt time.Time, durationMS int64, status, errorCode string) error {
+	if id <= 0 || finishedAt.IsZero() || durationMS < 0 {
+		return ErrTenantHealthInvalidInput
+	}
+	if ownerID == "" {
+		return s.finishTenantHealthSchedulerRunTx(ctx, s.db, ownerID, generation, id, finishedAt, durationMS, status, errorCode)
+	}
+	return s.finishTenantHealthSchedulerRunWithLeaseClock(ctx, ownerID, generation, id, func() time.Time { return finishedAt }, durationMS, status, errorCode)
+}
+
+type tenantHealthRunExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func (s *Store) finishTenantHealthSchedulerRunTx(
+	ctx context.Context, execer tenantHealthRunExecer, ownerID string, generation, id int64,
+	finishedAt time.Time, durationMS int64, status, errorCode string,
+) error {
+	if id <= 0 || finishedAt.IsZero() || durationMS < 0 {
+		return ErrTenantHealthInvalidInput
+	}
+	message := ""
+	switch status {
+	case "succeeded":
+		errorCode = ""
+	case "failed":
+		switch errorCode {
+		case "tenant_checks_failed":
+			message = "一个或多个租户巡检失败"
+		case "canceled":
+			message = "巡检因服务关闭或请求取消而中断"
+		default:
+			errorCode = "unknown"
+			message = "巡检执行失败"
+		}
+	case "lease_lost":
+		errorCode = "lease_lost"
+		message = "租约已丢失，旧实例停止本轮"
+	default:
+		return ErrTenantHealthInvalidInput
+	}
+
+	query := `UPDATE admin_tenant_health_scheduler_runs
+		SET finished_at = ?, duration_ms = ?, status = ?, error_code = ?, error_message = ?
+		WHERE id = ? AND status = 'running'`
+	args := []any{formatTenantHealthTime(finishedAt), durationMS, status, errorCode, message, id}
+	if ownerID != "" {
+		query += " AND lease_generation = ?"
+		args = append(args, generation)
+		query += ` AND EXISTS (
+			SELECT 1 FROM admin_tenant_health_scheduler_lease
+			WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?
+		)`
+		args = append(args, ownerID, generation, finishedAt.UTC().UnixNano())
+	}
+	result, err := execer.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("finish tenant health scheduler run: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read finalized tenant health scheduler run count: %w", err)
+	}
+	if affected == 0 {
+		if ownerID != "" {
+			var valid int
+			err := execer.QueryRowContext(ctx, `SELECT 1 FROM admin_tenant_health_scheduler_lease
+				WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?`,
+				ownerID, generation, finishedAt.UTC().UnixNano()).Scan(&valid)
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrTenantHealthSchedulerLeaseLost
+			}
+			if err != nil {
+				return fmt.Errorf("verify tenant health scheduler lease for run finalization: %w", err)
+			}
+		}
+		var runGeneration int64
+		if err := execer.QueryRowContext(ctx, "SELECT lease_generation FROM admin_tenant_health_scheduler_runs WHERE id = ?", id).Scan(&runGeneration); errors.Is(err, sql.ErrNoRows) {
+			return ErrTenantHealthSchedulerRunNotFound
+		} else if err != nil {
+			return fmt.Errorf("check tenant health scheduler run: %w", err)
+		}
+		if ownerID != "" && runGeneration != generation {
+			return ErrTenantHealthSchedulerLeaseLost
+		}
+		return ErrTenantHealthSchedulerRunFinalized
+	}
+	return nil
+}
+
+// RecoverStaleTenantHealthSchedulerRunsWithLease marks older unfinished runs interrupted
+// only while the caller still owns the current unexpired lease. The no-op update
+// obtains SQLite's write lock before validating the lease, keeping validation and
+// recovery serialized against lease takeover.
+func (s *Store) RecoverStaleTenantHealthSchedulerRunsWithLease(ctx context.Context, ownerID string, currentGeneration int64, recoveredAt time.Time) (int64, error) {
+	if recoveredAt.IsZero() {
+		return 0, ErrTenantHealthSchedulerLeaseInvalid
+	}
+	return s.recoverStaleTenantHealthSchedulerRunsWithLeaseClock(ctx, ownerID, currentGeneration, time.Now)
+}
+
+// recoverStaleTenantHealthSchedulerRunsWithLeaseClock samples the recovery time
+// only after the SQLite write lock is acquired. A timestamp captured by the
+// caller can become stale while waiting for another transaction's write lock.
+func (s *Store) recoverStaleTenantHealthSchedulerRunsWithLeaseClock(ctx context.Context, ownerID string, currentGeneration int64, clock func() time.Time) (int64, error) {
+	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || currentGeneration <= 0 || clock == nil {
+		return 0, ErrTenantHealthSchedulerLeaseInvalid
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin stale tenant health scheduler run recovery: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, "UPDATE admin_tenant_health_scheduler_lease SET updated_at = updated_at WHERE id = 1"); err != nil {
+		return 0, fmt.Errorf("lock tenant health scheduler lease for recovery: %w", err)
+	}
+	recoveredAt := clock().UTC()
+	var valid int
+	err = tx.QueryRowContext(ctx, `SELECT 1 FROM admin_tenant_health_scheduler_lease
+		WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?`,
+		ownerID, currentGeneration, recoveredAt.UnixNano()).Scan(&valid)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrTenantHealthSchedulerLeaseLost
+	}
+	if err != nil {
+		return 0, fmt.Errorf("verify tenant health scheduler lease for recovery: %w", err)
+	}
+
+	type staleRun struct {
+		id        int64
+		startedAt time.Time
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id, started_at
+		FROM admin_tenant_health_scheduler_runs
+		WHERE status = 'running' AND lease_generation < ?`, currentGeneration)
+	if err != nil {
+		return 0, fmt.Errorf("list stale tenant health scheduler runs: %w", err)
+	}
+	stale := make([]staleRun, 0)
+	for rows.Next() {
+		var item staleRun
+		var startedAt string
+		if err := rows.Scan(&item.id, &startedAt); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan stale tenant health scheduler run: %w", err)
+		}
+		item.startedAt, err = time.Parse(time.RFC3339Nano, startedAt)
+		if err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("parse stale tenant health scheduler run start: %w", err)
+		}
+		stale = append(stale, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("iterate stale tenant health scheduler runs: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("close stale tenant health scheduler runs: %w", err)
+	}
+
+	for _, item := range stale {
+		duration := recoveredAt.Sub(item.startedAt).Milliseconds()
+		if duration < 0 {
+			// Clock skew must not create a negative duration.
+			duration = 0
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE admin_tenant_health_scheduler_runs
+			SET finished_at = ?, duration_ms = ?, status = 'interrupted', error_code = 'interrupted',
+				error_message = '实例退出后租约已被新实例接管'
+			WHERE id = ? AND status = 'running' AND lease_generation < ?`,
+			formatTenantHealthTime(recoveredAt), duration, item.id, currentGeneration); err != nil {
+			return 0, fmt.Errorf("mark stale tenant health scheduler run interrupted: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit stale tenant health scheduler run recovery: %w", err)
+	}
+	return int64(len(stale)), nil
+}
+
+
+ // DeleteExpiredTenantHealthSchedulerRunsWithLease removes a bounded batch of
+// finalized scheduler runs only while the supplied owner and fencing generation
+// still hold an unexpired shared lease. It obtains SQLite's write lock before
+// sampling time, so lock contention cannot make an expired lease appear valid.
+func (s *Store) DeleteExpiredTenantHealthSchedulerRunsWithLease(
+	ctx context.Context, ownerID string, generation int64, now, before time.Time, limit int,
+) (int64, error) {
+	if strings.TrimSpace(ownerID) == "" || len(ownerID) > 128 || generation <= 0 || now.IsZero() || before.IsZero() || limit <= 0 || limit > 5000 {
+		return 0, ErrTenantHealthSchedulerLeaseInvalid
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin tenant health scheduler retention cleanup: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, "UPDATE admin_tenant_health_scheduler_lease SET updated_at = updated_at WHERE id = 1"); err != nil {
+		return 0, fmt.Errorf("lock tenant health scheduler lease for retention: %w", err)
+	}
+	leaseCheckedAt := time.Now().UTC()
+	result, err := tx.ExecContext(ctx, `DELETE FROM admin_tenant_health_scheduler_runs
+		WHERE id IN (
+			SELECT id FROM admin_tenant_health_scheduler_runs
+			WHERE finished_at IS NOT NULL AND status <> 'running' AND finished_at < ?
+			ORDER BY finished_at ASC, id ASC LIMIT ?
+		)
+		AND EXISTS (
+			SELECT 1 FROM admin_tenant_health_scheduler_lease
+			WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?
+		)`,
+		formatTenantHealthTime(before), limit, ownerID, generation, leaseCheckedAt.UnixNano())
+	if err != nil {
+		return 0, fmt.Errorf("delete expired tenant health scheduler runs: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count deleted tenant health scheduler runs: %w", err)
+	}
+	if affected == 0 {
+		var valid int
+		err := tx.QueryRowContext(ctx, `SELECT 1 FROM admin_tenant_health_scheduler_lease
+			WHERE id = 1 AND owner_id = ? AND generation = ? AND lease_until > ?`,
+			ownerID, generation, leaseCheckedAt.UnixNano()).Scan(&valid)
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrTenantHealthSchedulerLeaseLost
+		}
+		if err != nil {
+			return 0, fmt.Errorf("verify tenant health scheduler lease for retention: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit tenant health scheduler retention cleanup: %w", err)
+	}
+	return affected, nil
+}
+
+// ListTenantHealthSchedulerRuns returns a bounded, newest-first page of durable scheduler rounds.
+func (s *Store) ListTenantHealthSchedulerRuns(ctx context.Context, filter TenantHealthSchedulerRunFilter) (TenantHealthSchedulerRunPage, error) {
+	if filter.Status != "" {
+		switch filter.Status {
+		case "running", "succeeded", "failed", "lease_lost", "interrupted":
+		default:
+			return TenantHealthSchedulerRunPage{}, ErrTenantHealthInvalidInput
+		}
+	}
+	if filter.From != nil && filter.To != nil && filter.From.After(*filter.To) {
+		return TenantHealthSchedulerRunPage{}, ErrTenantHealthInvalidInput
+	}
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 || filter.Offset < 0 || filter.Offset > 1000000 {
+		return TenantHealthSchedulerRunPage{}, ErrTenantHealthInvalidInput
+	}
+	conditions := make([]string, 0, 3)
+	args := make([]any, 0, 3)
+	if filter.Status != "" {
+		conditions = append(conditions, "status = ?")
+		args = append(args, filter.Status)
+	}
+	if filter.From != nil {
+		conditions = append(conditions, "started_at >= ?")
+		args = append(args, formatTenantHealthTime(*filter.From))
+	}
+	if filter.To != nil {
+		conditions = append(conditions, "started_at <= ?")
+		args = append(args, formatTenantHealthTime(*filter.To))
+	}
+	where := ""
+	if len(conditions) > 0 {
+		where = " WHERE " + strings.Join(conditions, " AND ")
+	}
+	var total int64
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM admin_tenant_health_scheduler_runs"+where, args...).Scan(&total); err != nil {
+		return TenantHealthSchedulerRunPage{}, fmt.Errorf("count tenant health scheduler runs: %w", err)
+	}
+
+	// Summary follows the selected time range but intentionally ignores the
+	// status filter, so status filtering never hides the other outcome counts.
+	summaryConditions := make([]string, 0, 2)
+	summaryArgs := make([]any, 0, 2)
+	if filter.From != nil {
+		summaryConditions = append(summaryConditions, "started_at >= ?")
+		summaryArgs = append(summaryArgs, formatTenantHealthTime(*filter.From))
+	}
+	if filter.To != nil {
+		summaryConditions = append(summaryConditions, "started_at <= ?")
+		summaryArgs = append(summaryArgs, formatTenantHealthTime(*filter.To))
+	}
+	summaryWhere := ""
+	if len(summaryConditions) > 0 {
+		summaryWhere = " WHERE " + strings.Join(summaryConditions, " AND ")
+	}
+	var summary TenantHealthSchedulerRunSummary
+	err := s.db.QueryRowContext(ctx, `SELECT
+		COUNT(*),
+		COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status = 'lease_lost' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status = 'interrupted' THEN 1 ELSE 0 END), 0),
+		COALESCE(CAST(AVG(CASE WHEN status <> 'running' THEN duration_ms END) AS INTEGER), 0)
+		FROM admin_tenant_health_scheduler_runs`+summaryWhere, summaryArgs...).Scan(
+		&summary.Total, &summary.Running, &summary.Succeeded, &summary.Failed,
+		&summary.LeaseLost, &summary.Interrupted, &summary.AverageDurationMS,
+	)
+	if err != nil {
+		return TenantHealthSchedulerRunPage{}, fmt.Errorf("summarize tenant health scheduler runs: %w", err)
+	}
+	queryArgs := append(append([]any(nil), args...), limit, filter.Offset)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, lease_generation, started_at, finished_at, duration_ms, status, error_code, error_message
+		FROM admin_tenant_health_scheduler_runs`+where+` ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?`, queryArgs...)
+	if err != nil {
+		return TenantHealthSchedulerRunPage{}, fmt.Errorf("list tenant health scheduler runs: %w", err)
+	}
+	defer rows.Close()
+	items := make([]TenantHealthSchedulerRun, 0)
+	for rows.Next() {
+		var item TenantHealthSchedulerRun
+		var started string
+		var finished sql.NullString
+		if err := rows.Scan(&item.ID, &item.LeaseGeneration, &started, &finished, &item.DurationMS, &item.Status, &item.ErrorCode, &item.ErrorMessage); err != nil {
+			return TenantHealthSchedulerRunPage{}, fmt.Errorf("scan tenant health scheduler run: %w", err)
+		}
+		item.StartedAt, err = time.Parse(time.RFC3339Nano, started)
+		if err != nil {
+			return TenantHealthSchedulerRunPage{}, fmt.Errorf("parse tenant health scheduler run start: %w", err)
+		}
+		if finished.Valid {
+			value, parseErr := time.Parse(time.RFC3339Nano, finished.String)
+			if parseErr != nil {
+				return TenantHealthSchedulerRunPage{}, fmt.Errorf("parse tenant health scheduler run finish: %w", parseErr)
+			}
+			item.FinishedAt = &value
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return TenantHealthSchedulerRunPage{}, fmt.Errorf("iterate tenant health scheduler runs: %w", err)
+	}
+	return TenantHealthSchedulerRunPage{Items: items, Total: total, Summary: summary}, nil
+}

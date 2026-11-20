@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: ["**"]
   workflow_dispatch:
 
 jobs:
@@ -124,6 +124,9 @@ jobs:
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund
+
+      - name: Run frontend unit tests
+        run: npm test
 
       - name: Type check and build
         run: npm run build

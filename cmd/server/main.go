@@ -12,7 +12,30 @@ import (
 	"time"
 
 	"github.com/yuwen002/meteor-forge/internal/adminapi"
+	"github.com/yuwen002/meteor-forge/internal/adminstore"
 )
+
+
+// countForeignKeyViolations groups legacy metadata integrity findings by table.
+func countForeignKeyViolations(violations []adminstore.ForeignKeyViolation) map[string]int {
+	counts := make(map[string]int)
+	for _, violation := range violations {
+		counts[violation.Table]++
+	}
+	return counts
+}
+
+// waitForServerStop waits for either an OS shutdown signal or a listener failure.
+// Returning the listener error lets main finish graceful cleanup instead of
+// calling log.Fatalf, which would bypass deferred resource releases.
+func waitForServerStop(ctx context.Context, serverErr <-chan error) error {
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-serverErr:
+		return err
+	}
+}
 
 func main() {
 	addr := os.Getenv("METEOR_ADMIN_ADDR")
@@ -30,6 +53,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("initialize management metadata store: %v", err)
 	}
+	integrityCtx, integrityCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	violations, integrityErr := store.CheckForeignKeys(integrityCtx)
+	integrityCancel()
+	if integrityErr != nil {
+		log.Printf("check management metadata foreign keys: %v", integrityErr)
+	} else if len(violations) > 0 {
+		log.Printf("management metadata contains %d pre-existing foreign-key violations; records were preserved", len(violations))
+		for table, count := range countForeignKeyViolations(violations) {
+			log.Printf("management metadata foreign-key violations: table=%s count=%d", table, count)
+		}
+	}
 	bootstrapCtx, bootstrapCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := initializeAdministrator(bootstrapCtx, store); err != nil {
 		bootstrapCancel()
@@ -37,16 +71,25 @@ func main() {
 		log.Fatalf("initialize management administrator: %v", err)
 	}
 	bootstrapCancel()
+	migrationDir := os.Getenv("METEOR_MIGRATIONS_DIR")
+	apiServer := adminapi.NewServerWithMigrationDir(store, migrationDir)
+	var httpShutdownErr error
+	// The API server owns background workers that may still use the metadata
+	// store when a database driver ignores cancellation. Only close the store
+	// after every worker has exited successfully; process exit reclaims it if
+	// bounded shutdown reports an outstanding worker.
 	defer func() {
+		if err := apiServer.Close(); err != nil {
+			log.Printf("API server shutdown incomplete; keeping metadata store open until process exit: %v", err)
+			return
+		}
+		if httpShutdownErr != nil {
+			log.Printf("HTTP server shutdown incomplete; keeping metadata store open until process exit: %v", httpShutdownErr)
+			return
+		}
 		if err := store.Close(); err != nil {
 			log.Printf("close management metadata store: %v", err)
 		}
-	}()
-
-	migrationDir := os.Getenv("METEOR_MIGRATIONS_DIR")
-	apiServer := adminapi.NewServerWithMigrationDir(store, migrationDir)
-	defer func() {
-		if err := apiServer.Close(); err != nil { log.Printf("close target database pools: %v", err) }
 	}()
 	httpServer := &http.Server{
 		Addr: addr, Handler: apiServer.Handler(),
@@ -64,15 +107,15 @@ func main() {
 		}
 	}()
 
-	select {
-	case <-ctx.Done():
-	case err := <-serverErr:
-		log.Fatalf("admin API server failed: %v", err)
-	}
+	serveErr := waitForServerStop(ctx, serverErr)
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		httpShutdownErr = err
 		log.Printf("admin API shutdown failed: %v", err)
+	}
+	if serveErr != nil {
+		log.Printf("admin API server failed: %v", serveErr)
 	}
 }
