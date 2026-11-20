@@ -1,6 +1,6 @@
-# 管理 API：数据源
+# Web 管理后台 API 参考
 
-Base URL：`/api/v1`
+Base URL：`/api/v1`。下文接口路径均相对于该 Base URL；例如 `GET /tenants` 的完整路径为 `/api/v1/tenants`。
 
 管理 API 默认绑定 `127.0.0.1:8081`，需要先完成管理员初始化并通过 HttpOnly 会话 Cookie 登录。后端强制执行 RBAC 和同源校验；服务当前只接受 loopback 监听地址，不得暴露到公网。
 
@@ -404,7 +404,7 @@ ID 策略支持单点或闭区间预览：
 - SQLite 使用 CTAS（`CREATE TABLE ... AS SELECT ... WHERE 0`），仅复制列结构，不复制主键、约束、索引和触发器。生产环境需要这些对象时，应在克隆后通过独立、受审计的迁移补齐。
 - 当前只开放结构克隆，不提供数据复制、覆盖已有表、DROP 或自动清理。
 
-除公开健康检查与登录接口外，所有管理 API 均要求有效会话，并由后端 RBAC 强制授权。完整角色矩阵见 [角色权限矩阵](permissions.md)，认证细节见 [认证与安全说明](authentication.md)。管理 API 当前强制 loopback 监听，不得暴露公网。
+除公开健康检查与登录接口外，所有管理 API 均要求有效会话，并由后端 RBAC 强制授权。完整角色矩阵见 [角色权限矩阵](../web-admin/permissions.md)，认证细节见 [认证与安全说明](../web-admin/authentication.md)。管理 API 当前强制 loopback 监听，不得暴露公网。
 
 
 ## 认证、健康检查与操作审计接口索引
@@ -441,6 +441,115 @@ ID 策略支持单点或闭区间预览：
 
 响应包含 `items`、`total`、`limit`、`offset`。所有已认证角色可读取操作审计；安全审计事件与此接口分离，仅管理员可读取。
 
-## 当前不提供的 API
+## 动态租户发现 API
 
-当前没有租户定时/批量连接健康巡检 API、巡检历史查询 API、自动停用租户 API 或自动恢复 API。现有 `POST /tenants/{id}/test` 是管理员按需触发的单租户连接测试，超时 5 秒，不会改变租户状态。
+通过已登记的控制库数据源读取活跃租户，并将选中的租户映射到本地已登记的目标数据源。发现接口不会导入控制库中的 DSN，也不会自动创建目标数据源。
+
+### GET /tenant-discovery/preview
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `data_source_id` | 是 | 已登记的控制库数据源 ID |
+
+请求示例：
+
+```http
+GET /api/v1/tenant-discovery/preview?data_source_id=control-source-id
+```
+
+成功返回 HTTP 200：
+
+```json
+{
+  "control_data_source_id": "control-source-id",
+  "items": [
+    {
+      "control_tenant_id": "tenant-a",
+      "driver": "mysql",
+      "suggested_name": "tenant-a",
+      "suggested_code": "tenant-a",
+      "registered": false
+    }
+  ],
+  "count": 1,
+  "note": "preview only; no tenant metadata has been changed"
+}
+```
+
+- 只读取控制库中状态为 active 的租户。
+- `driver` 是控制库提供时才返回的可选字段。
+- `suggested_name` 和 `suggested_code` 是建议值，导入前可以由管理员调整。
+- `registered` 表示建议标识是否已被本地租户占用；不代表控制库租户已完成导入。
+- 控制库查询超时为 10 秒。连接失败或读取失败返回 HTTP 502；缺少 `data_source_id` 返回 HTTP 400。
+- 响应不包含控制库 DSN、目标 DSN 或其他连接凭据。
+
+### POST /tenant-discovery/sync
+
+显式确认导入选中的租户。仅创建本地租户登记，不会创建或修改目标数据源。
+
+请求示例：
+
+```json
+{
+  "control_data_source_id": "control-source-id",
+  "confirm": true,
+  "items": [
+    {
+      "control_tenant_id": "tenant-a",
+      "name": "Tenant A",
+      "code": "tenant-a",
+      "data_source_id": "registered-target-source-id"
+    }
+  ]
+}
+```
+
+字段说明：
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `control_data_source_id` | 是 | 已登记的控制库数据源 ID |
+| `confirm` | 是 | 必须为 `true`，否则返回 HTTP 400 |
+| `items` | 是 | 1–500 条待导入映射 |
+| `items[].control_tenant_id` | 是 | 控制库中的租户 ID，单批内必须唯一 |
+| `items[].name` | 是 | 本地租户名称 |
+| `items[].code` | 是 | 本地租户标识，必须满足租户标识校验规则 |
+| `items[].data_source_id` | 是 | 已登记的目标数据源 ID |
+
+成功返回 HTTP 201，包含创建的租户列表和数量。服务端会重新读取控制库，确保所选租户仍处于 active 状态；若控制库提供驱动类型，还会校验目标数据源驱动一致。校验或创建失败时不会覆盖已有租户；整批创建与租户生命周期审计在事务中提交。
+
+常见错误：
+
+| HTTP 状态 | 错误码 | 含义 |
+|---|---|---|
+| 400 | `confirmation_required` | 未显式设置 `confirm: true` |
+| 400 | `invalid_items` | 映射数量不在 1–500 范围内 |
+| 400 | `invalid_mapping` | 租户 ID 为空或重复 |
+| 400 | `invalid_target_data_source` | 目标数据源未登记 |
+| 400 | `driver_mismatch` | 控制库与目标数据源驱动不一致 |
+| 409 | `discovery_changed` | 预览后控制库租户已不再 active |
+| 502 | `tenant_discovery_failed` | 无法连接控制库或读取活跃租户 |
+
+预览和确认导入均仅允许 administrator。控制库凭据仅用于发现查询，不会回传或复制到本地租户记录。
+
+## 租户连接健康巡检 API
+
+### 租户连接健康巡检
+
+| 方法 | 路径 | 权限 | 说明 |
+|---|---|---|---|
+| GET | `/tenant-health` | 所有已认证角色 | 查询每个租户最近一次巡检结果 |
+| POST | `/tenants/{id}/health-check` | administrator | 巡检单个租户连接 |
+| POST | `/tenant-health-checks` | administrator | 批量巡检，`tenant_ids` 必须为 1–100 个唯一租户 ID |
+
+批量请求示例：
+
+```json
+{"tenant_ids":["tenant-id-1","tenant-id-2"]}
+```
+
+巡检最多 4 个并发，每个连接检查最多 5 秒。结果包含 `tenant_id`、`status`（healthy/unhealthy）、`checked_at`、`duration_ms` 和脱敏后的 `message`。管理元数据库只保留每个租户最近一次结果；暂不提供历史趋势和定时调度。
+
+原有 `POST /tenants/{id}/test` 保持兼容，现同样会记录最近一次巡检结果。巡检失败不会自动停用租户、修改租户配置或触发修复。原始驱动错误、DSN 和密码不会写入响应或巡检记录。

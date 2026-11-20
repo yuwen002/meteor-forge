@@ -242,6 +242,20 @@ func (s *Store) migrate(ctx context.Context) error {
 		ON admin_tenants(data_source_id)`); err != nil {
 		return fmt.Errorf("index tenant data source mapping: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admin_tenant_connection_health (
+		tenant_id TEXT PRIMARY KEY,
+		status TEXT NOT NULL CHECK(status IN ('healthy','unhealthy')),
+		checked_at TEXT NOT NULL,
+		duration_ms INTEGER NOT NULL DEFAULT 0,
+		message TEXT NOT NULL DEFAULT '',
+		FOREIGN KEY(tenant_id) REFERENCES admin_tenants(id) ON DELETE CASCADE
+	)`); err != nil {
+		return fmt.Errorf("create tenant connection health table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_admin_tenant_connection_health_checked
+		ON admin_tenant_connection_health(checked_at DESC)`); err != nil {
+		return fmt.Errorf("index tenant connection health: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admin_migration_task_tenants (
 		task_id TEXT PRIMARY KEY,
 		tenant_id TEXT NOT NULL,
@@ -500,6 +514,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
 		VALUES (14, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("record tenant lifecycle audit schema version: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO admin_schema_migrations (version, applied_at)
+		VALUES (15, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("record tenant connection health schema version: %w", err)
 	}
 	return tx.Commit()
 }

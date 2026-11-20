@@ -92,4 +92,4 @@
 - 当前登录限流仅为单进程内存状态，不应把它描述为多实例防护。
 - 对登录失败、角色变更、管理员删除和异常任务状态定期检查安全审计。
 
-相关文档：[部署与运维手册](deployment.md)、[API 文档](api.md)、[备份与恢复](backup-restore.md)。
+相关文档：[部署与运维手册](deployment.md)、[API 文档](../api/README.md)、[备份与恢复](backup-restore.md)。

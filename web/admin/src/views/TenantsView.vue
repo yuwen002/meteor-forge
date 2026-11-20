@@ -77,12 +77,21 @@ interface TenantInput {
   data_source_id: string
   status: 'active' | 'suspended'
 }
+interface TenantHealth {
+  tenant_id: string
+  status: 'healthy' | 'unhealthy'
+  checked_at: string
+  duration_ms: number
+  message: string
+}
 
 const { canManageTenants, canTestConnections, canRunMigrations } = useAdminPermissions()
 
 const items = ref<Tenant[]>([])
 const dataSources = ref<DataSource[]>([])
+const healthByTenant = ref<Record<string, TenantHealth>>({})
 const loading = ref(false)
+const healthBatching = ref(false)
 const saving = ref(false)
 const dialogVisible = ref(false)
 const discoveryVisible = ref(false)
@@ -105,12 +114,16 @@ const form = reactive<TenantInput>({
 async function load() {
   loading.value = true
   try {
-    const [tenantResponse, sourceResponse] = await Promise.all([
+    const [tenantResponse, sourceResponse, healthResponse] = await Promise.all([
       api.get<{ items: Tenant[] }>('/tenants'),
       api.get<{ items: DataSource[] }>('/datasources'),
+      api.get<{ items: TenantHealth[] }>('/tenant-health'),
     ])
     items.value = tenantResponse.data.items
     dataSources.value = sourceResponse.data.items
+    healthByTenant.value = Object.fromEntries(
+      healthResponse.data.items.map((item) => [item.tenant_id, item]),
+    )
   } catch {
     ElMessage.error('加载租户或数据源信息失败')
   } finally {
@@ -233,10 +246,47 @@ async function testConnection(item: Tenant) {
     const { data } = await api.post<{ success: boolean; message: string }>('/tenants/' + item.id + '/test')
     if (data.success) ElMessage.success(data.message)
     else ElMessage.warning(data.message)
+    await load()
   } catch {
     ElMessage.error('租户连接测试请求失败')
   } finally {
     testingID.value = ''
+  }
+}
+
+async function runBatchHealthCheck() {
+  if (!canTestConnections.value) return
+  if (!selectedTenantIDs.value.length) {
+    ElMessage.warning('请先选择需要巡检的运行中租户')
+    return
+  }
+  if (selectedTenantIDs.value.length > 100) {
+    ElMessage.warning('单次最多巡检 100 个租户，请减少选择数量')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将对所选 ${selectedTenantIDs.value.length} 个租户执行连接巡检，最多 4 个并发，每个连接最多等待 5 秒。巡检失败不会自动停用租户。`,
+      '确认批量连接巡检',
+      { type: 'warning', confirmButtonText: '开始巡检', cancelButtonText: '取消' },
+    )
+    healthBatching.value = true
+    const { data } = await api.post<{ items: TenantHealth[]; count: number }>(
+      '/tenant-health-checks', { tenant_ids: selectedTenantIDs.value },
+    )
+    healthByTenant.value = {
+      ...healthByTenant.value,
+      ...Object.fromEntries(data.items.map((item) => [item.tenant_id, item])),
+    }
+    const healthy = data.items.filter((item) => item.status === 'healthy').length
+    ElMessage.success(`巡检完成：${healthy} 个正常，${data.count - healthy} 个异常`)
+  } catch (error: unknown) {
+    if (error !== 'cancel' && error !== 'close') {
+      const response = (error as { response?: { data?: { message?: string } } })?.response
+      ElMessage.error(response?.data?.message ?? '批量连接巡检失败')
+    }
+  } finally {
+    healthBatching.value = false
   }
 }
 
@@ -319,6 +369,7 @@ onMounted(load)
         <span>{{ items.length }} 个租户</span>
       </div>
       <div class="toolbar-actions">
+        <el-button v-if="canTestConnections" plain :disabled="!selectedTenantIDs.length" :loading="healthBatching" @click="runBatchHealthCheck">批量巡检（{{ selectedTenantIDs.length }}）</el-button>
         <el-button v-if="canRunMigrations" type="success" plain :disabled="!selectedTenantIDs.length" :loading="batching" @click="runBatchMigrations">批量执行 Up（{{ selectedTenantIDs.length }}）</el-button>
         <el-button v-if="batch" text type="primary" @click="batchDialogVisible = true">查看最近批次</el-button>
         <el-button text :loading="loading" @click="load">刷新</el-button>
@@ -344,10 +395,30 @@ onMounted(load)
           </el-tag>
         </template>
       </el-table-column>
+      <el-table-column label="连接状态" width="130">
+        <template #default="{ row }">
+          <el-tag
+            v-if="healthByTenant[row.id]"
+            :type="healthByTenant[row.id].status === 'healthy' ? 'success' : 'danger'"
+            effect="plain"
+            :title="healthByTenant[row.id].message"
+          >{{ healthByTenant[row.id].status === 'healthy' ? '连接正常' : '连接异常' }}</el-tag>
+          <el-tag v-else type="info" effect="plain">未巡检</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="最近巡检" min-width="190">
+        <template #default="{ row }">
+          <span v-if="healthByTenant[row.id]">
+            {{ new Date(healthByTenant[row.id].checked_at).toLocaleString() }}
+            <small> · {{ healthByTenant[row.id].duration_ms }} ms</small>
+          </span>
+          <span v-else>—</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="updated_at" label="最近更新" min-width="190">
         <template #default="{ row }">{{ new Date(row.updated_at).toLocaleString() }}</template>
       </el-table-column>
-      <el-table-column label="操作" fixed="right" width="350">
+      <el-table-column label="操作" fixed="right" width="390">
         <template #default="{ row }">
           <el-button link @click="viewAudit(row)">审计</el-button>
           <el-button v-if="canTestConnections" link type="primary" :loading="testingID === row.id" @click="testConnection(row)">测试连接</el-button>
