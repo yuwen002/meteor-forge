@@ -641,7 +641,7 @@ func TestTenantHealthSchedulerHealthStatusDetectsStaleAndConsecutiveFailures(t *
 		{name: "recent success", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, IntervalSeconds: 300, TotalRuns: 2, LastSuccessAt: &recent}, want: "healthy"},
 		{name: "consecutive failures", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, IntervalSeconds: 300, TotalRuns: 3, ConsecutiveFailureCount: 2, LastSuccessAt: &recent}, want: "degraded"},
 		{name: "stale last success", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, IntervalSeconds: 300, TotalRuns: 2, LastSuccessAt: &old}, want: "stale"},
-		{name: "never succeeded and old failure", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, IntervalSeconds: 300, TotalRuns: 2, ConsecutiveFailureCount: 2, LastFinishedAt: &old}, want: "stale"},
+		{name: "never succeeded and old failure", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, IntervalSeconds: 300, TotalRuns: 2, ConsecutiveFailureCount: 2, ConsecutiveFailureSince: &old}, want: "stale"},
 		{name: "long interval uses three intervals", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, IntervalSeconds: 3600, TotalRuns: 2, LastSuccessAt: &recent}, want: "healthy"},
 	}
 	for _, tt := range tests {
@@ -664,6 +664,9 @@ func TestTenantHealthSchedulerConsecutiveFailuresResetAfterSuccess(t *testing.T)
 	snapshot := scheduler.Snapshot()
 	if snapshot.ConsecutiveFailureCount != 0 {
 		t.Fatalf("consecutive failures after success=%d, want 0", snapshot.ConsecutiveFailureCount)
+	}
+	if snapshot.ConsecutiveFailureSince != nil {
+		t.Fatalf("consecutive failure start should clear after success: %v", snapshot.ConsecutiveFailureSince)
 	}
 	if snapshot.SuccessCount != 1 || snapshot.FailureCount != 1 {
 		t.Fatalf("unexpected round counters after recovery: %+v", snapshot)
