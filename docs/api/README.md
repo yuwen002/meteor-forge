@@ -612,7 +612,7 @@ GET /api/v1/tenant-discovery/preview?data_source_id=control-source-id
 |---|---|
 | `status` | 调度状态：`disabled`、`initializing`、`scheduled`、`running` 或 `delayed`（计划触发超过 30 秒仍未开始） |
 | `health_status` | 执行健康：`unknown`（暂无有效轮次）、`healthy`（近期成功）、`degraded`（连续失败）或 `stale`（长期未成功） |
-| `consecutive_failure_count` | 当前进程连续失败轮次数；成功轮次重置为 0 |
+| `consecutive_failure_count` | 当前进程连续失败轮次数；成功轮次重置为 0 |\n| `consecutive_failure_since` | 当前连续失败序列的首次失败时间；成功轮次后省略 |
 | `enabled` / `running` | 当前配置是否启用、是否正在执行巡检轮次 |
 | `interval_seconds` | 最近一次成功读取的巡检间隔（秒） |
 | `total_runs` / `success_count` / `failure_count` | 当前进程启动以来的轮次总数、成功数和失败数 |
