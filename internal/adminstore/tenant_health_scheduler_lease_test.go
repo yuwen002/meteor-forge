@@ -498,3 +498,96 @@ func TestTenantHealthSchedulerLeaseGenerationExhaustionDoesNotOverflow(t *testin
 		t.Fatalf("active maximum-generation renewal=(%v, %d, %v), want unchanged generation", acquired, generation, err)
 	}
 }
+
+
+// TestTenantHealthSchedulerLeaseConcurrentTakeoverHasSingleWinner verifies
+// that an expired lease can be taken over by exactly one contender even when
+// several independent Store handles race at the same time. The generation must
+// advance once, and losing contenders must not overwrite the winning owner.
+func TestTenantHealthSchedulerLeaseConcurrentTakeoverHasSingleWinner(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "concurrent-takeover.db")
+	const contenders = 4
+	stores := make([]*Store, contenders)
+	for i := range stores {
+		store, err := Open(context.Background(), path, testKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stores[i] = store
+		defer store.Close()
+	}
+
+	start := time.Date(2026, 11, 22, 0, 0, 0, 0, time.UTC)
+	const ttl = 30 * time.Second
+	acquired, generation, err := stores[0].acquireTenantHealthSchedulerLeaseAt(
+		context.Background(), "previous-owner", start, ttl,
+	)
+	if err != nil || !acquired || generation != 1 {
+		t.Fatalf("seed lease: acquired=%v generation=%d err=%v", acquired, generation, err)
+	}
+
+	takeoverAt := start.Add(ttl)
+	ready := make(chan struct{}, contenders)
+	startRace := make(chan struct{})
+	type result struct {
+		owner string
+		acquired bool
+		generation int64
+		err error
+	}
+	results := make(chan result, contenders)
+	var wg sync.WaitGroup
+	for i, store := range stores {
+		owner := fmt.Sprintf("replacement-%d", i)
+		wg.Add(1)
+		go func(owner string, store *Store) {
+			defer wg.Done()
+			ready <- struct{}{}
+			<-startRace
+			ok, nextGeneration, err := store.acquireTenantHealthSchedulerLeaseAt(
+				context.Background(), owner, takeoverAt, ttl,
+			)
+			results <- result{owner: owner, acquired: ok, generation: nextGeneration, err: err}
+		}(owner, store)
+	}
+	for i := 0; i < contenders; i++ {
+		select {
+		case <-ready:
+		case <-time.After(3 * time.Second):
+			t.Fatal("takeover contenders did not become ready")
+		}
+	}
+	close(startRace)
+	wg.Wait()
+	close(results)
+
+	var winners int
+	var winningOwner string
+	for item := range results {
+		if item.err != nil {
+			t.Fatalf("contender %q failed: %v", item.owner, item.err)
+		}
+		if item.acquired {
+			winners++
+			winningOwner = item.owner
+			if item.generation != 2 {
+				t.Fatalf("winning contender %q acquired generation %d, want 2", item.owner, item.generation)
+			}
+		} else if item.generation != 0 {
+			t.Fatalf("losing contender %q returned generation %d, want 0", item.owner, item.generation)
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("concurrent takeover winners=%d, want exactly one", winners)
+	}
+
+	var storedOwner string
+	var storedGeneration int64
+	if err := stores[0].db.QueryRowContext(context.Background(), `SELECT owner_id, generation
+		FROM admin_tenant_health_scheduler_lease WHERE id = 1`).Scan(&storedOwner, &storedGeneration); err != nil {
+		t.Fatal(err)
+	}
+	if storedOwner != winningOwner || storedGeneration != 2 {
+		t.Fatalf("stored lease owner=%q generation=%d, want winner %q at generation 2", storedOwner, storedGeneration, winningOwner)
+	}
+}
