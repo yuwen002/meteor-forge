@@ -7,3 +7,8 @@ export function isTenantHealthScheduleDelayDelayed(delayMs: number): boolean {
 export function tenantHealthScheduleDelayTagType(delayMs: number): "danger" | "info" {
   return isTenantHealthScheduleDelayDelayed(delayMs) ? "danger" : "info"
 }
+
+export function tenantHealthScheduleDelayBarWidth(delayMs: number, maxDelayMs: number): number {
+  if (maxDelayMs <= 0 || delayMs <= 0) return 2
+  return Math.min(100, Math.max(2, (delayMs / maxDelayMs) * 100))
+}
