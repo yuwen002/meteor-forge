@@ -119,6 +119,7 @@ interface TenantHealthSchedulerSnapshot {
   status: 'initializing' | 'disabled' | 'scheduled' | 'running' | 'delayed'
   health_status: 'unknown' | 'healthy' | 'degraded' | 'stale'
   consecutive_failure_count: number
+  consecutive_failure_since: string | null
   enabled: boolean
   running: boolean
   interval_seconds: number
@@ -169,7 +170,7 @@ const dataSources = ref<DataSource[]>([])
 const healthByTenant = ref<Record<string, TenantHealth>>({})
 const healthSettings = reactive<TenantHealthSettings>({ enabled: false, interval_seconds: 300, timeout_seconds: 5, history_retention_days: 30, updated_at: "" })
 const healthScheduler = reactive<TenantHealthSchedulerSnapshot>({
-  status: 'disabled', health_status: 'unknown', consecutive_failure_count: 0, enabled: false, running: false, interval_seconds: 300, total_runs: 0,
+  status: 'disabled', health_status: 'unknown', consecutive_failure_count: 0, consecutive_failure_since: null, enabled: false, running: false, interval_seconds: 300, total_runs: 0,
   success_count: 0, failure_count: 0, lease_skipped_count: 0, lease_lost_count: 0, lease_acquire_failure_count: 0, last_started_at: null, last_finished_at: null,
   last_success_at: null, next_run_at: null, last_duration_ms: 0, last_schedule_delay_ms: 0,
   lease_status: "not_configured", lease_expires_at: null, lease_generation: 0, lease_remaining_seconds: 0,
