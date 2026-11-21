@@ -240,6 +240,20 @@ async function load() {
   }
 }
 
+function tenantHealthSchedulerStatusLabel(status: TenantHealthSchedulerSnapshot['status']): string {
+  const labels: Record<TenantHealthSchedulerSnapshot['status'], string> = {
+    initializing: '初始化中', disabled: '已停用', scheduled: '正常等待',
+    running: '正在执行', delayed: '执行延迟',
+  }
+  return labels[status]
+}
+
+function tenantHealthSchedulerStatusType(status: TenantHealthSchedulerSnapshot['status']): 'danger' | 'success' | 'info' {
+  if (status === 'delayed') return 'danger'
+  if (status === 'running') return 'success'
+  return 'info'
+}
+
 function tenantHealthErrorLabel(code?: string): string {
   const labels: Record<string, string> = {
     none: '无错误', timeout: '连接超时', canceled: '检查已取消',
@@ -819,7 +833,7 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
       </div>
     </section>
     <div v-loading="healthSchedulerLoading" class="health-scheduler-overview">
-      <div><span>调度状态</span><strong><el-tag :type="healthScheduler.status === 'delayed' ? 'danger' : healthScheduler.status === 'running' ? 'success' : 'info'" effect="plain">{{ ({ initializing: '初始化中', disabled: '已停用', scheduled: '正常等待', running: '正在执行', delayed: '执行延迟' } as const)[healthScheduler.status] }}</el-tag></strong></div>
+      <div><span>调度状态</span><strong><el-tag :type="tenantHealthSchedulerStatusType(healthScheduler.status)" effect="plain">{{ tenantHealthSchedulerStatusLabel(healthScheduler.status) }}</el-tag></strong></div>
       <div><span>进程内轮次</span><strong>{{ healthScheduler.total_runs }}</strong></div>
       <div><span>成功 / 失败</span><strong>{{ healthScheduler.success_count }} / {{ healthScheduler.failure_count }}</strong></div>
       <div><span>租约跳过 / 丢失</span><strong>{{ healthScheduler.lease_skipped_count }} / {{ healthScheduler.lease_lost_count }}</strong></div>
