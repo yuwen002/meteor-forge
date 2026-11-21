@@ -116,6 +116,7 @@ interface TenantHealthSettings {
   updated_at: string
 }
 interface TenantHealthSchedulerSnapshot {
+  status: 'initializing' | 'disabled' | 'scheduled' | 'running' | 'delayed'
   enabled: boolean
   running: boolean
   interval_seconds: number
@@ -166,7 +167,7 @@ const dataSources = ref<DataSource[]>([])
 const healthByTenant = ref<Record<string, TenantHealth>>({})
 const healthSettings = reactive<TenantHealthSettings>({ enabled: false, interval_seconds: 300, timeout_seconds: 5, history_retention_days: 30, updated_at: "" })
 const healthScheduler = reactive<TenantHealthSchedulerSnapshot>({
-  enabled: false, running: false, interval_seconds: 300, total_runs: 0,
+  status: 'disabled', enabled: false, running: false, interval_seconds: 300, total_runs: 0,
   success_count: 0, failure_count: 0, lease_skipped_count: 0, lease_lost_count: 0, lease_acquire_failure_count: 0, last_started_at: null, last_finished_at: null,
   last_success_at: null, next_run_at: null, last_duration_ms: 0, last_schedule_delay_ms: 0,
   lease_status: "not_configured", lease_expires_at: null, lease_generation: 0, lease_remaining_seconds: 0,
@@ -818,6 +819,7 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
       </div>
     </section>
     <div v-loading="healthSchedulerLoading" class="health-scheduler-overview">
+      <div><span>调度状态</span><strong><el-tag :type="healthScheduler.status === 'delayed' ? 'danger' : healthScheduler.status === 'running' ? 'success' : 'info'" effect="plain">{{ ({ initializing: '初始化中', disabled: '已停用', scheduled: '正常等待', running: '正在执行', delayed: '执行延迟' } as const)[healthScheduler.status] }}</el-tag></strong></div>
       <div><span>进程内轮次</span><strong>{{ healthScheduler.total_runs }}</strong></div>
       <div><span>成功 / 失败</span><strong>{{ healthScheduler.success_count }} / {{ healthScheduler.failure_count }}</strong></div>
       <div><span>租约跳过 / 丢失</span><strong>{{ healthScheduler.lease_skipped_count }} / {{ healthScheduler.lease_lost_count }}</strong></div>
@@ -832,6 +834,14 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
       <div><span>剩余 / 代次</span><strong>{{ healthScheduler.lease_remaining_seconds }} 秒 / {{ healthScheduler.lease_generation }}</strong></div>
       <div class="scheduler-refresh"><el-button text :loading="healthSchedulerLoading" @click="loadHealthScheduler">刷新运行状态</el-button></div>
     </div>
+    <el-alert
+      v-if="healthScheduler.status === 'delayed'"
+      title="定时巡检已超过计划触发时间 30 秒仍未开始。请检查管理元数据库连接与调度日志，并确认共享租约状态；若其他实例持有租约，当前实例跳过执行属于正常行为。"
+      type="error"
+      :closable="false"
+      show-icon
+      class="scheduler-error"
+    />
     <el-alert v-if="healthScheduler.last_error" :title="healthScheduler.last_error" type="warning" :closable="false" show-icon class="scheduler-error" />
     <TenantHealthRunsPanel />
 
