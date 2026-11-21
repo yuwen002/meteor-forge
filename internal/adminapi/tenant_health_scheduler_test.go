@@ -595,3 +595,33 @@ func TestTenantHealthSchedulerCloseContextBoundsUnresponsiveRound(t *testing.T) 
 		t.Fatal("scheduler still reports a running round after the worker exited")
 	}
 }
+
+
+func TestTenantHealthSchedulerStatusDistinguishesDelayedAndHealthyStates(t *testing.T) {
+	now := time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC)
+	next := now.Add(-tenantHealthSchedulerDelayGracePeriod - time.Millisecond)
+
+	tests := []struct {
+		name string
+		snapshot tenantHealthSchedulerSnapshot
+		want string
+	}{
+		{name: "disabled", snapshot: tenantHealthSchedulerSnapshot{Enabled: false}, want: "disabled"},
+		{name: "running", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, Running: true}, want: "running"},
+		{name: "initializing", snapshot: tenantHealthSchedulerSnapshot{Enabled: true}, want: "initializing"},
+		{name: "scheduled", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, NextRunAt: timePointer(now.Add(time.Minute))}, want: "scheduled"},
+		{name: "within grace period", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, NextRunAt: timePointer(now.Add(-tenantHealthSchedulerDelayGracePeriod))}, want: "scheduled"},
+		{name: "delayed", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, NextRunAt: &next}, want: "delayed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tenantHealthSchedulerStatus(tt.snapshot, now); got != tt.want {
+				t.Fatalf("tenantHealthSchedulerStatus()=%q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func timePointer(value time.Time) *time.Time {
+	return &value
+}
