@@ -1196,6 +1196,7 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
 @media (max-width: 460px) {
   .health-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .health-scheduler-overview { grid-template-columns: 1fr; }
+  .health-scheduler-overview .scheduler-delay-trend { grid-column: auto; }
   .health-trend-chart { min-width: 520px; }
   .history-toolbar .toolbar-actions { align-items: stretch; flex-direction: column; }
   .history-toolbar .toolbar-actions > * { width: 100% !important; }
