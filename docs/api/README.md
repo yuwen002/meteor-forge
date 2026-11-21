@@ -610,14 +610,14 @@ GET /api/v1/tenant-discovery/preview?data_source_id=control-source-id
 
 | 字段 | 说明 |
 |---|---|
-| `enabled` / `running` | 当前配置是否启用、是否正在执行巡检轮次 |
+| `status` | 调度状态：`disabled`（已停用）、`initializing`（尚未安排下一轮）、`scheduled`（正常等待）、`running`（正在执行）或 `delayed`（超过计划触发时间 30 秒仍未开始） |\n| `enabled` / `running` | 当前配置是否启用、是否正在执行巡检轮次 |
 | `interval_seconds` | 最近一次成功读取的巡检间隔（秒） |
 | `total_runs` / `success_count` / `failure_count` | 当前进程启动以来的轮次总数、成功数和失败数 |
 | `lease_skipped_count` | 因其他实例持有租约而跳过的轮次数 |
 | `lease_lost_count` | 巡检过程中租约丢失次数 |
 | `lease_acquire_failure_count` | 获取租约时元数据库访问失败次数 |
 | `last_started_at` / `last_finished_at` / `last_success_at` | 最近轮次开始、结束和成功时间；尚无记录时省略 |
-| `next_run_at` | 当前预计下一轮开始时间；禁用、运行中或尚未安排时省略 |
+| `next_run_at` | 当前计划触发时间；禁用、正式执行中或尚未安排时省略。触发后重新读取配置期间会暂时保留该时间，以便识别调度延迟 |
 | `last_duration_ms` | 最近一轮巡检执行耗时（毫秒） |
 | `last_schedule_delay_ms` | 最近一轮实际开始时间晚于计划触发时间的延迟（毫秒）；未发生延迟时为 0，进程内统计 |
 | `last_error` | 最近一次调度错误的固定脱敏摘要，不包含数据库驱动原始错误或连接凭据 |
