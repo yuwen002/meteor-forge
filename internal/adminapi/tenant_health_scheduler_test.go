@@ -376,7 +376,7 @@ func TestTenantHealthSchedulerTracksRecentScheduleDelayTrend(t *testing.T) {
 	base := time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC)
 	for _, delay := range []int64{0, 10, 31000, 20000} { scheduler.recordScheduleDelay(base, base.Add(time.Duration(delay)*time.Millisecond)) }
 	snapshot := scheduler.Snapshot()
-	if len(snapshot.RecentScheduleDelaysMS) != 4 || snapshot.AverageScheduleDelayMS != 15252 || snapshot.MaxScheduleDelayMS != 31000 || snapshot.DelayedScheduleCount != 1 { t.Fatalf("unexpected schedule delay trend: %+v", snapshot) }
+	if len(snapshot.RecentScheduleDelaysMS) != 4 || snapshot.AverageScheduleDelayMS != 12752 || snapshot.MaxScheduleDelayMS != 31000 || snapshot.DelayedScheduleCount != 1 { t.Fatalf("unexpected schedule delay trend: %+v", snapshot) }
 	for i := int64(4); i < 14; i++ { scheduler.recordScheduleDelay(base, base.Add(time.Duration(i*1000)*time.Millisecond)) }
 	snapshot = scheduler.Snapshot()
 	if len(snapshot.RecentScheduleDelaysMS) != 10 { t.Fatalf("recent sample count=%d, want 10", len(snapshot.RecentScheduleDelaysMS)) }
