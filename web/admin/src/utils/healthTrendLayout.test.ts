@@ -41,4 +41,10 @@ describe('租户健康趋势交互布局', () => {
     expect(tenantView).toContain('empty-text="暂无巡检历史"')
     expect(tenantView).toContain('healthHistory.value = next ? [...healthHistory.value, ...data.items] : data.items')
   })
+  it('在单列窄屏布局中重置调度延迟趋势卡片的跨列设置', () => {
+    expect(tenantView).toContain('.scheduler-delay-trend { grid-column: span 2; }')
+    expect(tenantView).toContain('@media (max-width: 460px)')
+    expect(tenantView).toContain('.health-scheduler-overview .scheduler-delay-trend { grid-column: auto; }')
+  })
+
 })
