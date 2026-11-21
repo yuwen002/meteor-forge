@@ -11,6 +11,7 @@ import (
 )
 
 type tenantHealthSchedulerSnapshot struct {
+	Status string `json:"status"`
 	Enabled bool `json:"enabled"`
 	Running bool `json:"running"`
 	IntervalSeconds int `json:"interval_seconds"`
@@ -82,10 +83,33 @@ func (s *tenantHealthScheduler) Start(parent context.Context) {
 	go s.loop(ctx)
 }
 
+const tenantHealthSchedulerDelayGracePeriod = 30 * time.Second
+
 func (s *tenantHealthScheduler) Snapshot() tenantHealthSchedulerSnapshot {
 	s.snapshotMu.RLock()
-	defer s.snapshotMu.RUnlock()
-	return s.snapshot
+	snapshot := s.snapshot
+	s.snapshotMu.RUnlock()
+	snapshot.Status = tenantHealthSchedulerStatus(snapshot, time.Now().UTC())
+	return snapshot
+}
+
+// tenantHealthSchedulerStatus reports a delayed schedule only after the due
+// time has been exceeded by a full grace period. Keeping NextRunAt populated
+// while the due settings are reloaded makes a blocked metadata read observable.
+func tenantHealthSchedulerStatus(snapshot tenantHealthSchedulerSnapshot, now time.Time) string {
+	if snapshot.Running {
+		return "running"
+	}
+	if !snapshot.Enabled {
+		return "disabled"
+	}
+	if snapshot.NextRunAt == nil {
+		return "initializing"
+	}
+	if now.After(snapshot.NextRunAt.Add(tenantHealthSchedulerDelayGracePeriod)) {
+		return "delayed"
+	}
+	return "scheduled"
 }
 
 func (s *tenantHealthScheduler) updateSettings(settings adminstore.TenantHealthSettings) {
@@ -238,7 +262,8 @@ func (s *tenantHealthScheduler) loop(ctx context.Context) {
 			}
 			continue
 		case <-timer.C:
-			s.setNextRun(nil)
+			// Keep the due timestamp until beginRound clears it. If reloading
+			// persisted settings stalls, Snapshot can then expose a delayed state.
 		}
 
 		// Always re-read persisted settings after the timer fires. If Refresh and
