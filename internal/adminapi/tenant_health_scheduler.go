@@ -14,6 +14,7 @@ type tenantHealthSchedulerSnapshot struct {
 	Status string `json:"status"`
 	HealthStatus string `json:"health_status"`
 	ConsecutiveFailureCount uint64 `json:"consecutive_failure_count"`
+	ConsecutiveFailureSince *time.Time `json:"consecutive_failure_since,omitempty"`
 	Enabled bool `json:"enabled"`
 	Running bool `json:"running"`
 	IntervalSeconds int `json:"interval_seconds"`
@@ -129,7 +130,7 @@ func tenantHealthSchedulerHealthStatus(snapshot tenantHealthSchedulerSnapshot, n
 	}
 	reference := snapshot.LastSuccessAt
 	if reference == nil {
-		reference = snapshot.LastFinishedAt
+		reference = snapshot.ConsecutiveFailureSince
 	}
 	if reference != nil && now.Sub(*reference) > threshold {
 		return "stale"
@@ -187,10 +188,14 @@ func (s *tenantHealthScheduler) finishRound(started time.Time, runErr error) {
 	if runErr == nil {
 		s.snapshot.SuccessCount++
 		s.snapshot.ConsecutiveFailureCount = 0
+		s.snapshot.ConsecutiveFailureSince = nil
 		s.snapshot.LastSuccessAt = &now
 		s.snapshot.LastError = ""
 	} else {
 		s.snapshot.FailureCount++
+		if s.snapshot.ConsecutiveFailureCount == 0 {
+			s.snapshot.ConsecutiveFailureSince = &now
+		}
 		s.snapshot.ConsecutiveFailureCount++
 		s.snapshot.LastError = "巡检执行失败"
 	}
