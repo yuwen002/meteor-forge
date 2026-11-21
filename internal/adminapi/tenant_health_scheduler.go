@@ -12,6 +12,8 @@ import (
 
 type tenantHealthSchedulerSnapshot struct {
 	Status string `json:"status"`
+	HealthStatus string `json:"health_status"`
+	ConsecutiveFailureCount uint64 `json:"consecutive_failure_count"`
 	Enabled bool `json:"enabled"`
 	Running bool `json:"running"`
 	IntervalSeconds int `json:"interval_seconds"`
@@ -89,7 +91,9 @@ func (s *tenantHealthScheduler) Snapshot() tenantHealthSchedulerSnapshot {
 	s.snapshotMu.RLock()
 	snapshot := s.snapshot
 	s.snapshotMu.RUnlock()
-	snapshot.Status = tenantHealthSchedulerStatus(snapshot, time.Now().UTC())
+	now := time.Now().UTC()
+	snapshot.Status = tenantHealthSchedulerStatus(snapshot, now)
+	snapshot.HealthStatus = tenantHealthSchedulerHealthStatus(snapshot, now)
 	return snapshot
 }
 
@@ -110,6 +114,33 @@ func tenantHealthSchedulerStatus(snapshot tenantHealthSchedulerSnapshot, now tim
 		return "delayed"
 	}
 	return "scheduled"
+}
+
+// tenantHealthSchedulerHealthStatus evaluates recent execution outcomes independently
+// from timer state. A stale threshold of at least 15 minutes avoids noisy alerts
+// for short intervals while still detecting a scheduler that stopped succeeding.
+func tenantHealthSchedulerHealthStatus(snapshot tenantHealthSchedulerSnapshot, now time.Time) string {
+	if !snapshot.Enabled || snapshot.TotalRuns == 0 {
+		return "unknown"
+	}
+	threshold := 15 * time.Minute
+	if interval := time.Duration(snapshot.IntervalSeconds) * time.Second * 3; interval > threshold {
+		threshold = interval
+	}
+	reference := snapshot.LastSuccessAt
+	if reference == nil {
+		reference = snapshot.LastFinishedAt
+	}
+	if reference != nil && now.Sub(*reference) > threshold {
+		return "stale"
+	}
+	if snapshot.ConsecutiveFailureCount > 0 {
+		return "degraded"
+	}
+	if reference == nil {
+		return "unknown"
+	}
+	return "healthy"
 }
 
 func (s *tenantHealthScheduler) updateSettings(settings adminstore.TenantHealthSettings) {
@@ -155,10 +186,12 @@ func (s *tenantHealthScheduler) finishRound(started time.Time, runErr error) {
 	s.snapshot.LastDurationMS = now.Sub(started).Milliseconds()
 	if runErr == nil {
 		s.snapshot.SuccessCount++
+		s.snapshot.ConsecutiveFailureCount = 0
 		s.snapshot.LastSuccessAt = &now
 		s.snapshot.LastError = ""
 	} else {
 		s.snapshot.FailureCount++
+		s.snapshot.ConsecutiveFailureCount++
 		s.snapshot.LastError = "巡检执行失败"
 	}
 	s.snapshotMu.Unlock()
