@@ -619,6 +619,7 @@ GET /api/v1/tenant-discovery/preview?data_source_id=control-source-id
 | `last_started_at` / `last_finished_at` / `last_success_at` | 最近轮次开始、结束和成功时间；尚无记录时省略 |
 | `next_run_at` | 当前预计下一轮开始时间；禁用、运行中或尚未安排时省略 |
 | `last_duration_ms` | 最近一轮巡检执行耗时（毫秒） |
+| `last_schedule_delay_ms` | 最近一轮实际开始时间晚于计划触发时间的延迟（毫秒）；未发生延迟时为 0，进程内统计 |
 | `last_error` | 最近一次调度错误的固定脱敏摘要，不包含数据库驱动原始错误或连接凭据 |
 | `lease_status` | 当前共享租约状态：`held_by_this_instance`、`held_by_other_instance`、`expired_or_unclaimed`、`unavailable` 或 `not_configured` |
 | `lease_expires_at` / `lease_remaining_seconds` | 当前有效租约的到期时间和剩余秒数；无有效租约时省略到期时间并返回 0 |
