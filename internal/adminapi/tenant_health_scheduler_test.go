@@ -345,6 +345,28 @@ func TestTenantHealthSchedulerSnapshotTracksRoundResults(t *testing.T) {
 	}
 }
 
+func TestTenantHealthSchedulerRecordsNonNegativeScheduleDelay(t *testing.T) {
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			return adminstore.TenantHealthSettings{}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error { return nil },
+		func(context.Context, int) error { return nil },
+	)
+	scheduledAt := time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC)
+	startedAt := scheduledAt.Add(2750 * time.Millisecond)
+	scheduler.recordScheduleDelay(scheduledAt, startedAt)
+	if got := scheduler.Snapshot().LastScheduleDelayMS; got != 2750 {
+		t.Fatalf("schedule delay=%d ms, want 2750 ms", got)
+	}
+
+	// Clock adjustments or synthetic timestamps must never expose a negative delay.
+	scheduler.recordScheduleDelay(startedAt, scheduledAt)
+	if got := scheduler.Snapshot().LastScheduleDelayMS; got != 0 {
+		t.Fatalf("negative schedule delay was not clamped: got %d ms", got)
+	}
+}
+
 func TestTenantHealthSchedulerSnapshotClearsNextRunWhenDisabled(t *testing.T) {
 	scheduler := newTenantHealthScheduler(
 		func(context.Context) (adminstore.TenantHealthSettings, error) {
