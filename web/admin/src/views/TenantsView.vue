@@ -135,6 +135,10 @@ interface TenantHealthSchedulerSnapshot {
   next_run_at: string | null
   last_duration_ms: number
   last_schedule_delay_ms: number
+  recent_schedule_delays_ms: number[]
+  average_schedule_delay_ms: number
+  max_schedule_delay_ms: number
+  delayed_schedule_count: number
   last_error?: string
   lease_status: TenantHealthLeaseStatus
   lease_expires_at: string | null
@@ -172,7 +176,7 @@ const healthSettings = reactive<TenantHealthSettings>({ enabled: false, interval
 const healthScheduler = reactive<TenantHealthSchedulerSnapshot>({
   status: 'disabled', health_status: 'unknown', consecutive_failure_count: 0, consecutive_failure_since: null, enabled: false, running: false, interval_seconds: 300, total_runs: 0,
   success_count: 0, failure_count: 0, lease_skipped_count: 0, lease_lost_count: 0, lease_acquire_failure_count: 0, last_started_at: null, last_finished_at: null,
-  last_success_at: null, next_run_at: null, last_duration_ms: 0, last_schedule_delay_ms: 0,
+  last_success_at: null, next_run_at: null, last_duration_ms: 0, last_schedule_delay_ms: 0, recent_schedule_delays_ms: [], average_schedule_delay_ms: 0, max_schedule_delay_ms: 0, delayed_schedule_count: 0,
   lease_status: "not_configured", lease_expires_at: null, lease_generation: 0, lease_remaining_seconds: 0,
 })
 const healthSchedulerLoading = ref(false)
@@ -862,6 +866,9 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
       <div><span>下次执行</span><strong>{{ healthScheduler.running ? '正在执行' : healthScheduler.next_run_at ? new Date(healthScheduler.next_run_at).toLocaleString() : '未安排' }}</strong></div>
       <div><span>最近耗时</span><strong>{{ healthScheduler.last_duration_ms }} ms</strong></div>
       <div><span>最近调度延迟</span><strong>{{ healthScheduler.last_schedule_delay_ms }} ms</strong></div>
+      <div><span>近 10 轮平均 / 最大延迟</span><strong>{{ healthScheduler.average_schedule_delay_ms }} / {{ healthScheduler.max_schedule_delay_ms }} ms</strong></div>
+      <div><span>近 10 轮延迟超 30 秒</span><strong>{{ healthScheduler.delayed_schedule_count }} 轮</strong></div>
+      <div class="scheduler-delay-trend"><span>最近调度延迟趋势（ms）</span><div class="scheduler-delay-samples"><el-tag v-for="(delay, index) in healthScheduler.recent_schedule_delays_ms" :key="index" size="small" effect="plain" :type="delay > 30000 ? 'danger' : 'info'">{{ delay }}</el-tag><span v-if="!healthScheduler.recent_schedule_delays_ms.length">暂无样本</span></div></div>
       <div><span>共享租约</span><strong><el-tag :type="tenantHealthLeaseStatusType(healthScheduler.lease_status)" effect="plain">{{ tenantHealthLeaseStatusLabel(healthScheduler.lease_status) }}</el-tag></strong></div>
       <div><span>租约到期</span><strong>{{ healthScheduler.lease_expires_at ? new Date(healthScheduler.lease_expires_at).toLocaleString() : '—' }}</strong></div>
       <div><span>剩余 / 代次</span><strong>{{ healthScheduler.lease_remaining_seconds }} 秒 / {{ healthScheduler.lease_generation }}</strong></div>

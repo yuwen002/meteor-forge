@@ -367,6 +367,24 @@ func TestTenantHealthSchedulerRecordsNonNegativeScheduleDelay(t *testing.T) {
 	}
 }
 
+func TestTenantHealthSchedulerTracksRecentScheduleDelayTrend(t *testing.T) {
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) { return adminstore.TenantHealthSettings{}, nil },
+		func(context.Context, adminstore.TenantHealthSettings) error { return nil },
+		func(context.Context, int) error { return nil },
+	)
+	base := time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC)
+	for _, delay := range []int64{0, 10, 31000, 20000} { scheduler.recordScheduleDelay(base, base.Add(time.Duration(delay)*time.Millisecond)) }
+	snapshot := scheduler.Snapshot()
+	if len(snapshot.RecentScheduleDelaysMS) != 4 || snapshot.AverageScheduleDelayMS != 15252 || snapshot.MaxScheduleDelayMS != 31000 || snapshot.DelayedScheduleCount != 1 { t.Fatalf("unexpected schedule delay trend: %+v", snapshot) }
+	for i := int64(4); i < 14; i++ { scheduler.recordScheduleDelay(base, base.Add(time.Duration(i*1000)*time.Millisecond)) }
+	snapshot = scheduler.Snapshot()
+	if len(snapshot.RecentScheduleDelaysMS) != 10 { t.Fatalf("recent sample count=%d, want 10", len(snapshot.RecentScheduleDelaysMS)) }
+	if snapshot.RecentScheduleDelaysMS[0] != 4000 || snapshot.RecentScheduleDelaysMS[9] != 13000 { t.Fatalf("ring buffer order incorrect: %v", snapshot.RecentScheduleDelaysMS) }
+	if snapshot.MaxScheduleDelayMS != 13000 || snapshot.AverageScheduleDelayMS != 8500 || snapshot.DelayedScheduleCount != 0 { t.Fatalf("unexpected rolled trend aggregates: %+v", snapshot) }
+	snapshot.RecentScheduleDelaysMS[0] = -1
+	if got := scheduler.Snapshot().RecentScheduleDelaysMS[0]; got != 4000 { t.Fatalf("snapshot slice aliases scheduler state: first sample=%d", got) }
+}
 func TestTenantHealthSchedulerSnapshotClearsNextRunWhenDisabled(t *testing.T) {
 	scheduler := newTenantHealthScheduler(
 		func(context.Context) (adminstore.TenantHealthSettings, error) {

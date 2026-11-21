@@ -30,6 +30,10 @@ type tenantHealthSchedulerSnapshot struct {
 	NextRunAt *time.Time `json:"next_run_at,omitempty"`
 	LastDurationMS int64 `json:"last_duration_ms"`
 	LastScheduleDelayMS int64 `json:"last_schedule_delay_ms"`
+	RecentScheduleDelaysMS []int64 `json:"recent_schedule_delays_ms"`
+	AverageScheduleDelayMS int64 `json:"average_schedule_delay_ms"`
+	MaxScheduleDelayMS int64 `json:"max_schedule_delay_ms"`
+	DelayedScheduleCount uint64 `json:"delayed_schedule_count"`
 	LastError string `json:"last_error,omitempty"`
 	LeaseStatus string `json:"lease_status"`
 	LeaseExpiresAt *time.Time `json:"lease_expires_at,omitempty"`
@@ -91,6 +95,7 @@ const tenantHealthSchedulerDelayGracePeriod = 30 * time.Second
 func (s *tenantHealthScheduler) Snapshot() tenantHealthSchedulerSnapshot {
 	s.snapshotMu.RLock()
 	snapshot := s.snapshot
+	snapshot.RecentScheduleDelaysMS = append([]int64(nil), s.snapshot.RecentScheduleDelaysMS...)
 	s.snapshotMu.RUnlock()
 	now := time.Now().UTC()
 	snapshot.Status = tenantHealthSchedulerStatus(snapshot, now)
@@ -165,7 +170,27 @@ func (s *tenantHealthScheduler) recordScheduleDelay(scheduledAt, startedAt time.
 	}
 	s.snapshotMu.Lock()
 	s.snapshot.LastScheduleDelayMS = delay
-	s.snapshotMu.Unlock()
+const maxSamples = 10
+if len(s.snapshot.RecentScheduleDelaysMS) == maxSamples {
+	copy(s.snapshot.RecentScheduleDelaysMS, s.snapshot.RecentScheduleDelaysMS[1:])
+	s.snapshot.RecentScheduleDelaysMS[len(s.snapshot.RecentScheduleDelaysMS)-1] = delay
+} else {
+	s.snapshot.RecentScheduleDelaysMS = append(s.snapshot.RecentScheduleDelaysMS, delay)
+}
+var total int64
+s.snapshot.MaxScheduleDelayMS = 0
+s.snapshot.DelayedScheduleCount = 0
+for _, sample := range s.snapshot.RecentScheduleDelaysMS {
+	total += sample
+	if sample > s.snapshot.MaxScheduleDelayMS { s.snapshot.MaxScheduleDelayMS = sample }
+	if sample > tenantHealthSchedulerDelayGracePeriod.Milliseconds() { s.snapshot.DelayedScheduleCount++ }
+}
+if count := len(s.snapshot.RecentScheduleDelaysMS); count > 0 {
+	s.snapshot.AverageScheduleDelayMS = total / int64(count)
+} else {
+	s.snapshot.AverageScheduleDelayMS = 0
+}
+s.snapshotMu.Unlock()
 }
 
 func (s *tenantHealthScheduler) beginRound() time.Time {
