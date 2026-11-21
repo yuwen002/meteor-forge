@@ -9,6 +9,7 @@ import { canLoadNextPage, createRequestSequence, runLatestRequest } from '../uti
 import { createTenantHealthTrendHistoryRange, isTenantHealthTrendBucketSelectable } from '../utils/healthTrend'
 import { createTenantHealthHistoryQuery, loadLatestTenantHealthTrend } from '../utils/healthTrendInteraction'
 import { tenantHealthLeaseStatusLabel, tenantHealthLeaseStatusType, type TenantHealthLeaseStatus } from '../utils/tenantHealthLease'
+import { tenantHealthScheduleDelayTagType } from '../utils/tenantHealthScheduleDelay'
 
 interface DataSource {
   id: string
@@ -868,7 +869,7 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
       <div><span>最近调度延迟</span><strong>{{ healthScheduler.last_schedule_delay_ms }} ms</strong></div>
       <div><span>近 10 轮平均 / 最大延迟</span><strong>{{ healthScheduler.average_schedule_delay_ms }} / {{ healthScheduler.max_schedule_delay_ms }} ms</strong></div>
       <div><span>近 10 轮延迟超 30 秒</span><strong>{{ healthScheduler.delayed_schedule_count }} 轮</strong></div>
-      <div class="scheduler-delay-trend"><span>最近调度延迟趋势（ms）</span><div class="scheduler-delay-samples"><el-tag v-for="(delay, index) in healthScheduler.recent_schedule_delays_ms" :key="index" size="small" effect="plain" :type="delay > 30000 ? 'danger' : 'info'">{{ delay }}</el-tag><span v-if="!healthScheduler.recent_schedule_delays_ms.length">暂无样本</span></div></div>
+      <div class="scheduler-delay-trend"><span>最近调度延迟趋势（ms）</span><div class="scheduler-delay-samples"><el-tag v-for="(delay, index) in healthScheduler.recent_schedule_delays_ms" :key="index" size="small" effect="plain" :type="tenantHealthScheduleDelayTagType(delay)">{{ delay }}</el-tag><span v-if="!healthScheduler.recent_schedule_delays_ms.length">暂无样本</span></div></div>
       <div><span>共享租约</span><strong><el-tag :type="tenantHealthLeaseStatusType(healthScheduler.lease_status)" effect="plain">{{ tenantHealthLeaseStatusLabel(healthScheduler.lease_status) }}</el-tag></strong></div>
       <div><span>租约到期</span><strong>{{ healthScheduler.lease_expires_at ? new Date(healthScheduler.lease_expires_at).toLocaleString() : '—' }}</strong></div>
       <div><span>剩余 / 代次</span><strong>{{ healthScheduler.lease_remaining_seconds }} 秒 / {{ healthScheduler.lease_generation }}</strong></div>
