@@ -25,6 +25,7 @@ type tenantHealthSchedulerSnapshot struct {
 	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
 	NextRunAt *time.Time `json:"next_run_at,omitempty"`
 	LastDurationMS int64 `json:"last_duration_ms"`
+	LastScheduleDelayMS int64 `json:"last_schedule_delay_ms"`
 	LastError string `json:"last_error,omitempty"`
 	LeaseStatus string `json:"lease_status"`
 	LeaseExpiresAt *time.Time `json:"lease_expires_at,omitempty"`
@@ -98,6 +99,16 @@ func (s *tenantHealthScheduler) updateSettings(settings adminstore.TenantHealthS
 func (s *tenantHealthScheduler) setNextRun(at *time.Time) {
 	s.snapshotMu.Lock()
 	s.snapshot.NextRunAt = at
+	s.snapshotMu.Unlock()
+}
+
+func (s *tenantHealthScheduler) recordScheduleDelay(scheduledAt, startedAt time.Time) {
+	delay := startedAt.Sub(scheduledAt).Milliseconds()
+	if delay < 0 {
+		delay = 0
+	}
+	s.snapshotMu.Lock()
+	s.snapshot.LastScheduleDelayMS = delay
 	s.snapshotMu.Unlock()
 }
 
@@ -249,6 +260,7 @@ func (s *tenantHealthScheduler) loop(ctx context.Context) {
 			return
 		}
 		roundStarted := s.beginRound()
+		s.recordScheduleDelay(nextRun, roundStarted)
 		roundCtx, cancel := context.WithCancel(ctx)
 		runErr := s.run(roundCtx, settings)
 		if errors.Is(runErr, errTenantHealthSchedulerLeaseNotAcquired) {
