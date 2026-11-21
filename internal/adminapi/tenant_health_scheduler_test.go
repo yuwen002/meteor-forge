@@ -625,3 +625,47 @@ func TestTenantHealthSchedulerStatusDistinguishesDelayedAndHealthyStates(t *test
 func timePointer(value time.Time) *time.Time {
 	return &value
 }
+
+
+func TestTenantHealthSchedulerHealthStatusDetectsStaleAndConsecutiveFailures(t *testing.T) {
+	now := time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC)
+	recent := now.Add(-5 * time.Minute)
+	old := now.Add(-20 * time.Minute)
+	tests := []struct {
+		name string
+		snapshot tenantHealthSchedulerSnapshot
+		want string
+	}{
+		{name: "disabled", snapshot: tenantHealthSchedulerSnapshot{Enabled: false, TotalRuns: 1}, want: "unknown"},
+		{name: "no runs", snapshot: tenantHealthSchedulerSnapshot{Enabled: true}, want: "unknown"},
+		{name: "recent success", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, IntervalSeconds: 300, TotalRuns: 2, LastSuccessAt: &recent}, want: "healthy"},
+		{name: "consecutive failures", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, IntervalSeconds: 300, TotalRuns: 3, ConsecutiveFailureCount: 2, LastSuccessAt: &recent}, want: "degraded"},
+		{name: "stale last success", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, IntervalSeconds: 300, TotalRuns: 2, LastSuccessAt: &old}, want: "stale"},
+		{name: "never succeeded and old failure", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, IntervalSeconds: 300, TotalRuns: 2, ConsecutiveFailureCount: 2, LastFinishedAt: &old}, want: "stale"},
+		{name: "long interval uses three intervals", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, IntervalSeconds: 3600, TotalRuns: 2, LastSuccessAt: &recent}, want: "healthy"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tenantHealthSchedulerHealthStatus(tt.snapshot, now); got != tt.want {
+				t.Fatalf("tenantHealthSchedulerHealthStatus()=%q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTenantHealthSchedulerConsecutiveFailuresResetAfterSuccess(t *testing.T) {
+	scheduler := newTenantHealthScheduler(nil, nil, nil)
+	started := time.Now().UTC()
+	scheduler.finishRound(started, errors.New("temporary failure"))
+	if got := scheduler.Snapshot().ConsecutiveFailureCount; got != 1 {
+		t.Fatalf("consecutive failures after error=%d, want 1", got)
+	}
+	scheduler.finishRound(started, nil)
+	snapshot := scheduler.Snapshot()
+	if snapshot.ConsecutiveFailureCount != 0 {
+		t.Fatalf("consecutive failures after success=%d, want 0", snapshot.ConsecutiveFailureCount)
+	}
+	if snapshot.SuccessCount != 1 || snapshot.FailureCount != 1 {
+		t.Fatalf("unexpected round counters after recovery: %+v", snapshot)
+	}
+}
