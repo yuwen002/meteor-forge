@@ -9,7 +9,7 @@ import { canLoadNextPage, createRequestSequence, runLatestRequest } from '../uti
 import { createTenantHealthTrendHistoryRange, isTenantHealthTrendBucketSelectable } from '../utils/healthTrend'
 import { createTenantHealthHistoryQuery, loadLatestTenantHealthTrend } from '../utils/healthTrendInteraction'
 import { tenantHealthLeaseStatusLabel, tenantHealthLeaseStatusType, type TenantHealthLeaseStatus } from '../utils/tenantHealthLease'
-import { tenantHealthScheduleDelayTagType } from '../utils/tenantHealthScheduleDelay'
+import { tenantHealthScheduleDelayBarWidth, tenantHealthScheduleDelayTagType } from '../utils/tenantHealthScheduleDelay'
 
 interface DataSource {
   id: string
@@ -869,7 +869,7 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
       <div><span>最近调度延迟</span><strong>{{ healthScheduler.last_schedule_delay_ms }} ms</strong></div>
       <div><span>近 10 轮平均 / 最大延迟</span><strong>{{ healthScheduler.average_schedule_delay_ms }} / {{ healthScheduler.max_schedule_delay_ms }} ms</strong></div>
       <div><span>近 10 轮延迟超 30 秒</span><strong>{{ healthScheduler.delayed_schedule_count }} 轮</strong></div>
-      <div class="scheduler-delay-trend"><span>最近调度延迟趋势（ms）</span><div class="scheduler-delay-samples"><el-tag v-for="(delay, index) in healthScheduler.recent_schedule_delays_ms" :key="index" size="small" effect="plain" :type="tenantHealthScheduleDelayTagType(delay)">{{ delay }}</el-tag><span v-if="!healthScheduler.recent_schedule_delays_ms.length">暂无样本</span></div></div>
+      <div class="scheduler-delay-trend"><span>最近调度延迟趋势（ms）</span><div v-if="healthScheduler.recent_schedule_delays_ms.length" class="scheduler-delay-samples"><div v-for="(delay, index) in healthScheduler.recent_schedule_delays_ms" :key="index" class="scheduler-delay-sample" :title="`第 ${index + 1} 轮：${delay} ms`"><div class="scheduler-delay-sample-heading"><small>第 {{ index + 1 }} 轮</small><strong>{{ delay }} ms</strong></div><div class="scheduler-delay-track"><i :class="{ 'is-delayed': tenantHealthScheduleDelayTagType(delay) === 'danger' }" :style="{ width: `${tenantHealthScheduleDelayBarWidth(delay, healthScheduler.max_schedule_delay_ms)}%` }"></i></div></div><small class="scheduler-delay-order">按时间从旧到新</small></div><span v-else class="scheduler-delay-empty">暂无样本</span></div>
       <div><span>共享租约</span><strong><el-tag :type="tenantHealthLeaseStatusType(healthScheduler.lease_status)" effect="plain">{{ tenantHealthLeaseStatusLabel(healthScheduler.lease_status) }}</el-tag></strong></div>
       <div><span>租约到期</span><strong>{{ healthScheduler.lease_expires_at ? new Date(healthScheduler.lease_expires_at).toLocaleString() : '—' }}</strong></div>
       <div><span>剩余 / 代次</span><strong>{{ healthScheduler.lease_remaining_seconds }} 秒 / {{ healthScheduler.lease_generation }}</strong></div>
@@ -1168,6 +1168,18 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
 .health-scheduler-overview span { color: #98a2b3; font-size: 11px; }
 .health-scheduler-overview strong { overflow-wrap: anywhere; color: #34445d; font-size: 13px; font-weight: 600; }
 .health-scheduler-overview .scheduler-refresh { justify-content: center; align-items: flex-start; }
+.scheduler-delay-trend { grid-column: span 2; }
+.scheduler-delay-samples { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; }
+.scheduler-delay-sample { min-width: 0; }
+.scheduler-delay-sample-heading { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.scheduler-delay-sample-heading small { color: #98a2b3; font-size: 10px; }
+.scheduler-delay-sample-heading strong { color: #34445d; font-size: 11px; }
+.scheduler-delay-track { height: 6px; overflow: hidden; border-radius: 999px; background: #edf1f6; }
+.scheduler-delay-track i { display: block; height: 100%; border-radius: inherit; background: #7da7d9; }
+.scheduler-delay-track i.is-delayed { background: #e58a72; }
+.scheduler-delay-order, .scheduler-delay-empty { color: #98a2b3; font-size: 10px; }
+.scheduler-delay-order { grid-column: 1 / -1; }
+
 .scheduler-error { margin-bottom: 14px; }
 .health-settings-form { display: flex; flex-wrap: wrap; gap: 0 24px; align-items: flex-end; }
 .health-settings-form :deep(.el-form-item) { min-width: 170px; }
