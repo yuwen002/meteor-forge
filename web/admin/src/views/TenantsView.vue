@@ -117,6 +117,8 @@ interface TenantHealthSettings {
 }
 interface TenantHealthSchedulerSnapshot {
   status: 'initializing' | 'disabled' | 'scheduled' | 'running' | 'delayed'
+  health_status: 'unknown' | 'healthy' | 'degraded' | 'stale'
+  consecutive_failure_count: number
   enabled: boolean
   running: boolean
   interval_seconds: number
@@ -167,7 +169,7 @@ const dataSources = ref<DataSource[]>([])
 const healthByTenant = ref<Record<string, TenantHealth>>({})
 const healthSettings = reactive<TenantHealthSettings>({ enabled: false, interval_seconds: 300, timeout_seconds: 5, history_retention_days: 30, updated_at: "" })
 const healthScheduler = reactive<TenantHealthSchedulerSnapshot>({
-  status: 'disabled', enabled: false, running: false, interval_seconds: 300, total_runs: 0,
+  status: 'disabled', health_status: 'unknown', consecutive_failure_count: 0, enabled: false, running: false, interval_seconds: 300, total_runs: 0,
   success_count: 0, failure_count: 0, lease_skipped_count: 0, lease_lost_count: 0, lease_acquire_failure_count: 0, last_started_at: null, last_finished_at: null,
   last_success_at: null, next_run_at: null, last_duration_ms: 0, last_schedule_delay_ms: 0,
   lease_status: "not_configured", lease_expires_at: null, lease_generation: 0, lease_remaining_seconds: 0,
@@ -238,6 +240,20 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+function tenantHealthSchedulerHealthLabel(status: TenantHealthSchedulerSnapshot['health_status']): string {
+  const labels: Record<TenantHealthSchedulerSnapshot['health_status'], string> = {
+    unknown: '暂无结果', healthy: '正常', degraded: '连续失败', stale: '长期未成功',
+  }
+  return labels[status]
+}
+
+function tenantHealthSchedulerHealthType(status: TenantHealthSchedulerSnapshot['health_status']): 'danger' | 'warning' | 'success' | 'info' {
+  if (status === 'stale') return 'danger'
+  if (status === 'degraded') return 'warning'
+  if (status === 'healthy') return 'success'
+  return 'info'
 }
 
 function tenantHealthSchedulerStatusLabel(status: TenantHealthSchedulerSnapshot['status']): string {
@@ -834,6 +850,8 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
     </section>
     <div v-loading="healthSchedulerLoading" class="health-scheduler-overview">
       <div><span>调度状态</span><strong><el-tag :type="tenantHealthSchedulerStatusType(healthScheduler.status)" effect="plain">{{ tenantHealthSchedulerStatusLabel(healthScheduler.status) }}</el-tag></strong></div>
+      <div><span>巡检健康</span><strong><el-tag :type="tenantHealthSchedulerHealthType(healthScheduler.health_status)" effect="plain">{{ tenantHealthSchedulerHealthLabel(healthScheduler.health_status) }}</el-tag></strong></div>
+      <div><span>连续失败</span><strong>{{ healthScheduler.consecutive_failure_count }}</strong></div>
       <div><span>进程内轮次</span><strong>{{ healthScheduler.total_runs }}</strong></div>
       <div><span>成功 / 失败</span><strong>{{ healthScheduler.success_count }} / {{ healthScheduler.failure_count }}</strong></div>
       <div><span>租约跳过 / 丢失</span><strong>{{ healthScheduler.lease_skipped_count }} / {{ healthScheduler.lease_lost_count }}</strong></div>
@@ -848,6 +866,22 @@ onMounted(() => { void load(); void loadHealthSettings(); void loadHealthSchedul
       <div><span>剩余 / 代次</span><strong>{{ healthScheduler.lease_remaining_seconds }} 秒 / {{ healthScheduler.lease_generation }}</strong></div>
       <div class="scheduler-refresh"><el-button text :loading="healthSchedulerLoading" @click="loadHealthScheduler">刷新运行状态</el-button></div>
     </div>
+    <el-alert
+      v-if="healthScheduler.health_status === 'stale'"
+      title="巡检长时间没有成功完成。请检查最近成功时间、连续失败次数、租约持有情况及巡检历史；如果没有任何成功记录，请先查看最近失败记录的分类和排查建议。"
+      type="error"
+      :closable="false"
+      show-icon
+      class="scheduler-error"
+    />
+    <el-alert
+      v-else-if="healthScheduler.health_status === 'degraded'"
+      :title="`最近巡检连续失败 ${healthScheduler.consecutive_failure_count} 次。请查看巡检历史中的错误分类和排查建议。`"
+      type="warning"
+      :closable="false"
+      show-icon
+      class="scheduler-error"
+    />
     <el-alert
       v-if="healthScheduler.status === 'delayed'"
       title="定时巡检已超过计划触发时间 30 秒仍未开始。请检查管理元数据库连接与调度日志，并确认共享租约状态；若其他实例持有租约，当前实例跳过执行属于正常行为。"
