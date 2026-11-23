@@ -625,7 +625,7 @@ GET /api/v1/tenant-discovery/preview?data_source_id=control-source-id
 | `last_duration_ms` | 最近一轮巡检执行耗时（毫秒） |
 | `last_schedule_delay_ms` | 最近一轮实际开始时间晚于计划触发时间的延迟（毫秒）；未发生延迟时为 0，进程内统计 |
 
-- `recent_schedule_delays_ms`：最近最多 10 轮的调度延迟样本，按时间从旧到新排列，单位毫秒。
+- `recent_schedule_delays_ms`：最近最多 10 轮的调度延迟样本，按时间从旧到新排列，单位毫秒；尚无样本时返回空数组 `[]`。
 - `average_schedule_delay_ms`、`max_schedule_delay_ms`：上述样本的整数平均值和最大值。
 - `delayed_schedule_count`：上述样本中超过 30 秒的轮次数。
 
