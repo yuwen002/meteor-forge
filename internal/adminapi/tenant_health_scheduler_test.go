@@ -1,0 +1,733 @@
+package adminapi
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sync/atomic"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/yuwen002/meteor-forge/internal/adminstore"
+)
+
+func TestTenantHealthSchedulerDisabledUntilEnabled(t *testing.T) {
+	var enabled atomic.Bool
+	var runs atomic.Int32
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			return adminstore.TenantHealthSettings{Enabled: enabled.Load(), IntervalSeconds: 1, HistoryRetentionDays: 30}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error { runs.Add(1); return nil },
+		func(context.Context, int) error { return nil },
+	)
+	scheduler.Start(context.Background())
+	time.Sleep(30 * time.Millisecond)
+	if got := runs.Load(); got != 0 { t.Fatalf("disabled scheduler ran %d times", got) }
+	enabled.Store(true)
+	scheduler.Refresh()
+	time.Sleep(1100 * time.Millisecond)
+	scheduler.Close()
+	if got := runs.Load(); got != 1 { t.Fatalf("enabled scheduler ran %d times, want 1", got) }
+}
+
+func TestTenantHealthSchedulerDoesNotOverlapRoundsAndStops(t *testing.T) {
+	var active, maxActive, runs atomic.Int32
+	started := make(chan struct{}, 4)
+	release := make(chan struct{})
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			return adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 1, HistoryRetentionDays: 30}, nil
+		},
+		func(ctx context.Context, _ adminstore.TenantHealthSettings) error {
+			current := active.Add(1)
+			for {
+				old := maxActive.Load()
+				if current <= old || maxActive.CompareAndSwap(old, current) { break }
+			}
+			runs.Add(1)
+			started <- struct{}{}
+			defer active.Add(-1)
+			select { case <-release: return nil; case <-ctx.Done(): return ctx.Err() }
+		},
+		func(context.Context, int) error { return nil },
+	)
+	scheduler.Start(context.Background())
+	select { case <-started: case <-time.After(1500*time.Millisecond): t.Fatal("first round did not start") }
+	time.Sleep(1100*time.Millisecond)
+	if got := runs.Load(); got != 1 { t.Fatalf("overlapping round started: runs=%d", got) }
+	scheduler.Close()
+	if got := active.Load(); got != 0 { t.Fatalf("scheduler close returned with %d active rounds", got) }
+	close(release)
+	if got := maxActive.Load(); got != 1 { t.Fatalf("max active rounds=%d, want 1", got) }
+}
+
+
+func TestCleanupTenantHealthHistoryDrainsBatchesAndStopsOnError(t *testing.T) {
+	calls := 0
+	err := cleanupTenantHealthHistory(context.Background(), func(_ context.Context, before time.Time, limit int) (int64, error) {
+		calls++
+		if before.IsZero() || limit != 500 {
+			t.Fatalf("unexpected cleanup arguments: before=%v limit=%d", before, limit)
+		}
+		switch calls {
+		case 1, 2:
+			return 500, nil
+		case 3:
+			return 17, nil
+		default:
+			t.Fatalf("unexpected extra cleanup call: %d", calls)
+			return 0, nil
+		}
+	}, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 {
+		t.Fatalf("cleanup batches=%d, want 3", calls)
+	}
+
+	wantErr := context.DeadlineExceeded
+	calls = 0
+	err = cleanupTenantHealthHistory(context.Background(), func(context.Context, time.Time, int) (int64, error) {
+		calls++
+		return 0, wantErr
+	}, 30)
+	if err != wantErr || calls != 1 {
+		t.Fatalf("cleanup error=%v calls=%d, want %v and one call", err, calls, wantErr)
+	}
+}
+
+
+func TestTenantHealthSchedulerReportsRunAndCleanupErrors(t *testing.T) {
+	runErr := errors.New("tenant checks failed")
+	cleanupErr := errors.New("history cleanup failed")
+	reported := make(chan error, 2)
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			return adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 1, HistoryRetentionDays: 30}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error { return runErr },
+		func(context.Context, int) error { return cleanupErr },
+		func(err error) { reported <- err },
+	)
+	scheduler.Start(context.Background())
+	select {
+	case err := <-reported:
+		if !errors.Is(err, runErr) { t.Fatalf("reported run error=%v", err) }
+	case <-time.After(2 * time.Second):
+		t.Fatal("scheduled run error was not reported")
+	}
+	select {
+	case err := <-reported:
+		if !errors.Is(err, cleanupErr) { t.Fatalf("reported cleanup error=%v", err) }
+	case <-time.After(2 * time.Second):
+		t.Fatal("cleanup error was not reported")
+	}
+	scheduler.Close()
+}
+
+
+func TestTenantHealthSchedulerReloadsSettingsAfterReadFailure(t *testing.T) {
+	var loads atomic.Int32
+	loadErr := errors.New("metadata database temporarily unavailable")
+	reported := make(chan error, 1)
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			if loads.Add(1) == 1 {
+				return adminstore.TenantHealthSettings{}, loadErr
+			}
+			return adminstore.TenantHealthSettings{Enabled: false, IntervalSeconds: 300, HistoryRetentionDays: 30}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error { return nil },
+		func(context.Context, int) error { return nil },
+		func(err error) { reported <- err },
+	)
+	scheduler.Start(context.Background())
+	select {
+	case err := <-reported:
+		if !errors.Is(err, loadErr) { t.Fatalf("reported settings error=%v", err) }
+	case <-time.After(time.Second):
+		t.Fatal("settings load failure was not reported")
+	}
+	scheduler.Refresh()
+	deadline := time.After(time.Second)
+	for loads.Load() < 2 {
+		select {
+		case <-deadline:
+			t.Fatal("scheduler did not reload settings after refresh")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	scheduler.Close()
+}
+
+func TestCleanupTenantHealthHistoryStopsWhenContextIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	calls := 0
+	err := cleanupTenantHealthHistory(ctx, func(context.Context, time.Time, int) (int64, error) {
+		calls++
+		return 0, nil
+	}, 30)
+	if !errors.Is(err, context.Canceled) || calls != 0 {
+		t.Fatalf("cleanup error=%v calls=%d, want canceled without starting a batch", err, calls)
+	}
+}
+
+
+func TestTenantHealthSchedulerCloseBeforeStart(t *testing.T) {
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			return adminstore.TenantHealthSettings{}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error { return nil },
+		func(context.Context, int) error { return nil },
+	)
+
+	closed := make(chan struct{})
+	go func() {
+		scheduler.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("closing a scheduler before start should not block")
+	}
+
+	// A closed scheduler must not be restarted.
+	scheduler.Start(context.Background())
+	select {
+	case <-scheduler.done:
+	case <-time.After(time.Second):
+		t.Fatal("closed scheduler unexpectedly restarted")
+	}
+}
+
+func TestTenantHealthSchedulerStartAndCloseAreIdempotent(t *testing.T) {
+	var loads atomic.Int32
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			loads.Add(1)
+			return adminstore.TenantHealthSettings{Enabled: false}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error { return nil },
+		func(context.Context, int) error { return nil },
+	)
+
+	scheduler.Start(context.Background())
+	scheduler.Start(context.Background())
+	deadline := time.After(time.Second)
+	for loads.Load() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("scheduler loop did not start")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	scheduler.Close()
+	scheduler.Close()
+	if got := loads.Load(); got != 1 {
+		t.Fatalf("settings loaded %d times after duplicate Start, want 1", got)
+	}
+}
+
+func TestTenantHealthSchedulerRefreshDisablesPendingRound(t *testing.T) {
+	var enabled atomic.Bool
+	enabled.Store(true)
+	var loads, runs atomic.Int32
+	loaded := make(chan struct{}, 4)
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			loads.Add(1)
+			select {
+			case loaded <- struct{}{}:
+			default:
+			}
+			return adminstore.TenantHealthSettings{
+				Enabled: enabled.Load(), IntervalSeconds: 30, HistoryRetentionDays: 30,
+			}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error {
+			runs.Add(1)
+			return nil
+		},
+		func(context.Context, int) error { return nil },
+	)
+	scheduler.Start(context.Background())
+	select {
+	case <-loaded:
+	case <-time.After(time.Second):
+		t.Fatal("scheduler did not load its initial settings")
+	}
+
+	enabled.Store(false)
+	scheduler.Refresh()
+	select {
+	case <-loaded:
+	case <-time.After(time.Second):
+		t.Fatal("scheduler did not reload settings after refresh")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	scheduler.Close()
+	if got := runs.Load(); got != 0 {
+		t.Fatalf("scheduler ran %d rounds after being disabled, want 0", got)
+	}
+	if got := loads.Load(); got < 2 {
+		t.Fatalf("settings loaded %d times, want at least 2", got)
+	}
+}
+
+
+func TestTenantHealthSchedulerSettingsForDueRoundReloadsDisabledSetting(t *testing.T) {
+	var loads atomic.Int32
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			if loads.Add(1) == 1 {
+				return adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 30}, nil
+			}
+			return adminstore.TenantHealthSettings{Enabled: false, IntervalSeconds: 30}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error { return nil },
+		func(context.Context, int) error { return nil },
+	)
+	settings, enabled, err := scheduler.settingsForDueRound(context.Background())
+	if err != nil { t.Fatal(err) }
+	if !settings.Enabled || !enabled { t.Fatalf("first due settings should be enabled: %+v enabled=%v", settings, enabled) }
+	settings, enabled, err = scheduler.settingsForDueRound(context.Background())
+	if err != nil { t.Fatal(err) }
+	if settings.Enabled || enabled { t.Fatalf("fresh disabled settings must skip the due round: %+v enabled=%v", settings, enabled) }
+	if got := loads.Load(); got != 2 { t.Fatalf("settings loads=%d, want 2", got) }
+}
+
+
+func TestTenantHealthSchedulerSnapshotTracksRoundResults(t *testing.T) {
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			return adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 90}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error { return nil },
+		func(context.Context, int) error { return nil },
+	)
+	scheduler.updateSettings(adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 90})
+	next := time.Now().UTC().Add(90 * time.Second)
+	scheduler.setNextRun(&next)
+	started := scheduler.beginRound()
+	if snapshot := scheduler.Snapshot(); !snapshot.Running || snapshot.TotalRuns != 1 || snapshot.NextRunAt != nil {
+		t.Fatalf("unexpected running snapshot: %+v", snapshot)
+	}
+
+	scheduler.finishRound(started, nil)
+	snapshot := scheduler.Snapshot()
+	if snapshot.Running || snapshot.TotalRuns != 1 || snapshot.SuccessCount != 1 || snapshot.FailureCount != 0 {
+		t.Fatalf("unexpected successful snapshot: %+v", snapshot)
+	}
+	if snapshot.LastStartedAt == nil || snapshot.LastFinishedAt == nil || snapshot.LastSuccessAt == nil {
+		t.Fatalf("round timestamps were not recorded: %+v", snapshot)
+	}
+	if snapshot.LastDurationMS < 0 {
+		t.Fatalf("negative round duration: %+v", snapshot)
+	}
+
+	started = scheduler.beginRound()
+	scheduler.finishRound(started, errors.New("sensitive database driver detail"))
+	snapshot = scheduler.Snapshot()
+	if snapshot.TotalRuns != 2 || snapshot.SuccessCount != 1 || snapshot.FailureCount != 1 {
+		t.Fatalf("unexpected failed snapshot counters: %+v", snapshot)
+	}
+	if snapshot.LastError != "巡检执行失败" || strings.Contains(snapshot.LastError, "sensitive") {
+		t.Fatalf("snapshot leaked raw error: %+v", snapshot)
+	}
+}
+
+func TestTenantHealthSchedulerSnapshotUsesEmptyArrayWithoutSamples(t *testing.T) {
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) { return adminstore.TenantHealthSettings{}, nil },
+		func(context.Context, adminstore.TenantHealthSettings) error { return nil },
+		func(context.Context, int) error { return nil },
+	)
+
+	snapshot := scheduler.Snapshot()
+	if snapshot.RecentScheduleDelaysMS == nil || len(snapshot.RecentScheduleDelaysMS) != 0 {
+		t.Fatalf("recent schedule delays should be an empty slice, got %#v", snapshot.RecentScheduleDelaysMS)
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal scheduler snapshot: %v", err)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal scheduler snapshot: %v", err)
+	}
+	if got := string(payload["recent_schedule_delays_ms"]); got != "[]" {
+		t.Fatalf("recent_schedule_delays_ms=%s, want []", got)
+	}
+}
+
+func TestTenantHealthSchedulerDelayTrendUsesStrictThirtySecondThreshold(t *testing.T) {
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) { return adminstore.TenantHealthSettings{}, nil },
+		func(context.Context, adminstore.TenantHealthSettings) error { return nil },
+		func(context.Context, int) error { return nil },
+	)
+	base := time.Date(2026, 11, 23, 1, 0, 0, 0, time.UTC)
+	for _, delay := range []int64{30_000, 30_001, 60_001} {
+		scheduler.recordScheduleDelay(base, base.Add(time.Duration(delay)*time.Millisecond))
+	}
+	snapshot := scheduler.Snapshot()
+	if snapshot.AverageScheduleDelayMS != 40_000 || snapshot.MaxScheduleDelayMS != 60_001 || snapshot.DelayedScheduleCount != 2 {
+		t.Fatalf("unexpected threshold aggregates: %+v", snapshot)
+	}
+}
+
+func TestTenantHealthSchedulerRecordsNonNegativeScheduleDelay(t *testing.T) {
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			return adminstore.TenantHealthSettings{}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error { return nil },
+		func(context.Context, int) error { return nil },
+	)
+	scheduledAt := time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC)
+	startedAt := scheduledAt.Add(2750 * time.Millisecond)
+	scheduler.recordScheduleDelay(scheduledAt, startedAt)
+	if got := scheduler.Snapshot().LastScheduleDelayMS; got != 2750 {
+		t.Fatalf("schedule delay=%d ms, want 2750 ms", got)
+	}
+
+	// Clock adjustments or synthetic timestamps must never expose a negative delay.
+	scheduler.recordScheduleDelay(startedAt, scheduledAt)
+	if got := scheduler.Snapshot().LastScheduleDelayMS; got != 0 {
+		t.Fatalf("negative schedule delay was not clamped: got %d ms", got)
+	}
+}
+
+func TestTenantHealthSchedulerTracksRecentScheduleDelayTrend(t *testing.T) {
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) { return adminstore.TenantHealthSettings{}, nil },
+		func(context.Context, adminstore.TenantHealthSettings) error { return nil },
+		func(context.Context, int) error { return nil },
+	)
+	base := time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC)
+	for _, delay := range []int64{0, 10, 31000, 20000} { scheduler.recordScheduleDelay(base, base.Add(time.Duration(delay)*time.Millisecond)) }
+	snapshot := scheduler.Snapshot()
+	if len(snapshot.RecentScheduleDelaysMS) != 4 || snapshot.AverageScheduleDelayMS != 12752 || snapshot.MaxScheduleDelayMS != 31000 || snapshot.DelayedScheduleCount != 1 { t.Fatalf("unexpected schedule delay trend: %+v", snapshot) }
+	for i := int64(4); i < 14; i++ { scheduler.recordScheduleDelay(base, base.Add(time.Duration(i*1000)*time.Millisecond)) }
+	snapshot = scheduler.Snapshot()
+	if len(snapshot.RecentScheduleDelaysMS) != 10 { t.Fatalf("recent sample count=%d, want 10", len(snapshot.RecentScheduleDelaysMS)) }
+	if snapshot.RecentScheduleDelaysMS[0] != 4000 || snapshot.RecentScheduleDelaysMS[9] != 13000 { t.Fatalf("ring buffer order incorrect: %v", snapshot.RecentScheduleDelaysMS) }
+	if snapshot.MaxScheduleDelayMS != 13000 || snapshot.AverageScheduleDelayMS != 8500 || snapshot.DelayedScheduleCount != 0 { t.Fatalf("unexpected rolled trend aggregates: %+v", snapshot) }
+	snapshot.RecentScheduleDelaysMS[0] = -1
+	if got := scheduler.Snapshot().RecentScheduleDelaysMS[0]; got != 4000 { t.Fatalf("snapshot slice aliases scheduler state: first sample=%d", got) }
+}
+func TestTenantHealthSchedulerSnapshotClearsNextRunWhenDisabled(t *testing.T) {
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			return adminstore.TenantHealthSettings{}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error { return nil },
+		func(context.Context, int) error { return nil },
+	)
+	scheduler.updateSettings(adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 120})
+	next := time.Now().UTC().Add(2 * time.Minute)
+	scheduler.setNextRun(&next)
+	scheduler.updateSettings(adminstore.TenantHealthSettings{Enabled: false, IntervalSeconds: 120})
+
+	snapshot := scheduler.Snapshot()
+	if snapshot.Enabled || snapshot.NextRunAt != nil {
+		t.Fatalf("disabled scheduler should clear next run: %+v", snapshot)
+	}
+}
+
+
+// A lease-lost round must not trigger retention cleanup. Another instance may
+// already own the next generation, so cleanup belongs only to a valid round.
+func TestTenantHealthSchedulerSkipsCleanupAfterLeaseLoss(t *testing.T) {
+	var cleanups atomic.Int32
+	runFinished := make(chan struct{})
+	cleanupCalled := make(chan struct{}, 1)
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			return adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 1, HistoryRetentionDays: 30}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error {
+			close(runFinished)
+			return errTenantHealthSchedulerLeaseLost
+		},
+		func(context.Context, int) error {
+			cleanups.Add(1)
+			cleanupCalled <- struct{}{}
+			return nil
+		},
+	)
+	scheduler.Start(context.Background())
+	select {
+	case <-runFinished:
+	case <-time.After(2 * time.Second):
+		scheduler.Close()
+		t.Fatal("scheduled round did not finish")
+	}
+	// Keep the scheduler alive after the callback returns. If the lease-lost
+	// branch accidentally falls through, cleanup would be invoked immediately.
+	select {
+	case <-cleanupCalled:
+		scheduler.Close()
+		t.Fatal("cleanup ran after the scheduler lost its lease")
+	case <-time.After(100 * time.Millisecond):
+	}
+	scheduler.Close()
+	if got := cleanups.Load(); got != 0 {
+		t.Fatalf("cleanup calls after lease loss=%d, want 0", got)
+	}
+}
+
+
+// TestTenantHealthSchedulerTracksLeaseCoordinationOutcomes verifies the
+// process-local counters distinguish a normal skip, acquisition failure and
+// lease loss from actual completed health-check rounds.
+func TestTenantHealthSchedulerTracksLeaseCoordinationOutcomes(t *testing.T) {
+	var calls atomic.Int32
+	settings := adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 1, HistoryRetentionDays: 30}
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) { return settings, nil },
+		func(context.Context, adminstore.TenantHealthSettings) error {
+			switch calls.Add(1) {
+			case 1:
+				return errTenantHealthSchedulerLeaseNotAcquired
+			case 2:
+				return fmt.Errorf("%w: simulated database unavailable", errTenantHealthSchedulerLeaseAcquireFailed)
+			default:
+				return errTenantHealthSchedulerLeaseLost
+			}
+		},
+		func(context.Context, int) error { return nil },
+	)
+	scheduler.Start(context.Background())
+	deadline := time.After(5 * time.Second)
+	for {
+		snapshot := scheduler.Snapshot()
+		if snapshot.LeaseSkippedCount == 1 && snapshot.LeaseAcquireFailureCount == 1 && snapshot.LeaseLostCount == 1 && snapshot.FailureCount == 2 {
+			scheduler.Close()
+			if snapshot.TotalRuns != 2 || snapshot.FailureCount != 2 {
+				t.Fatalf("lease coordination outcomes incorrectly counted as health rounds: %+v", snapshot)
+			}
+			return
+		}
+		select {
+		case <-deadline:
+			scheduler.Close()
+			t.Fatalf("lease counters did not reach expected values: %+v", scheduler.Snapshot())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+
+// TestTenantHealthSchedulerRecoversAfterTransientLeaseAcquisitionFailure verifies
+// that a temporary metadata database error does not permanently stop scheduling.
+// The next scheduled round must be able to acquire the lease and complete normally.
+func TestTenantHealthSchedulerRecoversAfterTransientLeaseAcquisitionFailure(t *testing.T) {
+	var attempts atomic.Int32
+	recovered := make(chan struct{})
+	settings := adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 1, HistoryRetentionDays: 30}
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) { return settings, nil },
+		func(context.Context, adminstore.TenantHealthSettings) error {
+			if attempts.Add(1) == 1 {
+				return fmt.Errorf("%w: simulated temporary metadata database outage", errTenantHealthSchedulerLeaseAcquireFailed)
+			}
+			close(recovered)
+			return nil
+		},
+		func(context.Context, int) error { return nil },
+	)
+	scheduler.Start(context.Background())
+
+	select {
+	case <-recovered:
+	case <-time.After(4 * time.Second):
+		scheduler.Close()
+		t.Fatalf("scheduler did not recover on the next round; attempts=%d snapshot=%+v", attempts.Load(), scheduler.Snapshot())
+	}
+	// The callback signal only means the second run entered its success path.
+	// Wait for the scheduler loop to publish the completed-round counters before
+	// closing it, otherwise Close can cancel the round between callback return
+	// and finishRound and make this test timing-dependent.
+	deadline := time.After(2 * time.Second)
+	for {
+		snapshot := scheduler.Snapshot()
+		if snapshot.TotalRuns == 2 && snapshot.FailureCount == 1 && snapshot.SuccessCount == 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			scheduler.Close()
+			t.Fatalf("scheduler did not publish successful recovery before shutdown: %+v", scheduler.Snapshot())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	scheduler.Close()
+
+	snapshot := scheduler.Snapshot()
+	if attempts.Load() != 2 {
+		t.Fatalf("round attempts=%d, want 2", attempts.Load())
+	}
+	if snapshot.LeaseAcquireFailureCount != 1 {
+		t.Fatalf("lease acquisition failures=%d, want 1", snapshot.LeaseAcquireFailureCount)
+	}
+	if snapshot.TotalRuns != 2 || snapshot.FailureCount != 1 || snapshot.SuccessCount != 1 {
+		t.Fatalf("unexpected counters after recovery: %+v", snapshot)
+	}
+}
+
+
+// A later batch failure must not erase the count from earlier committed
+// batches. The caller persists this partial count together with the failed
+// cleanup status, so operators can distinguish no-op failures from partial work.
+func TestCleanupTenantHealthHistoryPreservesCompletedBatchCountOnLaterFailure(t *testing.T) {
+	var deletedHistory int64
+	calls := 0
+	wantErr := errors.New("second batch failed")
+	err := cleanupTenantHealthHistory(context.Background(), func(_ context.Context, _ time.Time, limit int) (int64, error) {
+		calls++
+		if limit != 500 {
+			t.Fatalf("batch limit=%d, want 500", limit)
+		}
+		if calls == 1 {
+			deleted := int64(500)
+			deletedHistory += deleted
+			return deleted, nil
+		}
+		deleted := int64(7)
+		deletedHistory += deleted
+		return deleted, wantErr
+	}, 30)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("cleanup error=%v, want second batch failure", err)
+	}
+	if calls != 2 {
+		t.Fatalf("cleanup batches=%d, want 2", calls)
+	}
+	if deletedHistory != 507 {
+		t.Fatalf("deleted history count=%d, want 507 including the partial failing batch", deletedHistory)
+	}
+}
+
+
+func TestTenantHealthSchedulerCloseContextBoundsUnresponsiveRound(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) {
+			return adminstore.TenantHealthSettings{Enabled: true, IntervalSeconds: 1, HistoryRetentionDays: 30}, nil
+		},
+		func(context.Context, adminstore.TenantHealthSettings) error {
+			close(started)
+			<-release // Simulate a database driver that ignores context cancellation.
+			return nil
+		},
+		func(context.Context, int) error { return nil },
+	)
+	scheduler.Start(context.Background())
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		scheduler.Close()
+		t.Fatal("scheduled round did not start")
+	}
+
+	closeCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := scheduler.CloseContext(closeCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("CloseContext error=%v, want deadline exceeded", err)
+	}
+
+	close(release)
+	scheduler.Close()
+	if scheduler.Snapshot().Running {
+		t.Fatal("scheduler still reports a running round after the worker exited")
+	}
+}
+
+
+func TestTenantHealthSchedulerStatusDistinguishesDelayedAndHealthyStates(t *testing.T) {
+	now := time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC)
+	next := now.Add(-tenantHealthSchedulerDelayGracePeriod - time.Millisecond)
+
+	tests := []struct {
+		name string
+		snapshot tenantHealthSchedulerSnapshot
+		want string
+	}{
+		{name: "disabled", snapshot: tenantHealthSchedulerSnapshot{Enabled: false}, want: "disabled"},
+		{name: "running", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, Running: true}, want: "running"},
+		{name: "initializing", snapshot: tenantHealthSchedulerSnapshot{Enabled: true}, want: "initializing"},
+		{name: "scheduled", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, NextRunAt: timePointer(now.Add(time.Minute))}, want: "scheduled"},
+		{name: "within grace period", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, NextRunAt: timePointer(now.Add(-tenantHealthSchedulerDelayGracePeriod))}, want: "scheduled"},
+		{name: "delayed", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, NextRunAt: &next}, want: "delayed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tenantHealthSchedulerStatus(tt.snapshot, now); got != tt.want {
+				t.Fatalf("tenantHealthSchedulerStatus()=%q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func timePointer(value time.Time) *time.Time {
+	return &value
+}
+
+
+func TestTenantHealthSchedulerHealthStatusDetectsStaleAndConsecutiveFailures(t *testing.T) {
+	now := time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC)
+	recent := now.Add(-5 * time.Minute)
+	old := now.Add(-20 * time.Minute)
+	tests := []struct {
+		name string
+		snapshot tenantHealthSchedulerSnapshot
+		want string
+	}{
+		{name: "disabled", snapshot: tenantHealthSchedulerSnapshot{Enabled: false, TotalRuns: 1}, want: "unknown"},
+		{name: "no runs", snapshot: tenantHealthSchedulerSnapshot{Enabled: true}, want: "unknown"},
+		{name: "recent success", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, IntervalSeconds: 300, TotalRuns: 2, LastSuccessAt: &recent}, want: "healthy"},
+		{name: "consecutive failures", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, IntervalSeconds: 300, TotalRuns: 3, ConsecutiveFailureCount: 2, LastSuccessAt: &recent}, want: "degraded"},
+		{name: "stale last success", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, IntervalSeconds: 300, TotalRuns: 2, LastSuccessAt: &old}, want: "stale"},
+		{name: "never succeeded and old failure", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, IntervalSeconds: 300, TotalRuns: 2, ConsecutiveFailureCount: 2, ConsecutiveFailureSince: &old}, want: "stale"},
+		{name: "long interval uses three intervals", snapshot: tenantHealthSchedulerSnapshot{Enabled: true, IntervalSeconds: 3600, TotalRuns: 2, LastSuccessAt: &recent}, want: "healthy"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tenantHealthSchedulerHealthStatus(tt.snapshot, now); got != tt.want {
+				t.Fatalf("tenantHealthSchedulerHealthStatus()=%q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTenantHealthSchedulerConsecutiveFailuresResetAfterSuccess(t *testing.T) {
+	scheduler := newTenantHealthScheduler(nil, nil, nil)
+	started := time.Now().UTC()
+	scheduler.finishRound(started, errors.New("temporary failure"))
+	if got := scheduler.Snapshot().ConsecutiveFailureCount; got != 1 {
+		t.Fatalf("consecutive failures after error=%d, want 1", got)
+	}
+	scheduler.finishRound(started, nil)
+	snapshot := scheduler.Snapshot()
+	if snapshot.ConsecutiveFailureCount != 0 {
+		t.Fatalf("consecutive failures after success=%d, want 0", snapshot.ConsecutiveFailureCount)
+	}
+	if snapshot.ConsecutiveFailureSince != nil {
+		t.Fatalf("consecutive failure start should clear after success: %v", snapshot.ConsecutiveFailureSince)
+	}
+	if snapshot.SuccessCount != 1 || snapshot.FailureCount != 1 {
+		t.Fatalf("unexpected round counters after recovery: %+v", snapshot)
+	}
+}
