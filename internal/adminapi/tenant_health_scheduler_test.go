@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync/atomic"
@@ -342,6 +343,46 @@ func TestTenantHealthSchedulerSnapshotTracksRoundResults(t *testing.T) {
 	}
 	if snapshot.LastError != "巡检执行失败" || strings.Contains(snapshot.LastError, "sensitive") {
 		t.Fatalf("snapshot leaked raw error: %+v", snapshot)
+	}
+}
+
+func TestTenantHealthSchedulerSnapshotUsesEmptyArrayWithoutSamples(t *testing.T) {
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) { return adminstore.TenantHealthSettings{}, nil },
+		func(context.Context, adminstore.TenantHealthSettings) error { return nil },
+		func(context.Context, int) error { return nil },
+	)
+
+	snapshot := scheduler.Snapshot()
+	if snapshot.RecentScheduleDelaysMS == nil || len(snapshot.RecentScheduleDelaysMS) != 0 {
+		t.Fatalf("recent schedule delays should be an empty slice, got %#v", snapshot.RecentScheduleDelaysMS)
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal scheduler snapshot: %v", err)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal scheduler snapshot: %v", err)
+	}
+	if got := string(payload["recent_schedule_delays_ms"]); got != "[]" {
+		t.Fatalf("recent_schedule_delays_ms=%s, want []", got)
+	}
+}
+
+func TestTenantHealthSchedulerDelayTrendUsesStrictThirtySecondThreshold(t *testing.T) {
+	scheduler := newTenantHealthScheduler(
+		func(context.Context) (adminstore.TenantHealthSettings, error) { return adminstore.TenantHealthSettings{}, nil },
+		func(context.Context, adminstore.TenantHealthSettings) error { return nil },
+		func(context.Context, int) error { return nil },
+	)
+	base := time.Date(2026, 11, 23, 1, 0, 0, 0, time.UTC)
+	for _, delay := range []int64{30_000, 30_001, 60_001} {
+		scheduler.recordScheduleDelay(base, base.Add(time.Duration(delay)*time.Millisecond))
+	}
+	snapshot := scheduler.Snapshot()
+	if snapshot.AverageScheduleDelayMS != 40_000 || snapshot.MaxScheduleDelayMS != 60_001 || snapshot.DelayedScheduleCount != 2 {
+		t.Fatalf("unexpected threshold aggregates: %+v", snapshot)
 	}
 }
 

@@ -96,6 +96,9 @@ func (s *tenantHealthScheduler) Snapshot() tenantHealthSchedulerSnapshot {
 	s.snapshotMu.RLock()
 	snapshot := s.snapshot
 	snapshot.RecentScheduleDelaysMS = append([]int64(nil), s.snapshot.RecentScheduleDelaysMS...)
+	if snapshot.RecentScheduleDelaysMS == nil {
+		snapshot.RecentScheduleDelaysMS = []int64{}
+	}
 	s.snapshotMu.RUnlock()
 	now := time.Now().UTC()
 	snapshot.Status = tenantHealthSchedulerStatus(snapshot, now)
